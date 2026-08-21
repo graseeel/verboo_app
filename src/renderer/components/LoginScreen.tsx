@@ -50,7 +50,7 @@ type LoginScreenProps = {
    * state and unlocks the app. Failure completions (`ok === false`) are
    * rendered locally with their specific cause and do NOT bubble.
    */
-  onLoginComplete?: (event: LoginEvent) => void
+  onLoginComplete?: (event: LoginEvent) => Promise<boolean> | boolean
 }
 
 /**
@@ -72,6 +72,11 @@ type CliLoginFlow =
   | { phase: 'awaitingBrowser' }
   | { phase: 'urlReady'; url: string }
   | { phase: 'failed'; message: string }
+
+type UserAuthAction = 'existing-session' | 'cli-login' | 'api-key'
+type UserAuthActionState =
+  | { id: number; source: UserAuthAction; phase: 'pending' }
+  | { id: number; source: UserAuthAction; phase: 'failed'; detail?: string }
 
 /**
  * Issue #71: Windows Git onboarding gate. The CLI login needs Git for
@@ -133,6 +138,9 @@ export function LoginScreen({
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | undefined>()
+  const [userAction, setUserAction] = useState<UserAuthActionState | undefined>()
+  const nextUserActionIdRef = useRef(0)
+  const cliUserActionIdRef = useRef<number | undefined>(undefined)
   // PA-37: progressive disclosure — the API key path SWAPS the central
   // block instead of stacking under it.
   const [apiMode, setApiMode] = useState(false)
@@ -175,6 +183,7 @@ export function LoginScreen({
           break
         case 'complete':
           if (payload.ok === false) {
+            const message = payload.message ?? tRef.current('login.cliStartFailed')
             // Failure completion: the SPECIFIC cause (CLI stdout/stderr)
             // must reach the screen — never a bare generic. Guarded to
             // in-flight phases so a late completion after the user
@@ -182,22 +191,45 @@ export function LoginScreen({
             setCliLogin(current =>
               current.phase === 'idle'
                 ? current
-                : { phase: 'failed', message: payload.message ?? tRef.current('login.cliStartFailed') },
+                : { phase: 'failed', message },
             )
+            if (isGitBashCause(message)) finishUserAction(cliUserActionIdRef.current)
+            else failUserAction(cliUserActionIdRef.current, 'cli-login', message)
+            cliUserActionIdRef.current = undefined
           } else {
             // Success: hand off to the parent, which re-validates the
             // real backend state and unlocks the app. Return to idle —
             // the `checking` prop shows the validation progress.
             setCliLogin({ phase: 'idle' })
-            onLoginCompleteRef.current?.(payload)
+            const actionId = cliUserActionIdRef.current
+            cliUserActionIdRef.current = undefined
+            try {
+              const validation = onLoginCompleteRef.current?.(payload)
+              if (validation === undefined) {
+                finishUserAction(actionId)
+              } else {
+                void Promise.resolve(validation).then(valid => {
+                  if (valid) finishUserAction(actionId)
+                  else failUserAction(actionId, 'cli-login')
+                }).catch(error => {
+                  failUserAction(actionId, 'cli-login', error)
+                })
+              }
+            } catch (error) {
+              failUserAction(actionId, 'cli-login', error)
+            }
           }
           break
         case 'error':
+          const message = payload.message ?? tRef.current('login.cliStartFailed')
           setCliLogin(current =>
             current.phase === 'idle'
               ? current
-              : { phase: 'failed', message: payload.message ?? tRef.current('login.cliStartFailed') },
+              : { phase: 'failed', message },
           )
+          if (isGitBashCause(message)) finishUserAction(cliUserActionIdRef.current)
+          else failUserAction(cliUserActionIdRef.current, 'cli-login', message)
+          cliUserActionIdRef.current = undefined
           break
       }
     })
@@ -265,14 +297,51 @@ export function LoginScreen({
     }
   }
 
+  function beginUserAction(source: UserAuthAction): number {
+    const id = ++nextUserActionIdRef.current
+    cliUserActionIdRef.current = undefined
+    setCliLogin({ phase: 'idle' })
+    setStatusMessage(undefined)
+    setUserAction({ id, source, phase: 'pending' })
+    return id
+  }
+
+  function finishUserAction(id: number | undefined) {
+    if (id === undefined) return
+    setUserAction(current => current?.id === id ? undefined : current)
+  }
+
+  function failUserAction(id: number | undefined, source: UserAuthAction, error?: unknown) {
+    if (id === undefined) return
+    const detail =
+      typeof error === 'string'
+        ? error
+        : error instanceof Error
+          ? error.message
+          : undefined
+    setUserAction(current => current?.id === id ? { id, source, phase: 'failed', detail } : current)
+  }
+
+  function clearUserAction() {
+    nextUserActionIdRef.current += 1
+    cliUserActionIdRef.current = undefined
+    setCliLogin({ phase: 'idle' })
+    setStatusMessage(undefined)
+    setUserAction(undefined)
+  }
+
   /** Routes a login failure: git-bash causes open the Git onboarding
    *  dialog (issue #71); everything else keeps the specific-cause banner. */
   function failCliLogin(message: string) {
+    const actionId = cliUserActionIdRef.current
     if (isGitBashCause(message)) {
       setCliLogin({ phase: 'idle' })
+      finishUserAction(actionId)
+      cliUserActionIdRef.current = undefined
       setGitGate({ phase: 'prompt' })
     } else {
       setCliLogin({ phase: 'failed', message })
+      failUserAction(actionId, 'cli-login', message)
     }
   }
 
@@ -303,6 +372,8 @@ export function LoginScreen({
   }
 
   async function startLogin() {
+    const actionId = beginUserAction('cli-login')
+    cliUserActionIdRef.current = actionId
     setCopied(false)
     setCliLogin({ phase: 'starting' })
     // Issue #71: on Windows the CLI needs Git — gate BEFORE spawning.
@@ -310,6 +381,8 @@ export function LoginScreen({
     // is byte-identical to before.
     if (!(await gitAvailableForLogin())) {
       setCliLogin({ phase: 'idle' })
+      finishUserAction(actionId)
+      cliUserActionIdRef.current = undefined
       setGitGate({ phase: 'prompt' })
       return
     }
@@ -348,6 +421,7 @@ export function LoginScreen({
     // (guarded in the listener); a late success still unlocks — if the
     // user did authenticate, that is the truth.
     setCliLogin({ phase: 'idle' })
+    clearUserAction()
   }
 
   async function copyLoginUrl(url: string) {
@@ -367,34 +441,39 @@ export function LoginScreen({
     event.preventDefault()
     const trimmed = apiKey.trim()
     if (!trimmed) return
+    const actionId = beginUserAction('api-key')
+    setStatusMessage(undefined)
     setSaving(true)
     try {
       const valid = await onSaveApiKey(trimmed)
       if (valid) {
         setApiKey('')
+        finishUserAction(actionId)
         setStatusMessage(t('login.apiKeyValidated'))
       } else {
-        setStatusMessage(t('login.apiKeyInvalid'))
+        failUserAction(actionId, 'api-key')
       }
+    } catch (error) {
+      failUserAction(actionId, 'api-key', error)
     } finally {
       setSaving(false)
     }
   }
 
   async function checkExistingAuth() {
+    const actionId = beginUserAction('existing-session')
     setStatusMessage(t('login.checkingSession'))
     try {
       const valid = await onCheckExistingAuth()
-      // The parent owns the FAILURE message (authError prop → .login-warning):
-      // setting the same session-invalid text locally rendered it TWICE,
-      // stacked (field photo). Success keeps its local confirmation.
-      setStatusMessage(valid ? t('login.sessionValid') : undefined)
-    } catch {
-      // T5: if validateAccess rejects, the parent's catch surfaces the
-      // banner (authError + authErrorDetail). Locally we must END the
-      // "verificando" state regardless — without this, the pre-await
-      // setStatusMessage is the last line that ran and "Verificando
-      // sessão local…" sticks forever (field photo M4).
+      if (valid) {
+        finishUserAction(actionId)
+        setStatusMessage(t('login.sessionValid'))
+      } else {
+        failUserAction(actionId, 'existing-session')
+        setStatusMessage(undefined)
+      }
+    } catch (error) {
+      failUserAction(actionId, 'existing-session', error)
       setStatusMessage(undefined)
     }
   }
@@ -409,13 +488,38 @@ export function LoginScreen({
   const cliFailureMessage =
     cliLogin.phase === 'failed' && !isGitBashCause(cliLogin.message) ? cliLogin.message : undefined
   const emptyStateNote =
-    !cliFailureMessage && authError?.kind === 'no-session' && !authErrorDetail && !modelResult.error
+    !cliFailureMessage && !userAction && authError?.kind === 'no-session'
       ? authError.message
       : undefined
-  const authHeadline = !cliFailureMessage && !emptyStateNote ? authError?.message ?? modelResult.error : undefined
+  const failedUserAction = userAction?.phase === 'failed' ? userAction : undefined
+  const userActionHeadline = failedUserAction
+    ? failedUserAction.source === 'cli-login'
+      ? t('login.cliLoginFailed')
+      : failedUserAction.source === 'api-key'
+        ? t('login.apiKeyInvalid')
+        : t('login.sessionCheckFailed')
+    : undefined
+  const authHeadline = !cliFailureMessage && !userAction && !emptyStateNote
+    ? authError?.kind === 'error'
+      ? authError.message
+      : authError
+        ? undefined
+        : modelResult.error
+    : undefined
   const banner = cliFailureMessage
     ? { key: `cli:${cliFailureMessage}`, headline: t('login.cliLoginFailed'), detail: cliFailureMessage, retry: () => void startLogin() }
-    : authHeadline
+    : failedUserAction && userActionHeadline
+      ? {
+          key: `action:${failedUserAction.id}`,
+          headline: userActionHeadline,
+          detail: failedUserAction.detail ?? (authError?.kind === 'error' ? authErrorDetail : undefined),
+          retry: failedUserAction.source === 'api-key'
+            ? undefined
+            : failedUserAction.source === 'cli-login'
+              ? () => void startLogin()
+              : () => void checkExistingAuth(),
+        }
+      : authHeadline
       ? { key: `auth:${authHeadline}`, headline: authHeadline, detail: authErrorDetail, retry: () => void checkExistingAuth() }
       : undefined
 
@@ -459,9 +563,11 @@ export function LoginScreen({
                 <pre>{banner.detail}</pre>
               </details>
             )}
-            <button className="login-retry" type="button" onClick={banner.retry} disabled={checking}>
-              {t('login.tryAgain')}
-            </button>
+            {banner.retry && (
+              <button className="login-retry" type="button" onClick={banner.retry} disabled={checking}>
+                {t('login.tryAgain')}
+              </button>
+            )}
           </div>
         )}
 
@@ -593,7 +699,10 @@ export function LoginScreen({
                 ref={useApiKeyButtonRef}
                 className="login-text-button"
                 type="button"
-                onClick={() => setApiMode(true)}
+                onClick={() => {
+                  clearUserAction()
+                  setApiMode(true)
+                }}
               >
                 {t('login.useApiKey')}
               </button>

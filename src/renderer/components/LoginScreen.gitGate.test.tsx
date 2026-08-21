@@ -230,4 +230,27 @@ describe('Issue #71: Windows Git onboarding gate (contrato-71-gitbash)', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/Verboo CLI requires Git for Windows/)).toBeNull()
   })
+
+  it('fallback git-bash → closing the dialog restores the passive no-session state', async () => {
+    checkWindowsLoginPrereqs.mockResolvedValue({ gitAvailable: true, platform: 'windows' })
+    renderLogin(makeProps({
+      authError: { kind: 'no-session', message: 'No valid Verboo session was found.' },
+    }))
+
+    clickSignIn()
+    await screen.findByText('Login started — waiting for the browser…')
+    act(() => {
+      loginEventHandler()({
+        payload: { kind: 'error', message: 'Verboo CLI requires Git for Windows (git-bash) to run on Windows' },
+      })
+    })
+
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const passiveNote = screen.getByText('No valid Verboo session was found.')
+    expect(passiveNote.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })

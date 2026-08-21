@@ -1157,15 +1157,16 @@ export function App() {
       if (settings.staySignedIn && readRememberedAuthSession()) {
         setEntryUnlocked(true)
       }
+      const startupTranslator = createTranslator(settings.language)
       void (async () => {
-        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn)
+        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn, startupTranslator)
         // Cold-start hardening (B1): on a fresh launch the first keychain read
         // / CLI-token refresh can lose a race and report "no session". Retry
         // once with a forced refresh before leaving the user on the login
         // screen. validateAccess already no-ops the UI if it succeeds.
         if (!ok && !cancelled) {
           await new Promise(resolve => setTimeout(resolve, 700))
-          if (!cancelled) await validateAccess(true, settings.staySignedIn)
+          if (!cancelled) await validateAccess(true, settings.staySignedIn, startupTranslator)
         }
       })()
     }
@@ -2137,7 +2138,11 @@ export function App() {
     }
   }
 
-  async function validateAccess(forceRefresh: boolean, allowRememberedSession = userSettings.staySignedIn): Promise<boolean> {
+  async function validateAccess(
+    forceRefresh: boolean,
+    allowRememberedSession = userSettings.staySignedIn,
+    translate: Translator = createTranslator(userSettingsRef.current.language),
+  ): Promise<boolean> {
     setAuthChecking(true)
     setAuthError(undefined)
     setAuthErrorDetail(undefined)
@@ -2169,13 +2174,13 @@ export function App() {
       const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
       if (rememberedSession && !isAuthoritativelySignedOut(credentialStatus, cliStatus)) {
         setEntryUnlocked(true)
-        setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
+        setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
         void refreshProfile()
         return true
       }
 
       if (!allowRememberedSession) forgetRememberedAuthSession()
-      setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
+      setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
       return false
     } catch (error) {
       // T5: a rejected Rust command (Result<_, String> → Tauri invoke
@@ -2185,7 +2190,7 @@ export function App() {
       // Surface a friendly headline and stash the raw cause behind a
       // details toggle. Never re-throw: the caller (checkExistingAuth)
       // owns the status-message lifecycle.
-      setAuthError({ kind: 'error', message: t('login.sessionCheckFailed') })
+      setAuthError({ kind: 'error', message: translate('login.sessionCheckFailed') })
       setAuthErrorDetail(error instanceof Error ? error.message : String(error))
       return false
     } finally {
@@ -6362,7 +6367,7 @@ export function App() {
             // hint, never the unlock authority. authChecking shows the
             // "validating" progress on the login screen meanwhile.
             if (event.status) setCliAuth(event.status)
-            void validateAccess(true)
+            return validateAccess(true)
           }}
         />
         <FeedbackDialog

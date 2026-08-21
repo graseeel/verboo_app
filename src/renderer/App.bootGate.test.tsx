@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UserSettings } from '../shared/types'
+import { listen } from '@tauri-apps/api/event'
+import type { LoginEvent, UserSettings } from '../shared/types'
 import { App } from './App'
 
 // Boot-gate + login-error harness: the bridge is LOCKED (no CLI session, no
@@ -101,14 +102,25 @@ function createLockedBridge() {
 }
 
 async function renderLockedApp() {
-  ;(window as unknown as { verboo: unknown }).verboo = createLockedBridge()
+  const bridge = createLockedBridge()
+  ;(window as unknown as { verboo: unknown }).verboo = bridge
   render(<App />)
+}
+
+function emitLoginEvent(payload: LoginEvent) {
+  const call = vi.mocked(listen).mock.calls.find(([name]) => name === 'login:event')
+  expect(call, 'App must mount the real LoginScreen login:event listener').toBeDefined()
+  act(() => {
+    const handler = call![1] as (event: { payload: LoginEvent }) => void
+    handler({ payload })
+  })
 }
 
 beforeEach(() => {
   // Deliberately EMPTY: no 'verboo:development-notice-accepted', no remembered
   // session. The first-boot state is the state under test.
   window.localStorage.clear()
+  vi.mocked(listen).mockClear()
   settingsStore = baseSettings()
   vi.stubGlobal('ResizeObserver', TestResizeObserver)
   vi.stubGlobal('matchMedia', () => ({
@@ -151,18 +163,57 @@ describe('App boot — the development-version interstitial is GONE (Ivo\'s orde
   })
 })
 
-describe('App login — session-invalid error banner (field photo: duplicated)', () => {
-  it('a failed "I already authenticated" surfaces the message EXACTLY ONCE', async () => {
+describe('App login — session-invalid boot and revalidation state', () => {
+  it('boot without credentials renders the typed no-session result as a localized neutral note', async () => {
+    settingsStore = { ...baseSettings(), language: 'pt-BR' }
+    const bridge = createLockedBridge()
+    bridge.listModels = vi.fn(async () => ({
+      models: [],
+      source: 'none' as const,
+      stale: false,
+      error: 'Entre com Verboo pelo CLI/app ou configure uma chave API.',
+    }))
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    render(<App />)
+
+    const note = await screen.findByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(note.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('"I already authenticated" ending without a session shows action feedback instead of the passive note', async () => {
     await renderLockedApp()
-    const retry = await screen.findByRole('button', { name: /I already authenticated/ })
-    // Let the mount-time validation settle before the click.
-    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false))
+    const retry = await screen.findByRole('button', { name: /I already authenticated/ }, { timeout: 1_000 })
+    await waitFor(() => {
+      expect((retry as HTMLButtonElement).disabled, document.querySelector('.login-panel')?.textContent).toBe(false)
+    }, { timeout: 1_000 })
 
     fireEvent.click(retry)
-    // Settled again = the re-validation finished (button re-enabled).
-    await waitFor(() => expect((screen.getByRole('button', { name: /I already authenticated/ }) as HTMLButtonElement).disabled).toBe(false))
+    await waitFor(() => {
+      expect(screen.queryByRole('alert'), document.querySelector('.login-panel')?.textContent).not.toBeNull()
+    }, { timeout: 1_000 })
+    const alert = screen.getByRole('alert')
 
-    expect(screen.getAllByText('No valid Verboo session was found.')).toHaveLength(1)
+    expect(alert.textContent).toContain('Could not verify your Verboo session.')
+    expect(screen.queryByText('No valid Verboo session was found.')).toBeNull()
+  })
+
+  it('successful CLI completion followed by no session shows action feedback', async () => {
+    const bridge = createLockedBridge()
+    bridge.startCliLogin = vi.fn(async () => ({ ok: true, message: 'CLI login started.' }))
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    render(<App />)
+
+    const start = await screen.findByRole('button', { name: /Sign in with CLI/ })
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(start)
+    await screen.findByText('Login started — waiting for the browser…')
+
+    emitLoginEvent({ kind: 'complete', ok: true, status: { loggedIn: true } })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Could not complete CLI sign-in.')
+    expect(screen.queryByText('No valid Verboo session was found.')).toBeNull()
   })
 })
 
