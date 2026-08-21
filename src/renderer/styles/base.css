@@ -172,6 +172,9 @@ button {
 }
 
 .language-selector.compact .language-selector-trigger {
+  justify-content: center;
+  width: auto;
+  min-width: 72px;
   min-height: 30px;
   padding: 3px 8px;
 }

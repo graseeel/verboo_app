@@ -16,7 +16,9 @@
 }
 
 /* margin-block:auto centers the panel when it fits and resolves to 0
-   when it overflows, so scrolling always reaches the top.
+   when it overflows, so scrolling always reaches the top. The panel keeps
+   intrinsic height: localized slots and the footer grid stabilize the
+   default flow, while real long-content states remain free to expand.
    PA-37: narrower column — the content is now a single centered flow,
    and the tighter measure is what makes it read calm instead of busy. */
 .login-panel {
@@ -46,11 +48,11 @@
 .login-brand {
   display: flex;
   justify-content: center;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .login-wordmark {
-  width: 148px;
+  width: 142px;
   height: auto;
 }
 
@@ -66,9 +68,12 @@
 
 .login-copy h1 {
   margin: 0 0 6px;
-  font-size: 24px;
+  min-height: 28px;
+  font-size: 25px;
   line-height: 1.15;
   font-weight: 720;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
 .login-copy p,
@@ -80,15 +85,29 @@
   line-height: 1.55;
 }
 
+.login-copy p {
+  min-height: 22px;
+  text-wrap: balance;
+}
+
 /* PA-37: ONE primary action, full width — no competing siblings. */
 .login-actions {
   display: grid;
-  margin: 22px 0 4px;
+  margin: 24px 0 4px;
 }
 
 .login-actions .primary-action {
   width: 100%;
-  min-height: 44px;
+  min-height: 46px;
+  transition:
+    box-shadow 160ms ease-out,
+    filter 160ms ease-out,
+    transform 120ms ease-out;
+}
+
+.login-actions .primary-action:hover:not(:disabled) {
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 28%, transparent);
+  filter: brightness(1.04);
 }
 
 /* PA-37: "Stay signed in" as a plain checkbox row — a minor preference
@@ -99,9 +118,13 @@
   justify-content: center;
   gap: 8px;
   margin-top: 12px;
-  color: var(--text);
+  color: var(--text-muted);
   font-size: 13px;
   cursor: pointer;
+}
+
+.login-remember:hover {
+  color: var(--text);
 }
 
 .login-remember input {
@@ -111,6 +134,11 @@
   accent-color: var(--accent);
 }
 
+.login-remember input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 /* PA-37: secondary paths as discrete text buttons under the primary. */
 .login-secondary-row {
   display: flex;
@@ -118,6 +146,7 @@
   justify-content: center;
   gap: 10px;
   margin-top: 12px;
+  min-height: 32px;
 }
 
 .login-text-button {
@@ -129,9 +158,12 @@
   font-size: 13px;
   font-weight: 600;
   padding: 4px 6px;
+  text-underline-offset: 3px;
+  transition: color 140ms ease-out, background-color 140ms ease-out;
 }
 
 .login-text-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
   text-decoration: underline;
 }
 
@@ -154,9 +186,9 @@
 /* PA-37: tertiary paths (account/dashboard/feedback) in a quiet footer,
    small and muted, out of the sign-in decision's way. */
 .login-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
   gap: 10px;
   margin-top: 24px;
   padding-top: 14px;
@@ -164,17 +196,26 @@
 }
 
 .login-footer-link {
+  display: grid;
+  place-items: center;
+  min-height: 36px;
   border: none;
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
+  line-height: 1.35;
   padding: 3px 4px;
+  text-align: center;
+  text-underline-offset: 3px;
+  transition: color 140ms ease-out, background-color 140ms ease-out;
 }
 
 .login-footer-link:hover {
+  background: color-mix(in srgb, var(--bg-soft) 76%, transparent);
   color: var(--text);
+  text-decoration: underline;
 }
 
 .login-footer-link:focus-visible {
@@ -243,6 +284,10 @@
 .api-login-row button:not(:disabled):active,
 .dashboard-link:not(:disabled):active,
 .theme-toggle button:not(:disabled):active {
+  transform: scale(var(--press-scale));
+}
+
+.login-language-row .language-selector-trigger:active {
   transform: scale(var(--press-scale));
 }
 
@@ -615,6 +660,39 @@
 }
 .git-gate-steps a:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 420px) {
+  .login-screen {
+    padding: 24px 16px;
+  }
+
+  .login-panel {
+    padding: 28px 20px 22px;
+  }
+
+  .login-secondary-row,
+  .login-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .login-secondary-row {
+    display: grid;
+    gap: 2px;
+  }
+
+  .login-secondary-row .login-sep,
+  .login-footer .login-sep {
+    display: none;
+  }
+
+  .login-footer {
+    gap: 2px;
+  }
+
+  .login-footer-link {
+    min-height: 30px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
