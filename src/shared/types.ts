@@ -965,7 +965,7 @@ export type LoginEventKind = 'url' | 'complete' | 'error'
 /**
  * A1: payload of the `login:event` Tauri channel (event name is
  * literally `login:event`, with the colon). Rust struct LoginEvent
- * (types.rs:590) uses `rename_all = "camelCase"`. All four optional
+ * (types.rs:590) uses `rename_all = "camelCase"`. All five optional
  * fields use `skip_serializing_if Option::is_none` — when absent the
  * KEY IS OMITTED from the JSON and arrives as `undefined`, not null.
  * Treat absence, not null.
@@ -982,6 +982,7 @@ export type LoginEventKind = 'url' | 'complete' | 'error'
  */
 export type LoginEvent = {
   kind: LoginEventKind
+  flowId?: number
   url?: string
   message?: string
   ok?: boolean

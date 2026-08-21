@@ -622,6 +622,10 @@ pub struct LoginResult {
 #[serde(rename_all = "camelCase")]
 pub struct LoginEvent {
     pub kind: LoginEventKind,
+    /// Optional renderer-generated flow identity. When present, every event
+    /// emitted by the same CLI login attempt carries the same value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<u64>,
     /// Login URL extracted from CLI stdout. Present only when
     /// `kind == Url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

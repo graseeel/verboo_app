@@ -36,7 +36,7 @@ type LoginScreenProps = {
   cliAuth: CliAuthStatus
   modelResult: ModelDiscoveryResult
   staySignedIn: boolean
-  onStartLogin: () => Promise<LoginResult> | LoginResult
+  onStartLogin: (flowId?: number) => Promise<LoginResult> | LoginResult
   onOpenDashboard: () => void
   onOpenSignup: () => void
   onCheckExistingAuth: () => Promise<boolean>
@@ -77,6 +77,17 @@ type UserAuthAction = 'existing-session' | 'cli-login' | 'api-key'
 type UserAuthActionState =
   | { id: number; source: UserAuthAction; phase: 'pending' }
   | { id: number; source: UserAuthAction; phase: 'failed'; detail?: string }
+
+// PA-45b: flow ids must outlive LoginScreen mounts because a cancelled
+// native CLI process can emit after auth unmounts this screen and logout
+// mounts it again. Date.now() seeds reloads; the module counter keeps ids
+// strictly monotonic across mounts while remaining a JS-safe Rust u64.
+let lastUserAuthActionId = Date.now()
+
+function allocateUserAuthActionId(): number {
+  lastUserAuthActionId = Math.max(Date.now(), lastUserAuthActionId + 1)
+  return lastUserAuthActionId
+}
 
 /**
  * Issue #71: Windows Git onboarding gate. The CLI login needs Git for
@@ -139,7 +150,6 @@ export function LoginScreen({
   const [saving, setSaving] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | undefined>()
   const [userAction, setUserAction] = useState<UserAuthActionState | undefined>()
-  const nextUserActionIdRef = useRef(0)
   const cliUserActionIdRef = useRef<number | undefined>(undefined)
   // PA-37: progressive disclosure — the API key path SWAPS the central
   // block instead of stacking under it.
@@ -167,11 +177,15 @@ export function LoginScreen({
   // rename_all = "lowercase", types.rs:609, a DIFFERENT attribute from
   // the struct family's camelCase), and url/message/ok/status use
   // skip_serializing_if Option::is_none — absent keys arrive as
-  // undefined: treat absence, not null.
+  // undefined: treat absence, not null. flowId is also optional so an
+  // older native build can keep using the legacy uncorrelated channel.
   useEffect(() => {
     let unlistenFn: (() => void) | undefined
     const unlistenPromise = listen<LoginEvent>('login:event', (event) => {
       const payload = event.payload
+      // PA-45b: identified events belong only to the active CLI action.
+      // Absence stays backward-compatible with older native builds.
+      if (payload.flowId !== undefined && payload.flowId !== cliUserActionIdRef.current) return
       switch (payload.kind) {
         case 'url':
           // Absent url key (skip_serializing_if): keep waiting — never
@@ -298,7 +312,7 @@ export function LoginScreen({
   }
 
   function beginUserAction(source: UserAuthAction): number {
-    const id = ++nextUserActionIdRef.current
+    const id = allocateUserAuthActionId()
     cliUserActionIdRef.current = undefined
     setCliLogin({ phase: 'idle' })
     setStatusMessage(undefined)
@@ -323,7 +337,7 @@ export function LoginScreen({
   }
 
   function clearUserAction() {
-    nextUserActionIdRef.current += 1
+    allocateUserAuthActionId()
     cliUserActionIdRef.current = undefined
     setCliLogin({ phase: 'idle' })
     setStatusMessage(undefined)
@@ -387,7 +401,7 @@ export function LoginScreen({
       return
     }
     try {
-      const result = await onStartLogin()
+      const result = await onStartLogin(actionId)
       // A1: result.ok means "spawned in background" (the invoke returns
       // in <1s by Rust contract), NOT "authenticated". Progress arrives
       // via login:event. The url event may already have arrived on a
@@ -417,9 +431,9 @@ export function LoginScreen({
   function cancelCliLogin() {
     // UI-only cancel: we cannot kill the CLI process from the renderer
     // (no such command), but the user gets an escape hatch out of the
-    // waiting state. A late ok:false completion is ignored while idle
-    // (guarded in the listener); a late success still unlocks — if the
-    // user did authenticate, that is the truth.
+    // waiting state. Identified late events are ignored once another
+    // flow starts; events without flowId keep the legacy behavior for
+    // compatibility with older native builds.
     setCliLogin({ phase: 'idle' })
     clearUserAction()
   }

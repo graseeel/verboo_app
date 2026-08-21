@@ -248,6 +248,81 @@ describe('A1: event-driven CLI login (login:event)', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('ignores a late identified event from cancelled login A while login B stays active', async () => {
+    const props = makeProps({
+      onStartLogin: vi.fn((_flowId?: number) => Promise.resolve({ ok: true, message: 'Login iniciado em background.' })),
+    })
+    renderLogin(props)
+
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Login iniciado — aguardando o navegador…')
+    const flowA = vi.mocked(props.onStartLogin).mock.calls[0]?.[0]
+    expect(flowA).toEqual(expect.any(Number))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await waitFor(() => expect(props.onStartLogin).toHaveBeenCalledTimes(2))
+    const flowB = vi.mocked(props.onStartLogin).mock.calls[1]?.[0]
+    expect(flowB).toEqual(expect.any(Number))
+    expect(flowB).not.toBe(flowA)
+
+    emitLoginEvent({ kind: 'error', flowId: flowA, message: 'falha atrasada do fluxo A' })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Login iniciado — aguardando o navegador…')).toBeTruthy()
+
+    const urlB = 'https://verboo.ai/auth/cli?code=flow-b'
+    emitLoginEvent({ kind: 'url', flowId: flowB, url: urlB })
+    expect((screen.getByLabelText('Link de login do Verboo') as HTMLInputElement).value).toBe(urlB)
+
+    const completeB: LoginEvent = { kind: 'complete', flowId: flowB, ok: true, status: { loggedIn: true } }
+    emitLoginEvent(completeB)
+    expect(props.onLoginComplete).toHaveBeenCalledWith(completeB)
+    expect(screen.queryByLabelText('Link de login do Verboo')).toBeNull()
+    expect((screen.getByRole('button', { name: /Entrar pelo CLI/ }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('keeps flowIds unique across LoginScreen remounts and rejects the old mounted flow', async () => {
+    const propsA = makeProps({
+      onStartLogin: vi.fn((_flowId?: number) => Promise.resolve({ ok: true, message: 'Login A iniciado.' })),
+    })
+    const mountedA = renderLogin(propsA)
+
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Login iniciado — aguardando o navegador…')
+    const flowA = vi.mocked(propsA.onStartLogin).mock.calls[0]?.[0]
+    expect(flowA).toEqual(expect.any(Number))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    mountedA.unmount()
+
+    mockListen.mockClear()
+    const propsB = makeProps({
+      onStartLogin: vi.fn((_flowId?: number) => Promise.resolve({ ok: true, message: 'Login B iniciado.' })),
+    })
+    renderLogin(propsB)
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Login iniciado — aguardando o navegador…')
+    const flowB = vi.mocked(propsB.onStartLogin).mock.calls[0]?.[0]
+    expect(flowB).toEqual(expect.any(Number))
+    expect(flowB).not.toBe(flowA)
+
+    emitLoginEvent({ kind: 'error', flowId: flowA, message: 'falha atrasada do mount A' })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Login iniciado — aguardando o navegador…')).toBeTruthy()
+
+    const urlB = 'https://verboo.ai/auth/cli?code=remounted-flow-b'
+    emitLoginEvent({ kind: 'url', flowId: flowB, url: urlB })
+    expect((screen.getByLabelText('Link de login do Verboo') as HTMLInputElement).value).toBe(urlB)
+  })
+
+  it('keeps processing legacy login events that omit flowId', async () => {
+    await startLoginAndAwaitBrowser()
+
+    const legacyUrl = 'https://verboo.ai/auth/cli?code=legacy-no-flow-id'
+    emitLoginEvent({ kind: 'url', url: legacyUrl })
+
+    expect((screen.getByLabelText('Link de login do Verboo') as HTMLInputElement).value).toBe(legacyUrl)
+  })
+
   it('a new failure REPLAYS the shake (block remounts per message)', async () => {
     await startLoginAndAwaitBrowser()
     emitLoginEvent({ kind: 'error', message: 'primeira causa' })

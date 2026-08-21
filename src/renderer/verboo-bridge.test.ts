@@ -147,6 +147,15 @@ describe('verboo-bridge — API shape', () => {
     ])
   })
 
+  it('passes the optional CLI login flowId to the Tauri command', async () => {
+    expect(api).toBeDefined()
+    const auth = api as { startCliLogin: (flowId?: number) => Promise<unknown> }
+
+    await auth.startCliLogin(41)
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('start_cli_login', { flowId: 41 })
+  })
+
   it('exposes every models/profile/feedback method', () => {
     expect(api).toBeDefined()
     const required = [

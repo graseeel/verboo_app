@@ -2106,7 +2106,7 @@ export function App() {
     }
   }
 
-  async function startCliLogin() {
+  async function startCliLogin(flowId?: number) {
     // A1: non-blocking — the Rust command spawns the CLI and returns in
     // <1s (suite Rust A1: 30s fake CLI, command returns immediately).
     // result.ok now means "spawned", NOT "authenticated", and
@@ -2116,7 +2116,7 @@ export function App() {
     // failure, and never unlock. Progress arrives via the login:event
     // channel (LoginScreen), and completion triggers the real
     // re-validation via onLoginComplete below.
-    return window.verboo.startCliLogin()
+    return window.verboo.startCliLogin(flowId)
   }
 
   async function logout() {

@@ -117,8 +117,9 @@ fn get_config(
 async fn start_cli_login(
     app: tauri::AppHandle,
     cli: tauri::State<'_, CliService>,
+    flow_id: Option<u64>,
 ) -> Result<LoginResult, String> {
-    cli.start_cli_login_nonblocking(app)
+    cli.start_cli_login_nonblocking(app, flow_id)
 }
 
 #[tauri::command]

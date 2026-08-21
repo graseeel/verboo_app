@@ -151,7 +151,7 @@ const api = {
   getConfig: () => invoke<AppConfig>('get_config'),
 
   // ── Auth ────────────────────────────────────────────────────
-  startCliLogin: () => invoke<LoginResult>('start_cli_login'),
+  startCliLogin: (flowId?: number) => invoke<LoginResult>('start_cli_login', { flowId }),
   // Windows Git onboarding (issue #71, contract contrato-71-gitbash):
   // detection never installs anything and returns in <1s; off-Windows
   // gitAvailable is always true. installGitWindows runs winget with a
