@@ -261,8 +261,7 @@ describe('ProviderAccountList', () => {
   // L1 — UX do login no caminho novo (providerAccountsV1): o card do grupo
   // precisa mostrar o estágio + Cancelar durante o fluxo, e o botão
   // Adicionar conta precisa travar para evitar dois providerLoginStart
-  // simultâneos. O App.tsx já mantém connectingProvider/providerLoginStage
-  // e o invoke provider_login_cancel já existe no caminho legacy.
+  // simultâneos.
   function codexGroup(): HTMLElement {
     return screen.getByRole('heading', { name: 'Codex' }).closest('.provider-account-group') as HTMLElement
   }
@@ -288,7 +287,6 @@ describe('ProviderAccountList', () => {
     const stageBox = stage.closest('.provider-login-stage')
     expect(stageBox).not.toBeNull()
     expect(stageBox?.querySelector('.spin-icon')).toBeTruthy()
-    // Cancelar é botão secundário padrão, clicável, mesma linha.
     const cancel = within(codexGroup()).getByRole('button', { name: /^cancel$|^cancelar$/i })
     expect(cancel).toHaveProperty('disabled', false)
     fireEvent.click(cancel)
@@ -318,8 +316,6 @@ describe('ProviderAccountList', () => {
     expect(document.querySelector('.provider-account-card [data-testid="provider-icon-codex"]')).toBeTruthy()
   })
 
-  // L2 (2) — uma única linha de ações: a ação primária (Usar aqui / Em uso)
-  // e o kebab alinhados verticalmente na MESMA row.
   it('L2: primary action and kebab share one aligned actions row', () => {
     renderList({})
     const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
@@ -379,9 +375,7 @@ describe('ProviderAccountList', () => {
     const actions = card.querySelector('.provider-account-actions') as HTMLElement
     expect(usage).not.toBeNull()
     expect(actions).not.toBeNull()
-    // Actions vêm DEPOIS (abaixo) das janelas de uso.
     expect(usage.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // Ação primeiro (à esquerda), kebab depois (à direita), mesma linha.
     const useButton = screen.getByRole('button', { name: 'Use here' })
     const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
     expect(actions.firstElementChild).toBe(useButton)

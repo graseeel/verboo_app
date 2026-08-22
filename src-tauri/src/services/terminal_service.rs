@@ -75,7 +75,6 @@ impl TerminalService {
             cmd.env(k, v);
         }
 
-        // Track spawn time for startup sanitization.
         let sanitize_until = Instant::now() + std::time::Duration::from_secs(2);
 
         // Clone the reader from the master BEFORE spawning.
@@ -100,7 +99,6 @@ impl TerminalService {
         let master_arc = Arc::new(Mutex::new(Some(master)));
         let writer_arc = Arc::new(Mutex::new(Some(writer)));
 
-        // Spawn reader thread.
         let session_id = id.clone();
         let app_for_reader = app.clone();
         let sessions_for_exit = self.sessions.clone();
@@ -148,7 +146,6 @@ impl TerminalService {
                     session_id: id_for_exit.clone(),
                 },
             );
-            // Mark session not running.
             if let Ok(mut sessions) = sessions_for_exit.lock() {
                 if let Some(active) = sessions.get_mut(&id_for_exit) {
                     active.session.running = false;
@@ -343,7 +340,7 @@ fn resolve_cwd(requested: &str) -> PathBuf {
     PathBuf::from("/")
 }
 
-// ── Startup sanitization (mirrors Electron's localTerminalService helpers) ──
+// Startup sanitization (mirrors Electron's localTerminalService helpers)
 
 fn startup_terminal_data(
     startup_buffer: &mut String,

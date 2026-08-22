@@ -92,7 +92,6 @@ impl ResearchSubagentRunner {
             })
             .collect();
 
-        // Spawn one worker thread per subagent and collect their JoinHandles.
         let mut handles = Vec::with_capacity(workers.len());
         for (req, child_req) in workers {
             let app = app.clone();
@@ -106,7 +105,7 @@ impl ResearchSubagentRunner {
             handles.push(handle);
         }
 
-        // Await all workers. Use tokio::task::spawn_blocking so this is async.
+        // Await all workers on a blocking thread so the async runtime is not blocked.
         let results = tokio::task::spawn_blocking(move || {
             let mut results = Vec::with_capacity(handles.len());
             for handle in handles {
@@ -202,7 +201,6 @@ fn run_one(
         ),
     );
 
-    // Build CLI spawn.
     let prompt = build_prompt(&child_turn, false);
     let args = vec![
         "--print".to_string(),
@@ -276,7 +274,6 @@ fn run_one(
     let stderr_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf_for_thread = stderr_buf.clone();
 
-    // Drain stderr in a background thread.
     if let Some(stderr) = stderr {
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
@@ -322,7 +319,6 @@ fn run_one(
     let mut read_error: Option<String> = None;
 
     loop {
-        // Timeout check.
         if start.elapsed().as_millis() as u64 >= RESEARCH_SUBAGENT_TIMEOUT_MS {
             if let Ok(mut c) = child_handle.lock() {
                 let _ = crate::services::child_signal::interrupt_child(&mut c);
@@ -435,7 +431,6 @@ fn run_one(
         return finish_failed(&app, run_id, &request, &error, sources);
     }
 
-    // Wait for exit code.
     let exit_code = child_handle
         .lock()
         .ok()
@@ -487,7 +482,6 @@ fn run_one(
         ),
     );
 
-    // Remove from active runs.
     if let Ok(mut active) = active_runs.lock() {
         if let Some(children) = active.get_mut(run_id) {
             children.retain(|c| {

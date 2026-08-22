@@ -187,7 +187,7 @@ test('find: the injected func is self-contained — selectors derive via seriali
   }
 })
 
-// ── ROUND 9, blade 2: null page result fails honestly on every tool ──
+// ROUND 9, blade 2: null page result fails honestly on every tool.
 
 test('ROUND 9 guard: type/click/find report an honest error (with tab identity) when the page result is null', async () => {
   // The func crashing in-page delivers [{ result: null }] — the round-9
@@ -221,7 +221,7 @@ test('ROUND 9 guard: type/click/find report an honest error (with tab identity) 
   }
 })
 
-// ── SELECT: type on a <select> resolves the option (text OR value) ──
+// SELECT: type on a <select> resolves the option (text OR value).
 // Field evidence: clicking a synthetic <option> does not commit in Chrome.
 // The fix lives INSIDE typeInPage (self-contained — serialization lesson).
 

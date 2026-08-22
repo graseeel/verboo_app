@@ -66,16 +66,11 @@ export function usePluginIcon(pluginId: string, enabled: boolean): UsePluginIcon
 
   useEffect(() => {
     if (!enabled) {
-      // Not enabled — don't fetch, don't cache. If enabled flips true later,
-      // this effect re-runs (enabled is in the dep array) and fetches.
       setIconUrl(null)
       setLoading(false)
       return
     }
 
-    // Cache hit — no fetch needed. This is only reached when the backend
-    // previously responded (string or null). A not-ready state never
-    // cached, so it won't short-circuit here.
     if (iconCache.has(pluginId)) {
       setIconUrl(iconCache.get(pluginId) ?? null)
       setLoading(false)

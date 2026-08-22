@@ -189,7 +189,6 @@ function produceCommandEvidence(delegate: MatrixDelegate): void {
   }
 }
 
-// ─── Row 1 ───────────────────────────────────────────────────────────
 describe('T2 row 1 — complete WITH evidence: task done, batch active, advance with boundary', () => {
   it('stamps done, activates i+1 with startedAt, resets the counters, and the batch never pauses', async () => {
     const goal = makeBatchGoal('Task one', 'Task two')
@@ -212,7 +211,6 @@ describe('T2 row 1 — complete WITH evidence: task done, batch active, advance 
   })
 })
 
-// ─── Row 2 ───────────────────────────────────────────────────────────
 describe('T2 row 2 — complete WITHOUT evidence: no-progress, same task (T1 non-regression)', () => {
   it('the task stays active and running, the deterministic fingerprint feeds the ring, and real work later completes it', async () => {
     const goal = makeBatchGoal('Only task')
@@ -238,7 +236,6 @@ describe('T2 row 2 — complete WITHOUT evidence: no-progress, same task (T1 non
   })
 })
 
-// ─── Row 3 ───────────────────────────────────────────────────────────
 describe('T2 row 3 — continue: task running, next turn of the SAME task', () => {
   it('continue re-anchors on the same task and never moves the pointer', async () => {
     const goal = makeBatchGoal('Build it', 'Test it')
@@ -259,7 +256,6 @@ describe('T2 row 3 — continue: task running, next turn of the SAME task', () =
   })
 })
 
-// ─── Row 4 ───────────────────────────────────────────────────────────
 describe('T2 row 4 — pause needsUser: task blocked, batch paused, waits for the user', () => {
   it('blocks only the current task, pauses the batch, and resume restores blocked → active and finishes', async () => {
     const goal = makeBatchGoal('Needs input', 'Second task')
@@ -290,12 +286,10 @@ describe('T2 row 4 — pause needsUser: task blocked, batch paused, waits for th
         delegate.goalHistory.indexOf(state) > 0,
     )
     expect(restored).toBeDefined()
-    // …and the batch ran to completion.
     expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['done', 'done'])
   })
 })
 
-// ─── D-D: pause taskImpossible — task BLOCKED, never FAILED ─────────
 describe('D-D — pause taskImpossible: task blocked (resumable), batch paused, K untouched', () => {
   const TASK_IMPOSSIBLE = makeEval({
     decision: 'pause',
@@ -344,7 +338,6 @@ describe('D-D — pause taskImpossible: task blocked (resumable), batch paused, 
       state => state.tasks?.[0].status === 'blocked' && (state.taskIndex ?? 0) > 0,
     )
     expect(advancedWhileBlocked).toBe(false)
-    // …and the batch ran to completion.
     expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['done', 'done'])
   })
 
@@ -368,7 +361,6 @@ describe('D-D — pause taskImpossible: task blocked (resumable), batch paused, 
   })
 })
 
-// ─── Row 5 (embedded acceptance: unsafe stops the WHOLE batch) ───────
 describe('T2 row 5 — pause unsafe: task failed, batch PAUSED, the whole batch stops (K bypass)', () => {
   it('stops everything on the FIRST occurrence — safety is not per-task', async () => {
     const goal = makeBatchGoal('Task one', 'Task two', 'Task three')
@@ -390,7 +382,6 @@ describe('T2 row 5 — pause unsafe: task failed, batch PAUSED, the whole batch 
   })
 })
 
-// ─── Row 6 ───────────────────────────────────────────────────────────
 describe('T2 row 6 — infraError BELOW max: task running, batch active, retry (existing behavior)', () => {
   it('a transient evaluator failure retries without ever failing the task', async () => {
     const goal = makeBatchGoal('Only task')
@@ -415,7 +406,6 @@ describe('T2 row 6 — infraError BELOW max: task running, batch active, retry (
   })
 })
 
-// ─── Row 7 ───────────────────────────────────────────────────────────
 describe('T2 row 7 — infraError AT max: task failed, batch paused (existing behavior, K bypass)', () => {
   it('pauses the batch at MAX_EVALUATION_ERRORS and marks the task failed', async () => {
     const goal = makeBatchGoal('Only task', 'Never reached')
@@ -434,7 +424,6 @@ describe('T2 row 7 — infraError AT max: task failed, batch paused (existing be
   }, 20_000) // real backoff sleeps (1s + 2s)
 })
 
-// ─── Row 8 (embedded acceptance: loop kills the task, batch advances) ─
 describe('T2 row 8 — LOOP detected: task failed, batch STAYS ACTIVE, advance to i+1', () => {
   it('one stuck task does not drag the batch: failed alone, the rest completes', async () => {
     const goal = makeBatchGoal('Stuck task', 'Fine task', 'Last task')
@@ -477,7 +466,6 @@ describe('T2 row 8 — LOOP detected: task failed, batch STAYS ACTIVE, advance t
   })
 })
 
-// ─── Row 9 (embedded acceptance: the K guard) ────────────────────────
 describe('T2 row 9 — K consecutive failures: batch paused with batchStagnation', () => {
   it('two consecutive loop failures pause the batch BEFORE starting task 3 — pause, not cancel', async () => {
     expect(BATCH_STAGNATION_K).toBe(2) // the documented constant
@@ -541,7 +529,6 @@ describe('T2 row 9 — K consecutive failures: batch paused with batchStagnation
   })
 })
 
-// ─── Row 10 ──────────────────────────────────────────────────────────
 describe('T2 row 10 — user pauses: frozen, resumable', () => {
   it('the batch freezes mid-cycle with the task untouched, then resumes to completion', async () => {
     const goal = makeBatchGoal('Long task')
@@ -570,7 +557,6 @@ describe('T2 row 10 — user pauses: frozen, resumable', () => {
   })
 })
 
-// ─── Row 11 ──────────────────────────────────────────────────────────
 describe('T2 row 11 — user cancels: batch cancelled, end', () => {
   it('cancel stops the cycle for good — no completion, no task stamps', async () => {
     const goal = makeBatchGoal('Doomed task', 'Never reached')
@@ -591,7 +577,6 @@ describe('T2 row 11 — user cancels: batch cancelled, end', () => {
   })
 })
 
-// ─── Row 12 (embedded acceptance: skip never feeds K) ────────────────
 describe('T2 row 12 — user SKIPS a blocked task: skipped, batch active, advance, K untouched', () => {
   it('skipBlockedGoalTask: blocked → skipped, batch reactivated, next task activated', async () => {
     const goal = makeBatchGoal('Blocked task', 'Next task')
@@ -745,7 +730,6 @@ describe('T2 row 12 — user SKIPS a blocked task: skipped, batch active, advanc
   })
 })
 
-// ─── Row 13 ──────────────────────────────────────────────────────────
 describe('T2 row 13 — LAST task reaches terminal state: batch completed', () => {
   it('a loop on the last task completes the batch with the failure recorded — and BEATS the K guard', async () => {
     const goal = makeBatchGoal('Stuck one', 'Stuck two')

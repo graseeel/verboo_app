@@ -77,7 +77,6 @@ impl ModelService {
             }
         }
 
-        // Try API key
         let mut live_error: Option<String> = None;
 
         if let Some(key) = api_key {

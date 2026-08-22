@@ -94,7 +94,6 @@ export async function execute(toolCall, ctx) {
     return { ok: false, error: policy.reason, policy, toolCall: normalizedToolCall, policyHost }
   }
 
-  // Dispatch to the tool implementation.
   try {
     await ctx.onExecuting?.(normalizedToolCall)
     const result = await dispatch(normalizedToolCall, ctx)

@@ -1191,7 +1191,7 @@ export function App() {
   }, [])
 
   // F4: provider login progress (provider-login:event, shape verified in
-  // provider_login_pty.rs:45-58). The CLI owns the browser flow; the renderer
+  // provider_login_pty.rs). The CLI owns the browser flow; the renderer
   // reflects outcomes — connected refreshes the catalog + bridge universe,
   // error surfaces the message (D1 rule: every failure visible).
   useEffect(() => {
@@ -1598,7 +1598,6 @@ export function App() {
   const selectedContextWindow = selectedModelInfo?.contextWindow
     ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
 
-  // ── Reasoning effort ──────────────────────────────────────────
   const selectedModelReasoning = selectedModelInfo ? getModelReasoning(selectedModelInfo) : undefined
   const selectedEffortLevels = selectedModelReasoning?.effortLevels ?? []
   /** Wire value: only set when the user has a saved, still-valid preference
@@ -1660,8 +1659,8 @@ export function App() {
         void interruptForUser(targetConversationId)
         // User ESC×2 is deliberate: dismiss the question wizard entirely
         // (not just minimize). The auto-interrupt from presentTurnQuestions
-        // (line ~2251) does NOT go through this handler — that path must
-        // keep the wizard open for AskUserQuestion flow.
+        // does NOT go through this handler — that path must keep the wizard
+        // open for AskUserQuestion flow.
         clearQuestionPromptsForConversation(targetConversationId)
         return
       }
@@ -2569,7 +2568,7 @@ export function App() {
           // (same segment the model's own text would use); the turn header
           // + "Trabalhou" sit above it as a normal response. No second block,
           // no colored band. finishAssistantMessage closes the segment when
-          // the interrupt's error/done event lands (:2574 / :2771).
+          // the interrupt's error/done event lands.
           appendAssistantText(conversationId, event.turnId, quotaMessage)
           void interruptForUser(conversationId)
           setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
@@ -3271,14 +3270,13 @@ export function App() {
       ? draftsForConversation(annotationDraftsRef.current, activeConversationId)
       : []
     if (!trimmed && pendingAnnotations.length === 0) return
-    if (sendMessageLock.current) return // already in flight
+    if (sendMessageLock.current) return
     sendMessageLock.current = true
     try {
     const conversationId = ensureActiveConversation()
     const selectedProvider = selectedModelInfo?.provider
     let turnAttachments = attachedFiles
 
-    // ── Vision fallback consent check ──
     const hasImages = turnAttachments.some(isVisualAttachment)
     const modelNeedsFallback = hasImages && !selectedModelInfo?.supportsVision
     if (modelNeedsFallback) {
@@ -3288,7 +3286,6 @@ export function App() {
         turnAttachments = turnAttachments.filter(file => !isVisualAttachment(file))
         filterAttachments(file => !isVisualAttachment(file))
       } else if (consent === 'ask') {
-        // Show consent modal — wait for user choice.
         const fbState: VisionFallbackState = await window.verboo.getVisionFallbackState()
         const choice = await new Promise<{ allowOnce: boolean } | { persist: VisionFallbackConsent }>(resolve => {
           visionFallbackResolveRef.current = resolve
@@ -3298,7 +3295,6 @@ export function App() {
         visionFallbackResolveRef.current = undefined
 
         if ('persist' in choice) {
-          // Persist the user's choice and apply it immediately.
           setUserSettings(current => {
             const next = { ...current, visionFallbackConsent: choice.persist }
             void window.verboo.updateUserSettings(next).catch(() => {})
@@ -3314,7 +3310,6 @@ export function App() {
       }
     }
 
-    // ── Video fallback consent check ──────────────────────────
     // The current truthful route sends sampled frames and a transcript made
     // locally from the audio. It never sends the original video file.
     const route: VideoUnderstandingRoute = 'sampledFramesWithTranscript'
@@ -3337,7 +3332,6 @@ export function App() {
     })
     if (videoSendBlocked) return
 
-    // ── OCR race gate ────────────────────────────────────────
     // Wait for pending OCR to finish (up to 15s) so images already in
     // the process don't go unread. Non-blocking for attachments that
     // haven't started OCR yet.
@@ -3352,7 +3346,6 @@ export function App() {
       ])
     }
 
-    // ── Skill approval gate ───────────────────────────────────
     if (selectedSkillsUnion.length) {
       const unapproved = await window.verboo.checkSkillApproval(selectedSkillsUnion)
       if (unapproved.length) {
@@ -3364,12 +3357,10 @@ export function App() {
         skillApprovalResolveRef.current = undefined
 
         if ('cancel' in choice) {
-          // Remove the unapproved skills from the selection and warn the user.
           const unapprovedIds = new Set(unapproved.map(s => s.id))
           setTokenSkills(current => current.filter(s => !unapprovedIds.has(s.id)))
           toast(t('skillApproval.skippedWarning'))
         } else if ('trust' in choice) {
-          // Persist trust and keep the skill for this turn.
           void window.verboo.approveSkill(choice.trust).catch(() => {})
           // Keep all selected skills — the backend already approved this one.
         }
@@ -3685,16 +3676,14 @@ export function App() {
   // resumes with the new input as context. The model sees the interjection
   // in its history and can pivot or continue as it sees fit.
   async function interjectMessage(queueItemId: string) {
-    if (interjectDeferred.current) return // already interjecting
+    if (interjectDeferred.current) return
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
     const conversationId = item.conversationId
 
-    // Find the active turnId for this conversation
     const activeTurnEntry = Object.entries(turnConversationIds.current).find(([, convId]) => convId === conversationId)
     const currentTurnId = activeTurnEntry?.[0]
 
-    // Remove from queue
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
     updateConversation(conversationId, conversation => ({
       ...conversation,
@@ -3702,7 +3691,6 @@ export function App() {
     }))
 
     if (!currentTurnId) {
-      // No active turn for this conversation — just send normally
       appendDowngradeActivity(conversationId)
       await runTurn(item)
       return
@@ -3724,7 +3712,6 @@ export function App() {
     }
     await interruptedTurn
 
-    // Now send the interjected message with the conversation's sessionId
     appendDowngradeActivity(conversationId)
     await runTurn(item)
   }
@@ -3743,7 +3730,6 @@ export function App() {
       const target = idx + direction
       if (target < 0 || target >= current.length) return current
       const next = [...current]
-      // Swap elements in the queue array.
       ;[next[idx], next[target]] = [next[target], next[idx]]
       return next
     })
@@ -3760,7 +3746,6 @@ export function App() {
     updateConversation(conversationId, conversation => {
       const idx = conversation.items.findIndex(i => i.id === itemId)
       if (idx === -1) return conversation
-      // Update the user message text.
       const items = conversation.items.map(i =>
         i.id === itemId ? { ...i, text: newText } : i
       )
@@ -3770,7 +3755,6 @@ export function App() {
       const kept = [...items.slice(0, idx + 1), ...items.slice(removeEnd)]
       return { ...conversation, items: kept, updatedAt: Date.now() }
     })
-    // Queue a new turn with the edited text.
     const queued = createQueuedFollowUp(conversationId, newText)
     enqueueFollowUp(queued)
   }
@@ -4544,10 +4528,10 @@ export function App() {
         // G-C8-FIX item 4: the transcript sent to the evaluator must
         // be the OWNER's transcript, not the active conversation's.
         // conversationItemsRef.current tracks the active conversation
-        // (App.tsx:587, updated at :902) — using it here would feed
-        // the evaluator the wrong conversation when the user has
-        // switched away. We resolve the owner's items from the store
-        // ref directly. (See the parecer in the cycle report for why
+        // (updated at every store write) — using it here would feed the
+        // evaluator the wrong conversation when the user has switched
+        // away. We resolve the owner's items from the store ref directly.
+        // (See the parecer in the cycle report for why
         // this is the right call.)
         const ownerConversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
         const conversationItems = ownerConversation?.items ?? []

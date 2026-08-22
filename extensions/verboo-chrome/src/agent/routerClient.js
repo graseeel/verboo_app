@@ -350,7 +350,6 @@ function parseJsonToolCalls(body, dropped = []) {
   return calls
 }
 
-// ── Family normalization (FRENTE-C) ────────────────────────────────
 
 // Conservative alias map for tool names other tools/models may emit for
 // the SAME operation. Only unambiguous names are mapped — anything

@@ -536,7 +536,6 @@
   100%    { transform: translateX(0); }
 }
 
-/* In-progress row: shimmer label + escape hatch. */
 .login-progress {
   display: flex;
   align-items: center;

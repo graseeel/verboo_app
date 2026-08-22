@@ -32,7 +32,6 @@ export async function typeText(tool, ctx = {}) {
   const tab = await resolveTargetTab(ctx.activeTabId)
   if (!tab?.id) throw new Error('type: no active tab')
 
-  // Agent presence: frame + cursor at target, brief delay, then type.
   await preparePresenceForAction(tab.id, selector)
 
   const [result] = await chrome.scripting.executeScript({

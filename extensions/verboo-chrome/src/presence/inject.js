@@ -14,7 +14,6 @@
  * Multi-user: zero hardcoded path/user/token.
  */
 
-/** @type {string} */
 export const VERBOO_TAB_GROUP_TITLE = 'Verboo'
 
 /** chrome.tabGroups color enum value */
@@ -46,7 +45,6 @@ function getPresenceSessionStorage() {
   return globalThis.chrome?.storage?.session
 }
 
-/** @returns {Promise<void>} */
 async function restorePresenceGeneration() {
   const storage = getPresenceSessionStorage()
   if (typeof storage?.get !== 'function') return
@@ -61,7 +59,6 @@ async function restorePresenceGeneration() {
   }
 }
 
-/** @returns {Promise<void>} */
 async function restoreTouchedPresenceTabs() {
   const storage = getPresenceSessionStorage()
   if (typeof storage?.get !== 'function') return
@@ -87,7 +84,6 @@ async function restoreTouchedPresenceTabs() {
   }
 }
 
-/** @returns {Promise<void>} */
 function ensurePresenceGenerationReady() {
   if (!presenceGenerationReady) {
     presenceGenerationReady = Promise.all([
@@ -137,10 +133,6 @@ function persistTouchedPresenceTabs() {
   return presenceTouchedTabGenerationsWrite
 }
 
-/**
- * @param {number} tabId
- * @returns {Promise<number>}
- */
 async function rememberPresenceTab(tabId) {
   touchedPresenceTabIds.add(tabId)
   touchedPresenceTabGenerations.set(tabId, presenceGeneration)
@@ -148,7 +140,6 @@ async function rememberPresenceTab(tabId) {
   return presenceGeneration
 }
 
-/** @returns {Promise<number>} */
 async function advancePresenceGeneration() {
   presenceGeneration += 1
   const generation = presenceGeneration
@@ -181,7 +172,6 @@ export function randomBetween(min, max) {
   return Math.floor(Math.random() * (hi - lo + 1)) + lo
 }
 
-// ── Tab group ──────────────────────────────────────────────────
 
 /**
  * Disable the manifest's window-wide panel fallback. Individual tabs opt in
@@ -211,25 +201,11 @@ export function openVerbooPanel(tabId) {
   return Promise.all([configurePanel, openPanel]).then(() => {})
 }
 
-/**
- * Bind the Verboo panel to one tab, open it from the toolbar gesture, and put
- * the controlled tab in the Verboo group.
- *
- * @param {number} tabId
- * @returns {Promise<{ groupId: number }>}
- */
 export async function openVerbooWorkspace(tabId) {
   await openVerbooPanel(tabId)
   return ensureVerbooTabGroup(tabId)
 }
 
-/**
- * Ensure `tabId` is in a purple tab group titled "Verboo".
- * Reuses an existing Verboo group in the same window when present.
- *
- * @param {number} tabId
- * @returns {Promise<{ groupId: number }>}
- */
 export async function ensureVerbooTabGroup(tabId) {
   if (typeof tabId !== 'number') {
     throw new Error('ensureVerbooTabGroup: missing tabId')
@@ -248,7 +224,6 @@ export async function ensureVerbooTabGroup(tabId) {
   const tab = await chrome.tabs.get(tabId)
   const windowId = tab.windowId
 
-  // Prefer an existing Verboo group in this window.
   const existing = await chrome.tabGroups.query({
     title: VERBOO_TAB_GROUP_TITLE,
     windowId,
@@ -310,7 +285,6 @@ export async function ungroupVerbooTab(tabId) {
   }
 }
 
-// ── Viewport frame ─────────────────────────────────────────────
 
 /**
  * Inject (or re-assert) the purple presence frame on the page.
@@ -357,7 +331,6 @@ export async function hidePresenceFrame(tabId, maxGeneration) {
   })
 }
 
-// ── Agent cursor ───────────────────────────────────────────────
 
 /**
  * Show / move the agent cursor. Accepts viewport coords or a selector
@@ -654,13 +627,8 @@ async function resolvePresenceDelayMs(tabId) {
   return randomBetween(PRESENCE_ACTION_DELAY_MS_MIN, PRESENCE_ACTION_DELAY_MS_MAX)
 }
 
-// ── In-page injectors (serialized into the page via executeScript) ──
+// Functions below are serialized into the page via executeScript — keep them self-contained.
 
-/**
- * @param {string} frameId
- * @param {string} styleId
- * @param {number} generation
- */
 function injectPresenceFrameInPage(frameId, styleId, generation) {
   const appliedGeneration = Number.isFinite(generation) ? generation : 0
   const generationText = String(appliedGeneration)
@@ -1118,11 +1086,6 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs, generation) 
   }
 }
 
-/**
- * @param {string} cursorId
- * @param {string} rippleId
- * @param {number} generation
- */
 function pulseAgentCursorInPage(cursorId, rippleId, generation) {
   const appliedGeneration = Number.isFinite(generation) ? generation : 0
   const generationText = String(appliedGeneration)
@@ -1171,10 +1134,6 @@ function pulseAgentCursorInPage(cursorId, rippleId, generation) {
   }, 500)
 }
 
-/**
- * @param {string[]} ids
- * @param {number} [maxGeneration]
- */
 function removeByIdsInPage(ids, maxGeneration) {
   const threshold = Number(maxGeneration)
   const removedIds = []
@@ -1194,10 +1153,6 @@ function removeByIdsInPage(ids, maxGeneration) {
   return removedIds
 }
 
-/**
- * @param {number} ms
- * @returns {Promise<void>}
- */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

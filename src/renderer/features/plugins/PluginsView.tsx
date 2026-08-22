@@ -211,10 +211,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
     )
   }, [available, installedIds, normalizedQuery])
 
-  // Group available plugins by category from marketplace manifests. Plugins
-  // without a category go to "Outros" (always last). Sections ordered by
-  // count desc. The marketplace source stays visible as discrete meta on
-  // each line (not as the group key anymore).
+  // Marketplace source stays visible as per-line meta; grouping key is the manifest category.
   const availableGroups = useMemo(() => {
     const groups = new Map<string, AvailablePlugin[]>()
     const uncategorized: AvailablePlugin[] = []
@@ -241,10 +238,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
     return sorted
   }, [filteredAvailable, manifests, t])
 
-  // Flat list of all skills from installed plugins, sorted alphabetically.
-  // Each skill carries its source plugin name for the meta line. Filtered by
-  // the search query (name/description). Used by the Skills tab (flat, not
-  // grouped by plugin — Codex parity).
+  // Skills tab renders this flat (Codex parity); each row carries its source plugin name.
   const flatSkills = useMemo(() => {
     const list: Array<{ skill: PluginSkill; pluginName: string }> = []
     for (const plugin of installed) {
@@ -368,7 +362,6 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
   const showSkeletons = loading === 'loading'
   const showError = loading === 'error' && error
 
-  // ── Detail view branch ────────────────────────────────────────────
   if (selectedPlugin) {
     const detailId = selectedPlugin.kind === 'installed' ? selectedPlugin.plugin.id : selectedPlugin.plugin.pluginId
     return (
@@ -478,7 +471,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
         </div>
       )}
 
-      {/* Segmented control: Plugins | Habilidades. Codex-style pills. */}
+      {/* Segmented control: Plugins | Habilidades. */}
       <div className="plugins-tabs" role="tablist">
         <button
           type="button"
@@ -500,15 +493,10 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
         </button>
       </div>
 
-      {/* Sentinel: 1px spacer rendered immediately before the sticky search
-          bar. The IntersectionObserver (see state above) watches this node;
-          when it scrolls out of view, the search bar is effectively stuck at
-          top:0 and we paint the opaque ::before/::after overlays. Without
-          this, the overlays would always be visible and cover the tab bar. */}
+      {/* 1px sentinel watched by the IntersectionObserver above — drives is-stuck. */}
       <div ref={stickySentinelRef} className="plugins-sticky-sentinel" aria-hidden="true" style={{ height: '1px' }} />
 
-      {/* Sticky search — stays fixed at top while list scrolls.
-          Placeholder changes based on active tab. */}
+      {/* Sticky search bar; placeholder follows the active tab. */}
       <div className={`plugins-search${isStuck ? ' is-stuck' : ''}`}>
         <Search size={15} className="plugins-search-icon" />
         <input
@@ -519,15 +507,14 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
         />
       </div>
 
-      {/* ── Plugins tab ──────────────────────────────────────────────── */}
+      {/* Plugins tab */}
       {activeTab === 'plugins' && (
       <div className="plugins-tab-content">
       <section className="plugins-official-section">
         <p className="plugins-section-label">{t('plugins.chrome.section')}</p>
         <OfficialChromeIntegrationCard onManage={onManageChromeIntegration} />
       </section>
-      {/* Installed icon-only strip — 40px monograms, no names.
-          Gear icon opens marketplace modal (replaces big header button). */}
+      {/* Installed icon-only strip; gear opens the marketplace modal. */}
       {!showSkeletons && installed.length > 0 && (
         <div className="plugins-installed-section">
           <div className="plugins-installed-header">
@@ -575,7 +562,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
         </>
       ) : (
         <>
-          {/* ── Installed lines ──────────────────────────────────── */}
+          {/* Installed lines */}
           {filteredInstalled.length > 0 && (
             <>
               <p className="plugins-section-label">
@@ -600,7 +587,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
             </>
           )}
 
-          {/* ── Available lines (grouped by marketplace) ─────────── */}
+          {/* Available lines, grouped by marketplace */}
           {availableLoading ? (
             <>
               <p className="plugins-section-label">{t('plugins.featured')}</p>
@@ -676,7 +663,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
       </div>
       )}
 
-      {/* ── Skills tab — flat list, alphabetical, cap 6 + textual expander */}
+      {/* Skills tab */}
       {activeTab === 'skills' && (
       <div className="plugins-tab-content">
         {skillsLoading ? (

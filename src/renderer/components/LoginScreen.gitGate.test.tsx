@@ -111,7 +111,6 @@ describe('Issue #71: Windows Git onboarding gate (contrato-71-gitbash)', () => {
     expect(screen.getByRole('button', { name: 'Manual instructions' })).toBeTruthy()
     // The CLI login was NEVER fired — the gate holds before the spawn.
     expect(props.onStartLogin).not.toHaveBeenCalled()
-    // And the button is back to idle, not stuck on a spinner.
     expect((screen.getByRole('button', { name: /Sign in with CLI/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -125,11 +124,9 @@ describe('Issue #71: Windows Git onboarding gate (contrato-71-gitbash)', () => {
     clickSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Install automatically' }))
 
-    // Progress state while winget runs.
     await screen.findByText('Installing Git for Windows… this can take a few minutes.')
     expect(installGitWindows).toHaveBeenCalledTimes(1)
 
-    // Success: the dialog closes and the CLI login starts automatically.
     await waitFor(() => expect(props.onStartLogin).toHaveBeenCalledTimes(1))
     await screen.findByText('Login started — waiting for the browser…')
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -162,10 +159,8 @@ describe('Issue #71: Windows Git onboarding gate (contrato-71-gitbash)', () => {
     expect(warning.textContent).toContain('Automatic installation did not finish.')
     expect(warning.textContent).toContain('certificate verification failed')
     expect(warning.textContent).not.toContain('early noise line')
-    // …and the login still never fired.
     expect(props.onStartLogin).not.toHaveBeenCalled()
 
-    // The manual path is offered from the failure state.
     fireEvent.click(screen.getByRole('button', { name: 'Manual instructions' }))
     const link = (await screen.findByRole('link', { name: 'git-scm.com/downloads/win' })) as HTMLAnchorElement
     expect(link.href).toBe('https://git-scm.com/downloads/win')
@@ -226,7 +221,6 @@ describe('Issue #71: Windows Git onboarding gate (contrato-71-gitbash)', () => {
     const dialog = await screen.findByRole('dialog')
     expect(dialog.textContent).toContain('Git is required to sign in on Windows')
     expect(screen.getByRole('button', { name: 'Install automatically' })).toBeTruthy()
-    // The raw cause NEVER paints as the error banner.
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/Verboo CLI requires Git for Windows/)).toBeNull()
   })

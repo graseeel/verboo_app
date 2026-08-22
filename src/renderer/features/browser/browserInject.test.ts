@@ -235,7 +235,6 @@ describe('browser injected layer', () => {
     expect(host?.isConnected).toBe(true)
   })
 
-  // ── New tests: transport neutrality, 8192 cap, isTrusted, token closure ──
 
   it('silently skips installation when the native transport is absent', () => {
     delete (globalThis as Record<string, unknown>).__VERBOO_NATIVE_TRANSPORT__
@@ -282,7 +281,6 @@ describe('browser injected layer', () => {
     } as unknown as CanvasRenderingContext2D)
     window.eval(source)
 
-    // globalThis.__VERBOO_NATIVE_TRANSPORT__ must be deleted
     expect((globalThis as Record<string, unknown>).__VERBOO_NATIVE_TRANSPORT__).toBeUndefined()
 
     // tokens must not appear as any DOM attribute text
@@ -304,13 +302,11 @@ describe('browser injected layer', () => {
     }
     canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 100 + 9000, clientY: 100 }))
 
-    // Exactly one annotation-candidate should be created (at the 8192-point cap)
     const candidates = payloadsFrom(transport)
       .filter(m => (m as Record<string, unknown>).type === 'annotation-candidate')
     expect(candidates).toHaveLength(1)
     expect((candidates[0] as Record<string, unknown>).kind).toBe('pen')
 
-    // Verify source enforces the cap
     expect(source).toContain('8192')
   })
 
@@ -324,7 +320,6 @@ describe('browser injected layer', () => {
     canvas.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, button: 0, clientX: 120, clientY: 130 }))
     canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 160, clientY: 180 }))
 
-    // No annotation candidate should be created
     const candidates = payloadsFrom(transport)
       .filter(m => (m as Record<string, unknown>).type === 'annotation-candidate')
     expect(candidates).toHaveLength(0)
@@ -342,7 +337,6 @@ describe('browser injected layer', () => {
     const picker = root.getElementById('picker')!
     api.setMode('arrow')
 
-    // Synthetic events
     picker.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 140, clientY: 100 }))
     picker.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 140, clientY: 100 }))
 

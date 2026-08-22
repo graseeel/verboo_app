@@ -5,9 +5,6 @@
 // thin shell-out wrapper; these types describe what the Rust side returns
 // to the renderer over Tauri's invoke bridge.
 
-// ════════════════════════════════════════════════════════════════════
-// Enums
-// ════════════════════════════════════════════════════════════════════
 
 export type PluginScope = 'user' | 'project' | 'local'
 
@@ -15,9 +12,6 @@ export type MarketplaceSource = 'github' | 'url'
 
 export type MarketplaceTrust = 'official' | 'verified' | 'community'
 
-// ════════════════════════════════════════════════════════════════════
-// Plugin + AvailablePlugin
-// ════════════════════════════════════════════════════════════════════
 
 export interface PluginAuthor {
   name?: string
@@ -38,7 +32,7 @@ export interface Plugin {
   installedAt: string
   lastUpdated: string
   gitCommitSha?: string
-  // ── Optional fields only present in `--available` rows ──────────
+  // Optional fields — present only in `--available` rows.
   description?: string
   homepage?: string
   author?: PluginAuthor
@@ -63,9 +57,6 @@ export interface PluginAvailablePayload {
   available: AvailablePlugin[]
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PluginSource (discriminated union)
-// ════════════════════════════════════════════════════════════════════
 
 export type PluginSource =
   | { source: 'git-subdir'; url: string; path: string; ref: string; sha: string }
@@ -77,9 +68,6 @@ export type PluginSource =
   /** Relative path shorthand OR future unknown variant — FE renders a safe fallback */
   | string
 
-// ════════════════════════════════════════════════════════════════════
-// Marketplace
-// ════════════════════════════════════════════════════════════════════
 
 export interface Marketplace {
   /** Bare marketplace name (e.g. "claude-plugins-official") */
@@ -96,9 +84,6 @@ export interface Marketplace {
   trust?: MarketplaceTrust
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PluginValidateResult
-// ════════════════════════════════════════════════════════════════════
 
 export interface PluginValidateResult {
   /** true if CLI exited 0 AND output does not contain "✘" or "Validation failed" */
@@ -111,9 +96,7 @@ export interface PluginValidateResult {
   rawOutput?: string
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PluginError (9 variants — internally tagged via `kind`)
-// ════════════════════════════════════════════════════════════════════
+// PluginError union, internally tagged via `kind`.
 
 export type PluginError =
   | { kind: 'cli_not_found' }
@@ -184,9 +167,6 @@ export function isPluginError(value: unknown): value is PluginError {
   )
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Rich detail types (Wave 2 P5+ — Codex parity)
-// ════════════════════════════════════════════════════════════════════
 
 /**
  * A skill discovered in an installed plugin's `skills/` directory.
@@ -267,9 +247,6 @@ export const OFFICIAL_MARKETPLACES = ['verboo-plugins']
 /** Map keyed by `pluginId` (`name@marketplaceName`) → rich metadata. */
 export type MarketplaceManifestMap = Record<string, MarketplacePluginEntry>
 
-// ════════════════════════════════════════════════════════════════════
-// Plugin icon (P5.1 — on-demand fetch from homepage domain)
-// ════════════════════════════════════════════════════════════════════
 
 /**
  * Result of `pluginIcon`. `iconPath === null` means the FE should render

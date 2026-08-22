@@ -22,7 +22,6 @@ if (!window.matchMedia) {
 
 import { Composer } from './Composer'
 
-// ── Mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../i18n', () => ({
   useI18n: () => ({ t: (k: string) => k, language: 'en-US' as const }),
 }))
@@ -43,7 +42,6 @@ if (!('innerHeight' in window) || (window as any).innerHeight === 0) {
 
 beforeEach(() => cleanup())
 
-// ── Helpers ─────────────────────────────────────────────────────────────
 type ComposerProps = React.ComponentProps<typeof Composer>
 
 const baseSkill: SkillSummary = {
@@ -84,7 +82,6 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   return { ...render(<Composer {...props} />), props }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
 
 describe('t1 — @ palette inserts inline token', () => {
   it('selects skill from @ palette → inserts @<name> in text and palette closes', () => {
@@ -100,7 +97,6 @@ describe('t1 — @ palette inserts inline token', () => {
 
     fireEvent.click(option)
 
-    // onValueChange called with @brainstorming (replaceAtQueryWithToken)
     expect(onValueChange).toHaveBeenCalled()
     const newVal = onValueChange.mock.calls[0][0] as string
     expect(newVal).toMatch(/@brainstorming/)
@@ -120,7 +116,6 @@ describe('t2 — syncTokenSkills: / and @ tokens', () => {
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'use @brainstorming now' } })
 
-    // syncTokenSkills fires with the @-matched skill
     expect(onTokenSkillsChange).toHaveBeenCalled()
     const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
     expect(skills.some(s => s.name === 'brainstorming')).toBe(true)
@@ -138,7 +133,6 @@ describe('t2 — syncTokenSkills: / and @ tokens', () => {
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'use ' } })
 
-    // syncTokenSkills fires with empty array (no tokens left)
     expect(onTokenSkillsChange).toHaveBeenCalled()
     const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
     expect(skills).toHaveLength(0)
@@ -188,7 +182,6 @@ describe('t3 — dedupe /name + @name same skill → 1 entry', () => {
       onTokenSkillsChange,
     })
 
-    // Fire change with / and @ tokens for the same skill name
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: '/dedupe-skill and @dedupe-skill both' } })
 
@@ -314,7 +307,6 @@ describe('t5 — overlay: @token with PluginIcon', () => {
     expect(highlight).toBeTruthy()
     const tokenSpan = highlight!.querySelector('.composer-skill-token')
     expect(tokenSpan).toBeTruthy()
-    // /tokens never get at-glyph or PluginIcon
     expect(tokenSpan!.querySelector('.at-glyph')).toBeFalsy()
     expect(tokenSpan!.querySelector('.at-icon-deco')).toBeFalsy()
     expect(tokenSpan!.querySelector('[data-icon]')).toBeFalsy()
@@ -332,7 +324,6 @@ describe('t5 — overlay: @token with PluginIcon', () => {
     })
 
     const token = container.querySelector('.composer-skill-token')! as HTMLElement
-    // No inline metric-changing styles on the token itself
     expect(token.style.fontWeight).toBe('')
     expect(token.style.letterSpacing).toBe('')
     expect(token.style.fontStyle).toBe('')
@@ -345,14 +336,11 @@ describe('t5 — overlay: @token with PluginIcon', () => {
     })
 
     const token = container.querySelector('.composer-skill-token')!
-    // baseSkill has no pluginId → no .at-icon-deco rendered
     expect(token.querySelector('.at-icon-deco')).toBeFalsy()
-    // but the @ glyph is still there (preserves caret alignment)
     expect(token.querySelector('.at-glyph')).toBeTruthy()
   })
 })
 
-// ── Native drag overlay ─────────────────────────────────────────────────
 // Tauri relays window-level 'enter'/'over'/'leave'/'drop' as DOM CustomEvents.
 // 'over' repeats for every pointer move, so it must not feed a nesting
 // counter — otherwise one 'leave' can never undo N increments.

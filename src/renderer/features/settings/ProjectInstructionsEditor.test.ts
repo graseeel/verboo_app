@@ -32,7 +32,6 @@ describe('isInstructionDirty', () => {
     let draft = loaded
     expect(isInstructionDirty(loaded, draft)).toBe(false)
 
-    // First edit (single line).
     draft = draft + '\n- Use TypeScript'
     expect(isInstructionDirty(loaded, draft)).toBe(true)
 

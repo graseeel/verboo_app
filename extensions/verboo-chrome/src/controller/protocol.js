@@ -40,7 +40,6 @@
 
 import browserCatalog from './browserTools.js'
 
-// ── Message types ──────────────────────────────────────────
 
 export const MSG = Object.freeze({
   // Panel → Controller
@@ -106,7 +105,6 @@ export const MSG = Object.freeze({
   ROUTINE_SCHEDULE_CHANGED: 'routine:schedule_changed',
 })
 
-// ── Tool Call envelope ────────────────────────────────────
 
 /**
  * Tool catalog version. Bumped when a new tool kind is added or when the
@@ -128,8 +126,7 @@ export const MSG = Object.freeze({
  *   3. Implement handler in src/controller/tools/<name>.js
  *   4. Add dispatch case in src/controller/execute.js dispatch()
  *   5. Add unit test in src/controller/tools/<name>.test.js
- *   6. Bump CATALOG_VERSION, append a version-history line above
- *   7. Update PRIVACY.md + PERMISSIONS.md + STORE_LISTING.md if the tool
+ *   6. Update PRIVACY.md + PERMISSIONS.md + STORE_LISTING.md if the tool
  *      requires a new permission (AEGIS audit required for elevated tools)
  *
  * Multi-user: zero hardcoded path/user/token. accountId from session
@@ -175,7 +172,7 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
   BROWSER_TOOL_CATALOG.map((tool) => [tool.name, tool.risk]),
 ))
 
-// ── Policy Decision (mirrors evaluateToolPolicy.js output) ──
+// Mirrors evaluateToolPolicy.js output.
 
 /**
  * @typedef {Object} PolicyDecision
@@ -185,7 +182,6 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
  * @property {string} [hardBlockLabel]
  */
 
-// ── Tool Result ───────────────────────────────────────────
 
 /**
  * @typedef {Object} ToolResult
@@ -196,7 +192,6 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
  * @property {number} durationMs
  */
 
-// ── Agent Turn envelope ───────────────────────────────────
 
 /**
  * @typedef {Object} AgentTurnStart
@@ -308,7 +303,6 @@ function validateToolParams(definition, params) {
   return null
 }
 
-/** @param {unknown} value @param {string|undefined} type @param {string|undefined} itemType */
 function matchesJsonType(value, type, itemType) {
   if (!type) return true
   if (type === 'integer') return Number.isInteger(value)
@@ -319,7 +313,6 @@ function matchesJsonType(value, type, itemType) {
   return typeof value === type
 }
 
-/** @param {string} name @param {Record<string, unknown>} params */
 function serializeCanonicalInput(name, params) {
   const entries = Object.entries(params)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -327,7 +320,6 @@ function serializeCanonicalInput(name, params) {
   return [name, ...entries].join(' ')
 }
 
-/** @param {{name: string; params: Record<string, unknown>}} toolCall */
 function resolvePolicyHost(toolCall) {
   if (toolCall.name === 'navigate') return httpHost(toolCall.params.url)
   if (toolCall.name === 'tabs' && toolCall.params.action === 'new') {
@@ -336,7 +328,6 @@ function resolvePolicyHost(toolCall) {
   return ''
 }
 
-/** @param {unknown} value */
 function httpHost(value) {
   if (typeof value !== 'string') return ''
   try {

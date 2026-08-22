@@ -23,14 +23,8 @@ type PluginDetailViewProps = {
   error?: PluginError
 }
 
-// Plugin detail view — Codex-inspired rich detail:
-// 1. Breadcrumb (Plugins > name)
-// 2. Sticky header: monogram 56px + title + marketplace subtitle + badge + actions
-// 3. Hero band: violet mesh + glass chip (1st skill desc or plugin desc)
-// 4. Full description paragraph (manifest description if richer)
-// 5. Habilidades section (installed only, skill count gray)
-// 6. Informações table (Desenvolvedor/Categoria/Versão/Site — omit missing)
-// 7. Collapsible "Detalhes técnicos" (ID, path, dates)
+// Plugin detail view — Codex-inspired rich layout: breadcrumb, sticky header,
+// hero band, skills, info table, collapsible tech details.
 export function PluginDetailView({ target, manifests, loadIcons = true, onBack, onInstall, onUninstall, onToggle, onUsePlugin, busy, error }: PluginDetailViewProps) {
   const { t } = useI18n()
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -259,9 +253,7 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
         </div>
       </div>
 
-      {/* Hero band — Verboo violet mesh + glass chip. Mouse parallax
-          shifts mesh layers by different factors (disabled under
-          reduced-motion / touch). */}
+      {/* Hero band — Verboo violet mesh + glass chip. */}
       <div
         ref={heroRef}
         className={`plugin-detail-hero${resting ? ' is-resting' : ''}`}

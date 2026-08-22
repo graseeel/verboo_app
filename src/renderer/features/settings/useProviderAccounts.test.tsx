@@ -187,13 +187,11 @@ describe('useProviderAccounts', () => {
       ({ visible }) => useProviderAccounts({ visible, bridge: api }),
       { initialProps: { visible: true } },
     )
-    // First entry fetches capabilities + list and fills the cache.
     await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
     rerender({ visible: false })
     rerender({ visible: true })
-    // TTL still valid → no new spawns.
     await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
   })
@@ -227,17 +225,14 @@ describe('useProviderAccounts', () => {
       ({ visible }) => useProviderAccounts({ visible, bridge: api }),
       { initialProps: { visible: true } },
     )
-    // First entry fetches capabilities + list and fills the cache.
     await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
 
-    // Within the TTL a plain reload must serve the cache (no re-spawn).
     await act(async () => { await result.current.reloadAccounts() })
     expect(api.providerCapabilities).toHaveBeenCalledTimes(1)
     expect(api.providerAccountsList).toHaveBeenCalledTimes(1)
 
-    // The connected path invalidates, so the very next reload re-fetches.
     act(() => { result.current.invalidateDiscoveryCache() })
     await act(async () => { await result.current.reloadAccounts() })
     expect(api.providerCapabilities).toHaveBeenCalledTimes(2)

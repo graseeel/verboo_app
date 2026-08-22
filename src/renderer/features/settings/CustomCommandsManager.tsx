@@ -37,7 +37,6 @@ export function CustomCommandsManager({ commands, onSave }: CustomCommandsManage
   const [error, setError] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<number | null>(null)
 
-  // Clear the form whenever we leave edit mode.
   useEffect(() => {
     if (editing === null) {
       setDraft(emptyDraft())

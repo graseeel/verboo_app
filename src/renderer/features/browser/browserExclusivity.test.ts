@@ -6,7 +6,6 @@ const appSource = readFileSync(resolve(process.cwd(), 'src/renderer/App.tsx'), '
 
 describe('panel exclusivity (source analysis)', () => {
   it('handleToggleTerminal closes browser', () => {
-    // The toggle terminal handler should close review AND browser
     expect(appSource).toMatch(
       /handleToggleTerminal[\s\S]*browser\.close\(\)/
     )

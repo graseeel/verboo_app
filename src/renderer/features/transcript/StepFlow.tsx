@@ -24,8 +24,8 @@ export function StepFlow({ items, streaming = false, imageReading = false, hideF
     <div className="step-flow">
       {blocks.map(block => {
         // When expanded, the parent shows the recap as a standalone paragraph
-        // below the panel. Hide the matching text block here by id identity
-        // Match by id identity (never by text equality or blind position).
+        // below the panel. Hide the matching text block here — match by id
+        // identity, never by text equality or blind position.
         if (block.kind === 'text' && hideFinalTextId && block.id === hideFinalTextId) return null
         if (block.kind === 'text') {
           // data-annotation-segment liga o DOM ao segmentId (turnId:text:N) —

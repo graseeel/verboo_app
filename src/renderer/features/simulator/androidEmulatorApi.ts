@@ -55,7 +55,6 @@ export type AndroidEmulatorRequirements = {
   devices: AndroidDevice[]
 }
 
-// ── Setup onboarding (frozen §Steps de setup / §Eventos) ─────────────────
 export type AndroidEmulatorSetupMode = 'toolchain' | 'full'
 export type AndroidEmulatorSetupStep =
   | 'downloadTools'
@@ -93,7 +92,6 @@ export type AndroidEmulatorSetupResume = {
   confirmDownload?: boolean
 }
 
-// ── F1/F2 frozen surface (declared for the PA-27 hooks; the native side
 // lands in PA-26/PA-28) ───────────────────────────────────────────────────
 export type AndroidEmulatorStartupStage =
   | 'booting'
@@ -161,12 +159,10 @@ export type AndroidEmulatorElementHit = SimulatorElementHit
 export type AndroidEmulatorMediaFile = { path: string }
 
 export const androidEmulatorApi = {
-  // ── F0: detection + guided setup (frozen) ──────────────────────────────
   requirements: () => invoke<AndroidEmulatorRequirements>('android_emulator_requirements'),
   setupStart: (mode: AndroidEmulatorSetupMode, resume: AndroidEmulatorSetupResume = {}) =>
     invoke<void>('android_emulator_setup_start', { mode, ...resume }),
   setupCancel: () => invoke<void>('android_emulator_setup_cancel'),
-  // ── F1: session lifecycle + streaming + input (frozen) ─────────────────
   attach: (avdName: string, streamFps: number, fallbackFps: number) =>
     invoke<AndroidEmulatorSession>('android_emulator_attach', { avdName, streamFps, fallbackFps }),
   detach: () => invoke<void>('android_emulator_detach'),
@@ -179,7 +175,6 @@ export const androidEmulatorApi = {
     invoke<void>('android_emulator_drag', { fromX, fromY, toX, toY, durationMs }),
   typeText: (text: string) => invoke<void>('android_emulator_type_text', { text }),
   pressKey: (key: AndroidEmulatorKey) => invoke<void>('android_emulator_press_key', { key }),
-  // ── F2: accessibility + capture + recording + system actions (frozen) ──
   systemAction: (action: AndroidEmulatorSystemAction) =>
     invoke<void>('android_emulator_system_action', { action }),
   accessibilitySnapshot: () =>
@@ -189,7 +184,6 @@ export const androidEmulatorApi = {
   captureScreen: () => invoke<AndroidEmulatorMediaFile>('android_emulator_capture_screen'),
   recordingStart: () => invoke<void>('android_emulator_recording_start'),
   recordingStop: () => invoke<AndroidEmulatorMediaFile>('android_emulator_recording_stop'),
-  // ── Frozen event channels ──────────────────────────────────────────────
   onFrame: (handler: (frame: AndroidEmulatorFrame) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorFrame>('android-emulator:frame', handler),
   onLifecycle: (handler: (event: AndroidEmulatorLifecycleEvent) => void): Promise<UnlistenFn> =>

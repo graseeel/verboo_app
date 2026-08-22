@@ -22,9 +22,7 @@ use crate::models::plugins::{
 };
 use crate::services::cli_spawn::CliSpawn;
 
-// ════════════════════════════════════════════════════════════════════
 // In-memory cache for plugin_list / plugin_available (Feedback-3 Item 5)
-// ════════════════════════════════════════════════════════════════════
 //
 // Pattern follows manifest_cache (OnceCell + Mutex + Option) but WITHOUT
 // TTL: cache lasts until explicitly invalidated by a mutation. The state
@@ -103,9 +101,6 @@ async fn run_mutation(args: &[&str], timeout_secs: u64, plugin_id: Option<String
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Public command surface (11 Tauri commands)
-// ════════════════════════════════════════════════════════════════════
 
 /// 1. `plugin_list` → `verboo plugin list --json` (15 s timeout).
 ///
@@ -113,7 +108,6 @@ async fn run_mutation(args: &[&str], timeout_secs: u64, plugin_id: Option<String
 /// enumerates installed plugins without an active session because it only
 /// reads files from disk.
 pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
-    // Fast path: return cached value if available.
     {
         let guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
         if let Some(cached) = guard.as_ref() {
@@ -128,7 +122,6 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
         p.fill_name_from_id();
     }
 
-    // Populate cache before returning.
     let mut guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
     *guard = Some(CachedList(plugins.clone()));
     Ok(plugins)
@@ -146,7 +139,6 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
 /// half is parsed normally (it's the CLI's own state, not third-party
 /// manifests, so it's trusted).
 pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
-    // Fast path: return cached value if available.
     {
         let guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
         if let Some(cached) = guard.as_ref() {
@@ -190,7 +182,6 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
         p.fill_name_from_id();
     }
 
-    // Populate cache before returning.
     let mut guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
     *guard = Some(CachedAvailable(payload.clone()));
     Ok(payload)
@@ -207,8 +198,6 @@ fn parse_available_items_tolerant(arr: &[serde_json::Value]) -> Vec<AvailablePlu
         match serde_json::from_value::<AvailablePlugin>(item.clone()) {
             Ok(p) => out.push(p),
             Err(e) => {
-                // Log warn with the row index + error + a preview of the
-                // raw row. Don't fail the whole catalog — skip and continue.
                 let preview = truncate_str(&item.to_string(), 200);
                 eprintln!(
                     "[verboo:plugins] skipping malformed available[{idx}]: {e} | row={preview}"
@@ -345,9 +334,6 @@ pub async fn marketplace_remove(name: String) -> Result<MutationResult, PluginEr
     Ok(result)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: CLI invocation
-// ════════════════════════════════════════════════════════════════════
 
 /// Output captured from a CLI invocation. Owned by the caller so different
 /// commands (JSON parsing vs. validate regex vs. mutation stderr inspection)
@@ -397,9 +383,8 @@ async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, Plug
         .stdout(Stdio::from(stdout_file_clone))
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    // A2-FIX (2026-07-29): creation_flags already applied by CliSpawn::new
-    // (cli_spawn.rs). TokioCommand::from(std_cmd) preserves them. No need
-    // to re-apply here.
+    // creation_flags are applied by CliSpawn::new and preserved by
+    // TokioCommand::from — no need to re-apply here.
 
     // Build a debug representation of args for error messages BEFORE moving.
     let args_debug = format!("verboo {}", args.join(" "));
@@ -446,7 +431,7 @@ async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, Plug
         exit_code: None,
     })?;
 
-    // Read stdout from the tempfile. Seek to start first.
+    // Seek to start before reading stdout from the tempfile.
     let stdout = read_stdout_tempfile(stdout_file)?;
 
     let exit_code = status.code();
@@ -498,9 +483,6 @@ fn push_scope_arg(args: &mut Vec<&str>, scope: Option<PluginScope>) {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: ANSI strip + JSON parse
-// ════════════════════════════════════════════════════════════════════
 
 /// Strips the alt-screen escape wrappers CLI 0.13 emits around JSON output
 /// (`\u{1b}[?2026h` / `\u{1b}[?2026l`) plus any other CSI escape sequences
@@ -578,10 +560,7 @@ fn strip_csi_sequences(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        // Look for ESC [ (0x1b 0x5b).
         if i + 1 < bytes.len() && bytes[i] == 0x1b && bytes[i + 1] == 0x5b {
-            // Skip parameter bytes (0x30-0x3F) and intermediate bytes
-            // (0x20-0x2F) until we find a final byte (0x40-0x7E).
             i += 2;
             while i < bytes.len() {
                 let b = bytes[i];
@@ -653,9 +632,6 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: error mapping (spec §4)
-// ════════════════════════════════════════════════════════════════════
 
 /// Maps a non-zero CLI exit to a `PluginError` variant. The mapping rules
 /// are applied in spec §4 order (most-specific first).
@@ -843,9 +819,6 @@ fn extract_validate_warnings(output: &str) -> Vec<String> {
         .collect()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: validate output parser
-// ════════════════════════════════════════════════════════════════════
 
 /// Builds a `PluginValidateResult` from raw CLI output. The CLI does NOT
 /// emit JSON today — we coarse-parse markers (`✘`, `Validation failed`)
@@ -875,9 +848,6 @@ pub(crate) fn parse_validate_output(output: &CliOutput) -> PluginValidateResult 
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: path validation (spec §9.3 T10)
-// ════════════════════════════════════════════════════════════════════
 
 /// Validates the path argument to `plugin_validate`. Rejects:
 ///   - empty strings
@@ -952,9 +922,6 @@ pub(crate) fn validate_path(input: &str) -> Result<PathBuf, PluginError> {
     Ok(canonical)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: auth gate
-// ════════════════════════════════════════════════════════════════════
 
 /// Returns `Err(CliAuthRequired)` when the user is not logged in.
 /// Mutation commands MUST call this before shell-out so we don't pay the
@@ -973,9 +940,6 @@ fn require_auth() -> Result<(), PluginError> {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: post-mutation re-fetch
-// ════════════════════════════════════════════════════════════════════
 
 /// After `plugin_install` / `plugin_update`, re-fetches `plugin_list` and
 /// finds the row by `id`. On miss (CLI drift), returns a synthesized
@@ -1013,9 +977,6 @@ pub(crate) async fn find_plugin_after_mutation(id: &str) -> Result<Plugin, Plugi
     })
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: marketplace source classification
-// ════════════════════════════════════════════════════════════════════
 
 /// Classifies a `marketplace_add` source string into `"github"`, `"url"`,
 /// or `"local"` based on prefix. The CLI does the actual resolution; this
@@ -1093,9 +1054,6 @@ pub(crate) fn derive_marketplace_name(source: &str) -> String {
     trimmed.to_string()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -1104,7 +1062,7 @@ mod tests {
         AvailablePlugin, PluginScope, PluginSource, PluginSourceObject,
     };
 
-    // ── strip_ansi (spec §8.1) ──────────────────────────────────────────
+    // strip_ansi (spec §8.1)
 
     #[test]
     fn strip_ansi_removes_alt_screen_prefix_and_suffix() {
@@ -1183,7 +1141,7 @@ mod tests {
         assert_eq!(stripped, "not json at all");
     }
 
-    // ── parse_available_items_tolerant (catalog resilience) ───────────
+    // parse_available_items_tolerant (catalog resilience)
 
     #[test]
     fn parse_available_items_tolerant_skips_invalid_rows() {
@@ -1280,7 +1238,7 @@ mod tests {
         assert_eq!(parsed[1].plugin_id, "third@m");
     }
 
-    // ── Pipe-truncation regression (catalog v2) ───────────────────────
+    // Pipe-truncation regression (catalog v2)
     //
     // The CLI's `plugin list --json --available` output can exceed 64 KB
     // (real measurement: 147 KB, 265 available). OS pipe buffers cap at
@@ -1288,7 +1246,6 @@ mod tests {
     // on write, the timeout fires, and the JSON is truncated mid-object
     // → `parse_error` before the item-by-item tolerant parser even runs.
     //
-    // The fix redirects stdout to a tempfile (no pipe-buffer ceiling).
     // These tests document the truncation hazard and confirm the tolerant
     // parser surfaces a clean ParseError (not a hang) when given truncated
     // input — and that complete input parses cleanly.
@@ -1365,7 +1322,7 @@ mod tests {
         assert!(read.chars().all(|c| c == 'x'));
     }
 
-    // ── map_cli_error (spec §4) ────────────────────────────────────────
+    // map_cli_error (spec §4)
 
     #[test]
     fn map_cli_error_auth_substring_classifies_auth_required() {
@@ -1592,7 +1549,7 @@ mod tests {
         assert_eq!(parse_plugin_token("no token here"), None);
     }
 
-    // ── parse_validate_output (spec §2.5) ─────────────────────────────
+    // parse_validate_output (spec §2.5)
 
     #[test]
     fn parse_validate_output_success_no_markers() {
@@ -1634,7 +1591,7 @@ mod tests {
         assert_eq!(result.warnings.len(), 2);
     }
 
-    // ── validate_path (spec §9.3 T10) ─────────────────────────────────
+    // validate_path (spec §9.3 T10)
 
     #[test]
     fn validate_path_rejects_empty() {
@@ -1712,7 +1669,7 @@ mod tests {
         }
     }
 
-    // ── marketplace source classification ─────────────────────────────
+    // marketplace source classification
 
     #[test]
     fn classify_marketplace_source_url() {
@@ -1763,7 +1720,7 @@ mod tests {
         assert_eq!(derive_marketplace_name("/Users/me/my-market"), "/Users/me/my-market");
     }
 
-    // ── AvailablePlugin parsing (regression) ──────────────────────────
+    // AvailablePlugin parsing (regression)
 
     #[test]
     fn available_plugin_parses_local_source_arm() {
@@ -1782,7 +1739,7 @@ mod tests {
         }
     }
 
-    // ── push_scope_arg helper ─────────────────────────────────────────
+    // push_scope_arg helper
 
     #[test]
     fn push_scope_arg_appends_when_some() {
@@ -1798,7 +1755,7 @@ mod tests {
         assert_eq!(args, vec!["plugin", "enable", "x@y"]);
     }
 
-    // ── truncate_str ─────────────────────────────────────────────────
+    // truncate_str
 
     #[test]
     fn truncate_str_short_unchanged() {
@@ -1843,7 +1800,7 @@ mod tests {
         assert!(t.chars().all(|c| c == '🚀'));
     }
 
-    // ── pick_unknown_message ─────────────────────────────────────────
+    // pick_unknown_message
 
     #[test]
     fn pick_unknown_prefers_stderr() {
@@ -1865,7 +1822,7 @@ mod tests {
         assert_eq!(msg, "");
     }
 
-    // ── MutationResult serialization (Feedback-6 Item 2) ──────────────
+    // MutationResult serialization (Feedback-6 Item 2)
 
     #[test]
     fn mutation_result_success_serializes_camel_case() {

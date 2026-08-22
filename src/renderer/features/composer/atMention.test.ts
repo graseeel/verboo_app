@@ -6,7 +6,6 @@ import {
   rankSkills,
 } from './atMention'
 
-// ── Helpers shared across tests ────────────────────────────────────────
 const makeSkill = (id: string, name: string, source: SkillSummary['source'], pluginName?: string): SkillSummary => ({
   id, name, description: `desc for ${name}`,
   path: `/skills/${id}`, source, trusted: pluginName !== undefined,

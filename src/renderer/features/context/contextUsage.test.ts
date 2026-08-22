@@ -60,12 +60,10 @@ describe('T3 signal (ii): contextUsage drops across the compaction frontier', ()
     expect(post).toBeDefined()
     expect(pre?.usedTokens).toBe(164_000)
     expect(post?.usedTokens).toBe(48_000)
-    // THE SIGNAL: the meter fell after the frontier.
     expect(post!.usedTokens).toBeLessThan(pre!.usedTokens)
     expect(post!.percentage!).toBeLessThan(pre!.percentage!)
     expect(post!.percentage!).toBeCloseTo(0.24)
     expect(pre!.percentage!).toBeCloseTo(0.82)
-    // And both readings come from the CLI's authoritative numbers.
     expect(pre?.source).toBe('cli-usage')
     expect(post?.source).toBe('cli-usage')
   })
@@ -75,7 +73,7 @@ describe('T3 signal (ii): contextUsage drops across the compaction frontier', ()
     // reports the same usage twice — a drop cannot be produced by
     // extractor noise; only by a real context reduction.
     const first = extractContextUsage(preCompactPayload, WINDOW)
-    const second = extractContextUsage(preCompactPayload, WINDOW) // no compact in between
+    const second = extractContextUsage(preCompactPayload, WINDOW)
 
     expect(second?.usedTokens).toBe(first?.usedTokens)
     expect(second!.usedTokens).not.toBeLessThan(first!.usedTokens)
@@ -120,7 +118,7 @@ describe('T3 extraction pins (verbatim move out of App.tsx — zero behavior cha
       },
     }
     const snapshot = extractContextUsage(payload, WINDOW)
-    expect(snapshot?.usedTokens).toBe(1_500) // input + cache creation + cache read
+    expect(snapshot?.usedTokens).toBe(1_500)
     expect(snapshot?.percentage!).toBeCloseTo(1_500 / WINDOW)
     expect(snapshot?.source).toBe('cli-usage')
     // Zero-usage payloads still yield undefined (no meter overwrite).

@@ -74,7 +74,6 @@ describe('T8: ApiErrorAwareText surfaces the thinking-block 400 with an exit, no
     // memory — the visible history stays.
     expect(screen.getByText(/without the internal memory/i)).toBeTruthy()
     expect(screen.getByText(/history above stays/i)).toBeTruthy()
-    // The exit remains next to it.
     expect(screen.getByRole('button', { name: /Start a new conversation/ })).toBeTruthy()
   })
 

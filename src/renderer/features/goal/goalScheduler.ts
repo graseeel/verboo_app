@@ -48,10 +48,8 @@ const D1_REJECTED_FINGERPRINT_PREFIX = 'd1:complete-rejected-no-evidence:task'
  */
 export const BATCH_STAGNATION_K = 2
 
-/** Backoff cap: max wait between transient-error retries (8 s). */
 const MAX_RETRY_DELAY_MS = 8_000
 
-/** Base delay for transient-error retry backoff (1 s). */
 const BASE_RETRY_DELAY_MS = 1_000
 
 /** Shortest interval we bother logging in retry (rounded up). */
@@ -183,7 +181,6 @@ export type GoalSchedulerDelegate = {
    * Those paths pass the goal's lastEvaluation when one exists.
    */
   onComplete?: (goal: GoalState, evaluation?: GoalEvaluationResult) => void
-  /** i18n translator for system messages emitted by the scheduler. */
   t: Translator
 }
 
@@ -1073,5 +1070,5 @@ function detectLoop(goal: GoalState): boolean {  // Two independent signals, eit
   return last === secondLast && secondLast === thirdLast
 }
 
-// Re-exported for callers that need to inspect the threshold.
+// Re-exported from ./goalReason so this module's consumers can classify infra errors without importing goalReason.
 export { isInfraError }

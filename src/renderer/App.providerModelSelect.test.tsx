@@ -258,7 +258,6 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     // The composer chip (the visible active model) must flip to the provider
     // model — the field defect leaves it on "Ultra".
     await waitFor(() => expect(modelPill().textContent).toContain('GPT-5.6-Sol'))
-    // And the selection is durably persisted.
     expect(updateUserSettingsMock).toHaveBeenCalledWith({ lastSelectedModelId: 'gpt-5.6-sol' })
   })
 
@@ -290,7 +289,6 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     // every later refresh then kept the demotion (the field defect).
     expect(modelPill().textContent).toContain('GPT-5.6-Sol')
 
-    // And when the provider models return, nothing needs repairing.
     activeCatalog = catalog
   })
 

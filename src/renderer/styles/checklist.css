@@ -25,7 +25,6 @@
   box-sizing: border-box;
 }
 
-/* ── Floating mini-modal card ─────────────────────────────────────── */
 .checklist-panel.floating {
   position: fixed;
   z-index: 40;
@@ -88,7 +87,6 @@
   transition: width 240ms var(--modal-ease);
 }
 
-/* ── Docked condensed window ──────────────────────────────────────── */
 .checklist-panel.docked {
   /* Quieter than the goal panel (no border) but FULLY OPAQUE: the 30%
    * transparent wash let transcript text bleed through (text-over-text,
@@ -99,7 +97,6 @@
   padding: 4px 10px;
 }
 
-/* ── Minimized floating bar ───────────────────────────────────────── */
 /* Compact sub-state of the floating card (2026-08-12): icon + fraction
  * + expand/dock actions. Opaque by inheritance — it lives INSIDE
  * .checklist-panel.floating, which carries the solid elevated surface. */
@@ -119,7 +116,6 @@
   flex-direction: column;
 }
 
-/* ── Rows (both forms) ────────────────────────────────────────────── */
 .checklist-row {
   display: flex;
   align-items: center;
@@ -205,7 +201,6 @@
   margin-left: 2px;
 }
 
-/* ── Check that draws itself (micro-interaction) ──────────────────── */
 .checklist-check {
   flex: none;
 }
@@ -252,7 +247,6 @@
   }
 }
 
-/* ── FLIP flight spacer + entrance ────────────────────────────────── */
 .checklist-spacer {
   transition: height 300ms var(--modal-ease);
 }

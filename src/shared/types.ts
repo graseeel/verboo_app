@@ -1313,7 +1313,6 @@ export type AppConfig = {
   selectedModel?: string
 }
 
-// ── Verboo in Chrome integration ──────────────────────────────
 
 export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid' | 'conflict'
 export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
@@ -1351,7 +1350,6 @@ export type ChromeConnectionTestResult = {
   errorCode?: string
 }
 
-// ── Review types ────────────────────────────────────────────────
 
 export type WorkspaceReviewScope = 'github-repo' | 'git-repo' | 'local-folder'
 
@@ -1453,7 +1451,6 @@ export type FileDiff = {
   message?: string
 }
 
-// ── Update types ────────────────────────────────────────────────
 
 export type UpdateChannel = 'stable' | 'beta'
 
@@ -1538,7 +1535,6 @@ export type UpdateSettings = {
   autoDownload: boolean
 }
 
-// ── Terminal types ──────────────────────────────────────────────
 
 export type LocalTerminalSession = {
   id: string

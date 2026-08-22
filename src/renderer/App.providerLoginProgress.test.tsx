@@ -213,17 +213,14 @@ describe('App provider card — live progress during the login flow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Connect$/i }))
     await waitFor(() => expect(providerLoginStart).toHaveBeenCalledWith('codex'))
-    // Flow started, no event yet: "Connecting…" disabled + enabled Cancel.
     expect(await screen.findByRole('button', { name: /Connecting…/i })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: /^Cancel$/i })).toHaveProperty('disabled', false)
 
-    // The real event flips the card to "Waiting for browser…".
     fireLoginEvent({ provider: 'codex', state: 'awaiting_browser' })
     expect(await screen.findByRole('button', { name: /Waiting for browser…/i })).toHaveProperty('disabled', true)
 
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }))
     await waitFor(() => expect(providerLoginCancel).toHaveBeenCalledTimes(1))
-    // Card returns to the static disconnected state.
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toHaveProperty('disabled', false)
   })
 

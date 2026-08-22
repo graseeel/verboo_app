@@ -92,7 +92,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     if (target && capabilities.canOpenExternal) void window.verboo.openExternalFile(target.workingDirectory, file.path)
   }, [capabilities.canOpenExternal, target?.workingDirectory])
 
-  // ── Commit + PR actions (QW4) ───────────────────────────────────────────
+  // Commit + PR actions (QW4).
   // Local UI state only — the bridge owns the actual GitHub/Git work. We
   // also reuse `onReverted` to refresh the file list after a successful
   // commit (it triggers the same `refreshWorkspaceReview` reload), so we

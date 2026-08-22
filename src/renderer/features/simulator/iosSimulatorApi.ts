@@ -248,7 +248,6 @@ export const iosSimulatorApi = {
     listenInTauri<IosSimulatorPresenceEvent | null>('ios-simulator:open-requested', handler),
   onLifecycle: (handler: (snapshot: IosSimulatorLifecycleSnapshot) => void): Promise<UnlistenFn> =>
     listenInTauri<IosSimulatorLifecycleSnapshot>('ios-simulator:lifecycle', handler),
-  // ── Setup onboarding (design-ios-onboarding contract, PA-13/PA-14) ──
   setupOpenAppStore: () => invoke<void>('ios_simulator_setup_open_app_store'),
   setupStart: (mode: IosSimulatorSetupMode) =>
     invoke<void>('ios_simulator_setup_start', { mode }),

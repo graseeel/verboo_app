@@ -60,11 +60,10 @@ const INTERNAL_REASON_KEYS: Record<string, string> = {
   loop: 'goal.reason.loop',
   blocked: 'goal.reason.blocked',
   noInstruction: 'goal.reason.noInstruction',
-  // T2/T4: batch K-guard pause. Not a GoalReasonId (the backend enum has
-  // no batch concept) — an FE-side scheduler reason like the budget
-  // guards above. WITHOUT this entry it fell through to the free-form
-  // passthrough and rendered the raw camelCase literal "batchStagnation"
-  // on screen (chave órfã + genérico-na-tela wound class).
+  // Not a GoalReasonId (the backend enum has no batch concept) — an
+  // FE-side scheduler reason like the budget guards above. Without this
+  // entry the free-form passthrough renders the raw camelCase literal
+  // "batchStagnation" on screen.
   batchStagnation: 'goal.reason.batchStagnation',
   // Legacy snake_case aliases the scheduler used before reasonIds were
   // introduced. Kept for backwards compatibility with stored goals.
@@ -79,13 +78,10 @@ export function translateGoalReason(
   t: Translator,
 ): string {
   if (!reason) return t('goal.reasonId.unknown')
-  // ReasonId form (camelCase from the backend)
   if (REASON_ID_KEYS[reason as GoalReasonId]) {
     return t(REASON_ID_KEYS[reason as GoalReasonId])
   }
-  // Internal scheduler reason form
   const internalKey = INTERNAL_REASON_KEYS[reason]
   if (internalKey) return t(internalKey)
-  // Free-form model text — show as-is
   return reason
 }

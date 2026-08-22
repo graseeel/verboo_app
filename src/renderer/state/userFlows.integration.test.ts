@@ -22,7 +22,6 @@ import {
 } from './chatStore'
 import type { ChatStore, StoredConversation, TranscriptItem, VerbooModel, ModelDiscoveryResult } from '../../shared/types'
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function makeConversation(overrides?: Partial<StoredConversation>): StoredConversation {
   return { ...createConversation(), ...overrides }
@@ -47,7 +46,6 @@ function makeModel(overrides?: Partial<VerbooModel>): VerbooModel {
   }
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('User Flow: Create New Chat', () => {
   beforeEach(() => {
@@ -174,7 +172,6 @@ describe('User Flow: Send Message', () => {
       items: [...c.items, streamingMsg],
     }))
 
-    // Simulate streaming update
     const finalMsg: TranscriptItem = {
       id: 'assistant:1',
       role: 'assistant',
@@ -201,7 +198,7 @@ describe('User Flow: Send Message', () => {
       items: [...c.items, { id: 'user:1', role: 'user', text: 'msg', timestamp: 1000 }],
     }))
 
-    // Same reference when no match (identity preservation)
+    // With a match, the conversations array is a NEW reference (immutability).
     expect(updated.conversations).not.toBe(store.conversations)
     // But the conversation itself is updated
     expect(updated.conversations.find(c => c.id === 'chat:1')!.items).toHaveLength(2)
@@ -218,7 +215,6 @@ describe('User Flow: Switch Model', () => {
 
     let selected = models[0].id
 
-    // Simulate user selecting different model
     selected = models[1].id
     expect(selected).toBe('mimo-v2.5')
 
@@ -252,7 +248,6 @@ describe('User Flow: Switch Model', () => {
       makeModel({ id: 'qwen3.6-27b' }),
     ]
 
-    // Simulate refresh — selected model still in list
     const found = models.find(m => m.id === lastSelected)
     expect(found).toBeDefined()
     expect(found!.id).toBe('mimo-v2.5')
@@ -418,11 +413,9 @@ describe('User Flow: Goal Mode', () => {
   it('goal can be paused and resumed', () => {
     let goalStatus: 'running' | 'paused' | 'completed' = 'running'
 
-    // User pauses
     goalStatus = 'paused'
     expect(goalStatus).toBe('paused')
 
-    // User resumes
     goalStatus = 'running'
     expect(goalStatus).toBe('running')
   })
@@ -437,30 +430,24 @@ describe('User Flow: Multi-turn Conversation', () => {
     const conv = makeConversation({ id: 'chat:1' })
     let items = [...conv.items]
 
-    // Turn 1: user asks question
     items = [...items, { id: 'u1', role: 'user', text: 'What is React?', timestamp: 1000 }]
     items = [...items, { id: 'a1', role: 'assistant', text: 'React is a UI library.', timestamp: 1001 }]
 
-    // Turn 2: follow-up
     items = [...items, { id: 'u2', role: 'user', text: 'How do hooks work?', timestamp: 2000 }]
     items = [...items, { id: 'a2', role: 'assistant', text: 'Hooks let you use state in functions.', timestamp: 2001 }]
 
-    // Turn 3: another follow-up
     items = [...items, { id: 'u3', role: 'user', text: 'Show me useState', timestamp: 3000 }]
     items = [...items, { id: 'a3', role: 'assistant', text: 'const [count, setCount] = useState(0)', timestamp: 3001 }]
 
-    // Turn 4
     items = [...items, { id: 'u4', role: 'user', text: 'And useEffect?', timestamp: 4000 }]
     items = [...items, { id: 'a4', role: 'assistant', text: 'useEffect runs after render.', timestamp: 4001 }]
 
-    // Turn 5
     items = [...items, { id: 'u5', role: 'user', text: 'Thanks!', timestamp: 5000 }]
     items = [...items, { id: 'a5', role: 'assistant', text: 'You are welcome!', timestamp: 5001 }]
 
     const store = makeStore({ conversations: [{ ...conv, items, updatedAt: 5001 }] })
     persistChatStore(store)
 
-    // Verify persistence
     const loaded = readChatStore()
     const loadedConv = loaded.conversations.find(c => c.id === 'chat:1')
 
@@ -478,12 +465,10 @@ describe('User Flow: Conversation Lifecycle', () => {
   it('complete lifecycle: create → send → receive → archive', () => {
     let store = readChatStore()
 
-    // 1. Create new conversation
     const conv = createConversation()
     store = { ...store, conversations: [...store.conversations, conv] }
     expect(store.conversations).toHaveLength(1)
 
-    // 2. Send user message
     const userMsg: TranscriptItem = { id: 'u1', role: 'user', text: 'Hello!', timestamp: 1000 }
     store = updateConversation(store, conv.id, c => ({
       ...c,
@@ -492,7 +477,6 @@ describe('User Flow: Conversation Lifecycle', () => {
     }))
     expect(store.conversations[0].items).toHaveLength(2)
 
-    // 3. Receive assistant response
     const assistantMsg: TranscriptItem = { id: 'a1', role: 'assistant', text: 'Hi there!', timestamp: 1001 }
     store = updateConversation(store, conv.id, c => ({
       ...c,
@@ -502,15 +486,12 @@ describe('User Flow: Conversation Lifecycle', () => {
     }))
     expect(store.conversations[0].items).toHaveLength(3)
 
-    // 4. Archive conversation
     store = updateConversation(store, conv.id, c => ({ ...c, archivedAt: Date.now() }))
     expect(store.conversations[0].archivedAt).toBeGreaterThan(0)
 
-    // 5. Verify archived conversation is hidden
     const visible = visibleConversations(store)
     expect(visible).toHaveLength(0)
 
-    // 6. Persist and reload
     persistChatStore(store)
     const loaded = readChatStore()
     expect(loaded.conversations).toHaveLength(1)

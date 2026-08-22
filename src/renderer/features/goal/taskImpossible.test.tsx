@@ -53,7 +53,6 @@ const IMPOSSIBLE_EVAL: GoalEvaluationResult = {
   confidence: 0.95,
 }
 
-// ─── 1. Session rehydration (item 1) ────────────────────────────────
 describe('resumeGoalSessionId — retomar após REINÍCIO usa a sessão ANTIGA', () => {
   it('restart (no live session): falls back to the PERSISTED lastSessionId — never a silent new session', () => {
     const goal = makeGoal({ lastSessionId: 'sess-old-123' })
@@ -76,7 +75,6 @@ describe('resumeGoalSessionId — retomar após REINÍCIO usa a sessão ANTIGA',
   })
 })
 
-// ─── 2. Reply resumes (item 2) ──────────────────────────────────────
 describe('shouldResumeGoalOnUserMessage — responder no composer retoma SÓ a pausa taskImpossible', () => {
   it('paused by taskImpossible on the OWNER conversation: reply resumes', () => {
     const goal = makeGoal({ status: 'paused', pauseReason: 'taskImpossible' })
@@ -109,7 +107,6 @@ describe('shouldResumeGoalOnUserMessage — responder no composer retoma SÓ a p
   })
 })
 
-// ─── 3. Translation pin (item 3) ────────────────────────────────────
 describe('translateGoalReason — taskImpossible traduzido nas DUAS locales, nunca o literal cru', () => {
   it('en-US', () => {
     expect(translateGoalReason('taskImpossible', createTranslator('en-US'))).toBe('Task reported as impossible')
@@ -128,7 +125,6 @@ describe('translateGoalReason — taskImpossible traduzido nas DUAS locales, nun
   })
 })
 
-// ─── 4. The pause MESSAGE in the real DOM (item 4) ──────────────────
 describe('GoalActivePanel — a mensagem de pausa taskImpossible CHEGA À TELA (render real)', () => {
   function renderPanel(goal: GoalState, language: 'en-US' | 'pt-BR' = 'en-US') {
     render(

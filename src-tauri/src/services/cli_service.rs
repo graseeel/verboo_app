@@ -26,8 +26,6 @@ impl CliService {
     pub fn get_auth_status(&self) -> Result<CliAuthStatus, String> {
         // CliSpawn pins one immutable, app-owned CLI version for this process.
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "status", "--json"]);
-        // T-B: explicit Missing check — return Ok(logged_in: false) with
-        // a typed error, NOT Err. This unblocks the API-key gate.
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
             return Ok(CliAuthStatus {
                 logged_in: false,
@@ -127,7 +125,6 @@ impl CliService {
             let mut stderr_buf = String::new();
             let mut url_emitted = false;
 
-            // Read stdout incrementally, scanning for a login URL.
             let mut chunk = [0u8; 4096];
             loop {
                 match stdout_pipe.read(&mut chunk) {
@@ -156,7 +153,6 @@ impl CliService {
                 }
             }
 
-            // Drain stderr.
             let mut chunk = [0u8; 4096];
             loop {
                 match stderr_pipe.read(&mut chunk) {
@@ -231,7 +227,6 @@ impl CliService {
         std::process::ChildStderr,
     )> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "login"]);
-        // T-A: explicit Missing check — never let the raw ENOENT leak.
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -242,8 +237,7 @@ impl CliService {
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        // A2-FIX (2026-07-29): creation_flags already applied by
-        // CliSpawn::new (cli_spawn.rs). No need to re-apply here.
+        // creation_flags are applied by CliSpawn::new — no need to re-apply here.
         let mut child = cmd.spawn()?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -259,7 +253,6 @@ impl CliService {
     pub fn logout(&self) -> Result<LoginResult, String> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "logout"]);
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
-            // No CLI runtime → no CLI session to clear. Report success.
             return Ok(LoginResult {
                 ok: true,
                 message: "Sessão Verboo encerrada.".to_string(),
@@ -443,7 +436,7 @@ mod tests {
         assert!(parse_auth_status_payload("{\"foo\":\"bar\"}").is_none());
     }
 
-    // ── T-A / T-B (2026-08-07): no-CLI-runtime gate ──────────────────
+    // T-A / T-B (2026-08-07): no-CLI-runtime gate
     //
     // On a clean machine (no Node, no `verboo` on PATH) the old code
     // leaked raw ENOENT ("No such file or directory (os error 2)") to
@@ -693,7 +686,7 @@ mod tests {
         assert!(login_result.ok, "logout should report success");
     }
 
-    // ── A1: non-blocking login regression tests ──────────────────────
+    // A1: non-blocking login regression tests
     //
     // QA gate: two tests using a FAKE CLI via VERBOO_CLI_PATH pointing
     // to a script that prints a login URL and stays alive for its configured
@@ -876,7 +869,6 @@ mod tests {
         let (mut child, mut stdout_pipe, _stderr_pipe) =
             crate::services::cli_service::CliService::spawn_login_child()
                 .expect("spawn must succeed");
-        // Read stdout incrementally and try to extract the URL.
         use std::io::Read;
         let mut buf = String::new();
         let mut chunk = [0u8; 4096];

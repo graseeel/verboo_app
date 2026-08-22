@@ -158,7 +158,6 @@ describe('SimulatorControlDock', () => {
 })
 
 
-// ── Android dock adapter: injected actions and capability-gated media ──────
 
 describe('SimulatorControlDock android actions (PA-27)', () => {
   function renderAndroidDock(overrides: Record<string, unknown> = {}) {

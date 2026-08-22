@@ -71,7 +71,6 @@ impl SettingsStore {
         Ok(defaults)
     }
 
-    // ── Private helpers ─────────────────────────────────────────
 
     fn file_path(&self) -> &std::path::Path {
         &self.file_path
@@ -95,7 +94,6 @@ impl SettingsStore {
 
     fn write_to_disk(&self, settings: &UserSettings) -> Result<(), String> {
         let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-        // Ensure parent dir exists
         if let Some(parent) = self.file_path().parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -241,7 +239,6 @@ mod tests {
     #[test]
     fn update_partial_patch_preserves_other_fields() {
         let store = temp_store();
-        // Set a known state
         let initial = store.get().unwrap();
         assert_eq!(initial.language, LanguageCode::EnUs);
 

@@ -956,7 +956,6 @@ mod tests {
         // status stays Checking — the active-channel probe is still in
         // flight; the stable probe's 404 must not preempt it.
         assert_eq!(snap.status, UpdateStatus::Checking);
-        // No error string is set.
         assert!(snap.error.is_none());
         // last_checked_at is NOT stamped by this call — it's stamped by
         // mark_available / mark_not_available / mark_error for the active
@@ -979,12 +978,11 @@ mod tests {
         s.mark_error("active channel down".into());
         let snap = s.set_stable_channel_available(false);
         assert!(!snap.stable_channel_available);
-        // Active-channel error is preserved.
         assert_eq!(snap.error.as_deref(), Some("active channel down"));
         assert_eq!(snap.status, UpdateStatus::Error);
     }
 
-    // ────── run_stable_probe: orchestration wiring tests ──────
+    // run_stable_probe: orchestration wiring tests
     //
     // These tests exercise the orchestrator that `check_for_updates` in
     // `src-tauri/src/lib.rs` calls. They prove two things:

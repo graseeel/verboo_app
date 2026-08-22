@@ -174,7 +174,6 @@ function rustSnakeToCamelCase(field: string): string {
  * names, not the types.
  */
 function extractTsTypeFields(tsSource: string, typeName: string): string[] {
-  // Find the opening of the type declaration.
   const patterns = [
     new RegExp(`export type\\s+${typeName}\\s*=\\s*\\{([^}]*)\\}`),
     new RegExp(`export interface\\s+${typeName}\\s*\\{([^}]*)\\}`),
@@ -246,7 +245,6 @@ describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () 
     expect(structs.some(s => s.structName === 'TokenUsage')).toBe(true)
   })
 
-  // ─── Per-struct, per-field contract checks ────────────────────
   for (const { structName, fields } of structs) {
     const tsName = RUST_TO_TS_NAME[structName]
     if (!tsName) continue // out of scope: no TS counterpart
@@ -292,7 +290,6 @@ describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () 
     })
   }
 
-  // ─── The regression that motivated this test ───────────────────
   it('G-C12 regression: TokenUsage fields are camelCase in TS, NOT snake_case', () => {
     // The original bug: TokenUsage in TS declared input_tokens (snake),
     // but Rust sent inputTokens (camel). The renderer read undefined,
@@ -308,7 +305,6 @@ describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () 
     const expectedKeys = tokenUsage!.fields.map(rustSnakeToCamelCase)
     const tsFields = extractTsTypeFields(tsSource, 'TokenUsage')
 
-    // Every expected camelCase key must be present in the TS type.
     for (const key of expectedKeys) {
       expect(tsFields, `TokenUsage in TS must have camelCase key "${key}"`).toContain(key)
     }
@@ -402,7 +398,6 @@ describe('G-C15-FIX: Rust serde PLACEMENT ↔ TS envelope contract (sibling, not
     })
   }
 
-  // ─── The regression that motivated this PLACEMENT contract ────
   it('G-C15-FIX regression: evaluatorUsage is a SIBLING of evaluation in GoalEvaluationEnvelope, NOT inside GoalEvaluationResult', () => {
     // The original bug: evaluatorUsage was declared inside
     // GoalEvaluationResult (the TS counterpart of the NESTED
@@ -443,8 +438,7 @@ describe('G-C15-FIX: Rust serde PLACEMENT ↔ TS envelope contract (sibling, not
 /**
  * Extract the variants of every Rust enum marked with
  * `#[serde(rename_all = "lowercase")]`. Mirrors the struct parser
- * above: scan lines, track the attribute, collect `Variant,` lines
- * until the closing `}`.
+ * above, parameterized only by the serde attribute line.
  */
 function extractLowercaseEnums(rustSource: string): Array<{
   enumName: string

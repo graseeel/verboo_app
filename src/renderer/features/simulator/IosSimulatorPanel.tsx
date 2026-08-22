@@ -575,7 +575,6 @@ export function IosSimulatorPanel({
   )
 }
 
-// ── Android emulator tab (PA-27 + PA-29) ─────────────────────────────────
 
 type AndroidPanelState = ReturnType<typeof useAndroidEmulatorPanel>
 

@@ -24,7 +24,6 @@ type ModelSelectorProps = {
   /** Login bridge universe ({ provider, connected, account? }). External
    *  models render only when their matching provider is connected. */
   providerStatuses?: ProviderAuthStatus[]
-  // Reasoning effort integration
   effortByModel?: Record<string, string>
   selectedEffortLevels?: string[]
   selectedEffort?: string
@@ -385,7 +384,7 @@ function readableModelName(model: VerbooModel): string {
     return prefix ? `${prefix} · ${modelName}` : modelName
   }
   // If displayName is missing or equal to id, humanize the id so the
-  // dropdown shows "Ultra (glm-5.2)" instead of just "glm-5.2".
+  // dropdown shows a readable brand name instead of the raw id.
   if (!model.displayName || model.displayName === model.id) {
     return humanizeModelId(model.id)
   }

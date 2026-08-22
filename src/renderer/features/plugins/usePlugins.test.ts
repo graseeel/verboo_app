@@ -3,11 +3,10 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import type { AvailablePlugin } from '../../../shared/plugins'
 import { usePlugins } from './usePlugins'
 
-// ── Mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
 vi.mock('../../components/Toast', () => ({ useToast: () => ({ toast: () => {} }) }))
 
-// ── Tauri event listener mock (Feedback-6 OBJ 1) ─────────────────────
+// Tauri event listener mock (Feedback-6 OBJ 1):
 // `listen` from @tauri-apps/api/event returns a Promise<UnlistenFn>.
 // We capture the handler so the test can dispatch a synthetic event and
 // assert refreshAll fires; unlisten is tracked to assert cleanup.
@@ -43,12 +42,10 @@ const mockWindow = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // Default: backend returns empty lists, no marketplaces
   mockPluginList.mockResolvedValue([])
   mockPluginAvailable.mockResolvedValue({ available: [], installed: [] })
   mockMarketplaceList.mockResolvedValue([])
   mockMarketplaceManifests.mockResolvedValue({})
-  // Default mutation success
   mockPluginInstall.mockResolvedValue({ success: true })
   mockPluginUninstall.mockResolvedValue({ success: true })
   mockPluginEnable.mockResolvedValue({ success: true })
@@ -83,7 +80,6 @@ describe('install — MutationResult contract', () => {
 
     const { result } = renderHook(() => usePlugins())
 
-    // Install resolves with success: true
     await act(async () => {
       await result.current.install(dummyPlugin, 'user')
     })
@@ -107,13 +103,12 @@ describe('install — MutationResult contract', () => {
       try {
         await result.current.install(dummyPlugin, 'user')
         // Should not reach here — the error should be thrown
-        expect(true).toBe(false) // should not reach
+        expect(true).toBe(false)
       } catch (err: any) {
         expect(err.message).toBe('Integrity check failed')
       }
     })
 
-    // Reverted: plugin no longer in installed list
     expect(result.current.installed.some(p => p.id === 'test@verboo-plugins')).toBe(false)
   })
 
@@ -131,7 +126,6 @@ describe('install — MutationResult contract', () => {
       }
     })
 
-    // Reverted
     await waitFor(() => {
       expect(result.current.installed.some(p => p.id === 'test@verboo-plugins')).toBe(false)
     })
@@ -155,7 +149,6 @@ describe('uninstall — MutationResult contract', () => {
 
     const { result } = renderHook(() => usePlugins())
 
-    // Wait for initial refreshAll to populate the list
     await waitFor(() => {
       expect(result.current.installed).toHaveLength(1)
     })
@@ -220,7 +213,6 @@ describe('revert preserves list position (anti-flicker)', () => {
       try { await result.current.install(dummyPlugin, 'user') } catch { /* expected */ }
     })
 
-    // Revert removed the optimistic entry; pre-existing order preserved.
     const afterIds = result.current.installed.map(p => p.id)
     expect(afterIds).toEqual(['a@verboo-plugins', 'b@verboo-plugins'])
   })
@@ -245,7 +237,6 @@ describe('revert preserves list position (anti-flicker)', () => {
       try { await result.current.uninstall('b@verboo-plugins', 'user') } catch { /* expected */ }
     })
 
-    // After revert + refreshAll, the list is back to [p1, p2, p3] in order.
     await waitFor(() => {
       expect(result.current.installed.map(p => p.id)).toEqual(['a@verboo-plugins', 'b@verboo-plugins', 'c@verboo-plugins'])
     })
@@ -267,13 +258,11 @@ describe('plugin-mutation listener (OBJ 1 fix)', () => {
     mockPluginList.mockResolvedValue([])
     renderHook(() => usePlugins())
 
-    // Wait for mount (initial refreshAll)
     await waitFor(() => expect(mockPluginList).toHaveBeenCalled())
 
     // Reset call count so we can assert the event fired a new refreshAll
     mockPluginList.mockClear()
 
-    // Dispatch synthetic plugin-mutation event
     await act(async () => { capturedHandler?.() })
 
     await waitFor(() => expect(mockPluginList).toHaveBeenCalled())

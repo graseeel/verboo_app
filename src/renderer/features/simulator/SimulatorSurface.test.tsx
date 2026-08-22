@@ -354,7 +354,6 @@ describe('SimulatorSurface', () => {
 })
 
 
-// ── Android adapter (PA-27): interact-only surface, injected key mapper ────
 
 function renderAndroidSurface() {
   const callbacks = {

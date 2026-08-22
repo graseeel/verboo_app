@@ -125,9 +125,8 @@ export function ProviderAccountList({
 
   /** VIEW — corpo da conta COMPARTILHADO pelos dois modos: só o wrapper muda
    *  (provider-account-card/-card-head no simple; provider-account-row/
-   *  -row-head no expanded, recuperado de a4ba525). Todo o estado de
-   *  interação (kebab, nickname, use/in-use, ícone, badges) vive aqui e
-   *  vale identicamente nos dois modos. */
+   *  -row-head no expanded). Todo o estado de interação (kebab, nickname,
+   *  use/in-use, ícone, badges) vive aqui e vale identicamente nos dois modos. */
   function renderAccount(provider: ExternalProviderId, row: ProviderUsageRowState) {
     const account = row.account
     const usedHere = conversationBindings[provider] === account.accountId

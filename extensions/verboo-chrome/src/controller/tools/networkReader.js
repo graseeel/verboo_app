@@ -67,7 +67,7 @@ function clampDuration(requested) {
 }
 
 /**
- * @param {boolean}
+ * @returns {Promise<boolean>} whether the debugger permission is available
  */
 function hasDebuggerPermission() {
   try {

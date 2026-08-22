@@ -1,6 +1,4 @@
 /**
- * src/renderer/features/context/ContextPanel.tsx
- *
  * Popover panel opened by clicking the ContextMeter. Shows estimated context
  * composition (user/assistant text, attachments, skills, queue) and offers
  * honest pruning actions: remove attachments, clear skills, dismiss queued
@@ -15,7 +13,6 @@ import type { AttachmentMeta, ContextUsageSnapshot, SkillSummary, TranscriptItem
 type QueuedFollowUp = { id: string; message: string }
 import { useI18n } from '../../i18n'
 
-// ── Helpers ────────────────────────────────────────────────────
 
 /** Rough estimate: ~4 chars per token for English/Portuguese text. */
 const CHARS_PER_TOKEN = 4
@@ -56,7 +53,6 @@ export type ContextSection = {
   onRemove?: () => void
 }
 
-// ── Component ──────────────────────────────────────────────────
 
 type ContextPanelProps = {
   usage?: ContextUsageSnapshot
@@ -66,9 +62,7 @@ type ContextPanelProps = {
   items: readonly TranscriptItem[]
   /** Pending attachments with extracted text */
   attachments: AttachmentMeta[]
-  /** Selected skills (injected into turn) */
   skills: SkillSummary[]
-  /** Queued follow-ups */
   queue: QueuedFollowUp[]
   onClearAttachments: () => void
   onClearSkills: () => void
@@ -91,24 +85,20 @@ export function ContextPanel({
   const { t } = useI18n()
   const maxTokens = usage?.maxTokens ?? maxWindow
 
-  // ── Compute sections ────────────────────────────────────────
 
   const sections = useMemo<ContextSection[]>(() => {
     const result: ContextSection[] = []
 
-    // User messages
     const userTokens = items
       .filter(i => i.role === 'user')
       .reduce((sum, i) => sum + estimateTokens(i.text), 0)
     if (userTokens > 0) result.push({ key: 'user', icon: <UserRound size={14} />, labelKey: 'context.panelUser', tokens: userTokens })
 
-    // Assistant messages
     const asstTokens = items
       .filter(i => i.role === 'assistant')
       .reduce((sum, i) => sum + estimateTokens(i.text), 0)
     if (asstTokens > 0) result.push({ key: 'assistant', icon: <MessageSquare size={14} />, labelKey: 'context.panelAssistant', tokens: asstTokens })
 
-    // Attachments with extracted text
     const attachTokens = attachments
       .filter(a => a.extractedText)
       .reduce((sum, a) => sum + estimateTokens(a.extractedText!), 0)
@@ -121,7 +111,6 @@ export function ContextPanel({
       onRemove: onClearAttachments,
     })
 
-    // Skills
     const skillTokens = skills.reduce((sum, s) => sum + estimateTokens(s.name + (s.description ?? '')), 0)
     if (skillTokens > 0) result.push({
       key: 'skills',
@@ -132,14 +121,13 @@ export function ContextPanel({
       onRemove: onClearSkills,
     })
 
-    // Queue items
     const queueTokens = queue.reduce((sum, q) => sum + estimateTokens(q.message), 0)
     if (queueTokens > 0) result.push({
       key: 'queue',
       icon: <List size={14} />,
       labelKey: 'context.panelQueue',
       tokens: queueTokens,
-      removable: false, // each item can be removed individually; covered by task 1.4
+      removable: false, // each item can be removed individually
     })
 
     return result
@@ -147,7 +135,6 @@ export function ContextPanel({
 
   const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0)
 
-  // ── Render ──────────────────────────────────────────────────
 
   return (
     <div className="context-panel" role="dialog" aria-label={t('context.panelTitle')}>

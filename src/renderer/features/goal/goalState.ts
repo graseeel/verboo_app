@@ -174,7 +174,6 @@ export function goalSystemMessage(text: string): TranscriptItem {
   }
 }
 
-// ─── D-D: pause with reply-to-resume (taskImpossible) ───────────────
 
 /**
  * D-D item 1 — SESSION REHYDRATION on resume ("sem perda de contexto").
@@ -222,7 +221,6 @@ export function shouldResumeGoalOnUserMessage(
   )
 }
 
-// ─── T1: goal BATCH (lote) + D1 action-evidence guard ───────────────
 
 /**
  * T1: the currently active task of a batch goal, with the index clamped

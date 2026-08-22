@@ -14,7 +14,6 @@ export function modelDisplayName(model) {
   return humanizeModelId(id) || supplied || 'Model'
 }
 
-/** @param {string} id */
 export function humanizeModelId(id) {
   return String(id ?? '')
     .trim()
@@ -109,7 +108,6 @@ const TOOL_CALL_BLOCK_RE = new RegExp(String.raw`<(${TOOL_CALL_TAG})\b[^>]*>[\s\
 const TOOL_CALL_OPEN_TO_END_RE = new RegExp(String.raw`\n?<${TOOL_CALL_TAG}\b[^>]*>[\s\S]*$`, 'gi')
 const TOOL_CALL_STRAY_CLOSER_RE = new RegExp(String.raw`</${TOOL_CALL_TAG}\s*>`, 'gi')
 
-/** @param {string} text */
 function stripToolCallMarkup(text) {
   const stripped = text
     .replace(TOOL_CALL_SELF_CLOSING_RE, '')
@@ -143,7 +141,6 @@ export function structuredResultPreview(value) {
   return format ? `${format} · ${clipped}` : clipped
 }
 
-/** @param {string} value */
 function formatInlineMarkdown(value) {
   return value
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
@@ -190,7 +187,6 @@ export function shouldSubmitComposerKey(event) {
     && !event.defaultPrevented
 }
 
-/** @param {unknown} decision */
 export function approvalDecisionMessageKey(decision) {
   if (decision === 'deny') return 'tool_denied'
   if (decision === 'cancelled') return 'tool_cancelled'
@@ -198,7 +194,6 @@ export function approvalDecisionMessageKey(decision) {
   return 'tool_approved'
 }
 
-/** @param {unknown} error */
 export function toolErrorMessageKey(error) {
   const code = String(error ?? '')
   if (code === 'cancelled' || code === 'run_cancelled' || code === 'Turn cancelled.') {
@@ -208,7 +203,6 @@ export function toolErrorMessageKey(error) {
   return null
 }
 
-/** @param {unknown} value */
 export function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')

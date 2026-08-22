@@ -94,7 +94,6 @@ export function errorText(err: unknown): string | undefined {
   return text || undefined
 }
 
-// ── F1: device picker + stream defaults (PA-27) ────────────────────────────
 
 /** Renderer-side stream defaults for android_emulator_attach. The preview is
  *  an `adb exec-out screencap` PNG loop — far slower than the iOS MJPEG
@@ -149,7 +148,6 @@ export function groupAndroidEmulatorDevices(
   return [...groups.values()]
 }
 
-// ── PA-36: friendly AVD presentation ───────────────────────────────────────
 
 /** Human-readable label for a raw AVD name (PA-36). The backend sends
  *  `displayName = avdName` verbatim (e.g. 'Verboo_Device_API_36'), which is

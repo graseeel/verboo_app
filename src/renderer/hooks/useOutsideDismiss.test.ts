@@ -69,7 +69,6 @@ describe('useOutsideDismiss', () => {
     const onDismiss = vi.fn()
     renderHook(() => useOutsideDismiss(panelRef, true, onDismiss, [triggerRef]))
 
-    // Click on the trigger (which is outside the panel but in ignoreRefs)
     trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     expect(onDismiss).not.toHaveBeenCalled()
 
@@ -96,7 +95,6 @@ describe('useOutsideDismiss', () => {
     const onDismiss = vi.fn()
     renderHook(() => useOutsideDismiss(panelRef, true, onDismiss, [wrapperRef]))
 
-    // Click on child element inside the ignored wrapper
     child.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     expect(onDismiss).not.toHaveBeenCalled()
 

@@ -79,14 +79,12 @@ export function routePreview(
   const normalized = normalizeUrlForComparison(previewUrl)
   if (!normalized) return { kind: 'navigate', tabId: session.activeTabId ?? '' }
 
-  // 1. Activate existing tab at the same normalized URL
   for (const tab of session.tabs) {
     if (tab.id === session.activeTabId) continue
     if (normalizeUrlForComparison(tab.url) === normalized) {
       return { kind: 'activate', tabId: tab.id }
     }
   }
-  // Also check the active tab
   if (session.activeTabId) {
     const active = session.tabs.find(t => t.id === session.activeTabId)
     if (active && normalizeUrlForComparison(active.url) === normalized) {
@@ -94,7 +92,6 @@ export function routePreview(
     }
   }
 
-  // 2. Navigate active tab if blank
   if (session.activeTabId) {
     const active = session.tabs.find(t => t.id === session.activeTabId)
     if (active && (active.url === 'about:blank' || active.url === '')) {
@@ -102,7 +99,6 @@ export function routePreview(
     }
   }
 
-  // 3. Create new tab
   return { kind: 'create' }
 }
 

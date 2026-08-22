@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// ════════════════════════════════════════════════════════════════════
-// Serde helpers — diagnostic overflow rejection
-// ════════════════════════════════════════════════════════════════════
 
 /// Diagnostic deserializer for `u32` fields that may receive values from
 /// JavaScript's `Number.MAX_SAFE_INTEGER` (9_007_199_254_740_991).
@@ -47,9 +44,6 @@ pub(crate) mod u32_bounds {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Enums
-// ════════════════════════════════════════════════════════════════════
 
 /// NodeJS.Platform values that the CSS depends on:
 ///   darwin → :root[data-platform="darwin"]
@@ -561,9 +555,6 @@ pub enum RuntimeStatusKind {
     Tool,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Structs
-// ════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1623,7 +1614,7 @@ pub struct TokenRateSnapshot {
     pub updated_at: i64,
 }
 
-// ── Settings defaults (must match Electron's defaultUserSettings exactly) ─
+// Settings defaults (must match Electron's defaultUserSettings exactly)
 
 impl Default for UserSettings {
     fn default() -> Self {
@@ -1689,9 +1680,7 @@ impl Default for AppConfig {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
 // Tests — round-trip serde for camelCase/kebab-case contracts
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -1916,7 +1905,6 @@ mod tests {
         assert_eq!(event_json["videoProgress"]["completedUnits"], 2);
     }
 
-    // ── AvatarSettings round-trip tests ──────────────────────────────
 
     #[test]
     fn avatar_settings_upload_version_round_trip() {
@@ -2010,7 +1998,6 @@ mod tests {
         );
     }
 
-    // ── u32_bounds diagnostic deserializer tests ────────────────────
 
     #[test]
     fn goal_state_max_turns_rejects_overflow_with_diagnostic_message() {

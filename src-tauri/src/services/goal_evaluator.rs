@@ -471,7 +471,6 @@ fn run_evaluation_cli(
     // (cli_spawn.rs). No need to re-apply here.
 
     if std::env::var_os("VERBOO_GOAL_TIMING").as_deref() != Some(std::ffi::OsStr::new("1")) {
-        // ── FAST PATH (identical to pre-G-C19) ──────────────────────
         // Same try_wait + wait_with_output loop, no stdout.take(),
         // no incremental reader, no channel. Deadline G-C6 works.
         let mut child = cmd.spawn().map_err(|e| {
@@ -516,7 +515,6 @@ fn run_evaluation_cli(
         }
     }
 
-    // ── TIMING PATH: ON (gated by VERBOO_GOAL_TIMING=1) ─────────────
     // A background thread reads stdout incrementally and forwards bytes
     // through a channel. The main loop polls try_wait and times the
     // FIRST byte observation by checking the channel with try_recv (non-
@@ -577,7 +575,6 @@ fn run_evaluation_cli(
             // thread is cheap and bounded; OS will reap it on drop.
             return Err(GoalEvaluationError::CliTimeout { timeout_secs });
         }
-        // Drain the channel (non-blocking).
         while let Ok(chunk) = rx.try_recv() {
             if t3.lock().unwrap().is_none() {
                 *t3.lock().unwrap() = Some(Instant::now());
@@ -587,7 +584,6 @@ fn run_evaluation_cli(
         match child.try_wait() {
             Ok(Some(_status)) => {
                 let t4 = Instant::now();
-                // Drain remaining bytes.
                 while let Ok(chunk) = rx.try_recv() {
                     stdout_buf.extend_from_slice(&chunk);
                 }
@@ -706,8 +702,6 @@ fn extract_evaluation_json(
             let evaluator_usage = extract_usage_from_envelope(obj);
             if let Some(result_val) = obj.get("result") {
                 if let Some(result_str) = result_val.as_str() {
-                    // The result value is a string — it may itself be JSON.
-                    // Fast path: bare JSON object inside the string.
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_str) {
                         if parsed.is_object() {
                             return Ok((parsed, evaluator_usage));
@@ -846,18 +840,12 @@ fn parse_first_json_object(text: &str) -> Option<serde_json::Value> {
     None
 }
 
-/// Normalizes the parsed JSON into a structured GoalEvaluationResult.
-/// Validates and defaults fields — NEVER returns Continue for infra
-/// failures (infra errors are caught before this point).
-/// Unknown/missing fields default to Continue+TaskIncomplete safe mode.
-/// Normalizes the raw JSON the LLM returned into a `GoalEvaluationResult`.
-/// Enforces the prompt's structural rules (Continue/Complete/Pause field
-/// invariants) and applies the G-C16 hard guard: if the model decided
-/// `complete` but `observable_action == false` (no turn has run), downgrades
-/// to `Continue + TaskIncomplete`. The downgrade is deterministic, not a
-/// preference — it guarantees a `complete` decision cannot leave the
-/// scheduler without any observable work having happened, regardless of
-/// what the prompt told the model.
+/// Normalizes the raw evaluation JSON into a `GoalEvaluationResult`.
+/// Unknown/missing fields default to Continue+TaskIncomplete; infra
+/// failures never reach this function. Enforces the prompt field rules
+/// and the G-C16 hard guard: `complete` with `observable_action == false`
+/// is deterministically downgraded to Continue+TaskIncomplete so a
+/// `complete` can never leave the scheduler with zero observable work.
 ///
 /// G-C16-FIX: `observable_action` is `turns_run > 0` ONLY. The previous
 /// `|| latest_result.is_some()` leg was removed — `latest_result` has zero
@@ -1047,10 +1035,6 @@ fn default_continue(reason: &str) -> GoalEvaluationResult {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
-//
 // IMPORTANT: these tests NEVER spawn a CLI. They test prompt building,
 // JSON extraction, decision normalization, and the prompt rules.
 
@@ -1112,7 +1096,7 @@ mod tests {
     fn synth_items(n: usize) -> Vec<TranscriptItem> {
         let user_msg = "Please continue. Make sure to read /tmp/goal-total.txt and confirm its contents before declaring the goal complete.";
         let asst_prose = "I will create /tmp/goal-total.txt containing the word SOMA and verify its contents via Read. Let me execute the necessary commands now. The Read result must confirm a single line containing the literal SOMA; if the file is missing or the contents differ, I will rewrite it and re-verify. Once verified, I will report completion with concrete observed evidence.";
-        let tool_read = format!("1\tSOMA\n"); // the literal that triggerged the G-C18 bug
+        let tool_read = format!("1\tSOMA\n"); // the literal that triggered the G-C18 bug
         let cmd_out = "total 8\ndrwxr-xr-x  2 user user 4096 Jul 29 09:00 goal-total.txt\n";
         let mut items = Vec::with_capacity(n);
         for i in 0..n {
@@ -1247,7 +1231,6 @@ mod tests {
         eprintln!("=== end ===\n");
     }
 
-    // ── parse_first_json_object ───────────────────────────────────────
 
     #[test]
     fn parse_simple_json() {
@@ -1295,7 +1278,6 @@ mod tests {
         assert_eq!(result["reason"], r#"said "hello""#);
     }
 
-    // ── normalize_evaluation: decision resolution ─────────────────────
 
     #[test]
     fn normalize_complete_with_summary() {
@@ -1323,7 +1305,6 @@ mod tests {
         });
         let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Complete);
-        // Missing completionSummary gets a default.
         assert!(result.completion_summary.is_some());
     }
 
@@ -1358,12 +1339,10 @@ mod tests {
         let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskFailure);
-        // Missing sessionSummary gets a default.
         assert_eq!(
             result.session_summary,
             Some("Agent encountered an error and is retrying".into())
         );
-        // Missing gaps gets a default.
         assert_eq!(result.gaps, vec!["Objective not yet achieved"]);
     }
 
@@ -1424,7 +1403,6 @@ mod tests {
         });
         let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Pause);
-        // Missing nextAction gets a default.
         assert!(result.next_action.is_some());
     }
 
@@ -1494,7 +1472,6 @@ mod tests {
         assert_eq!(result.reason_id, GoalReasonId::NeedsUser);
     }
 
-    // ── parse_decision ────────────────────────────────────────────────
 
     #[test]
     fn parse_decision_values() {
@@ -1517,7 +1494,6 @@ mod tests {
         assert_eq!(parse_decision(Some(&json!("Complete"))), GoalDecision::Complete);
     }
 
-    // ── parse_reason_id ───────────────────────────────────────────────
 
     #[test]
     fn parse_reason_id_values() {
@@ -1563,7 +1539,6 @@ mod tests {
         assert_eq!(parse_reason_id(None), GoalReasonId::TaskIncomplete);
     }
 
-    // ── extract_evaluation_json ───────────────────────────────────────
 
     #[test]
     fn extract_envelope_format() {
@@ -1637,8 +1612,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── 2026-07-31 field fix: depth-aware first-object scan ─────────────
-    //
     // Field defect path (for context, NOT pin history): the production
     // defect that broke the field was at the ENVELOPE level — the
     // CLI returned `{result:"<fenced JSON>"}` and the envelope branch
@@ -1744,12 +1717,8 @@ mod tests {
         }
     }
 
-    // ── end 2026-07-31 field fix tests ───────────────────────────────
 
-    // ── end bare-stdout fence tests ─────────────────────────────────
 
-    // ── 2026-07-31 field fix: envelope result_str tolerance ────────
-    //
     // These tests witness the ACTUAL production path that broke in
     // the field defect: the CLI returned `{result:"<fenced JSON>"}`
     // and the envelope branch fabricated a synthetic Continue. The
@@ -1843,9 +1812,7 @@ mod tests {
         }
     }
 
-    // ── end 2026-07-31 field fix envelope tests ───────────────────
 
-    // ── extract_evaluation_json: usage extraction (G-C15) ──────────────
 
     #[test]
     fn extract_envelope_with_usage_returns_tokens() {
@@ -1894,8 +1861,6 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, None);
     }
 
-    // ── build_evaluation_prompt ──────────────────────────────────────
-    //
     // These tests verify the prompt structure contains the expected
     // sections and instructions. They do NOT test the LLM's output.
 
@@ -1921,7 +1886,6 @@ mod tests {
         // The explanatory "Verboo has unlimited tokens" is fine.
         let goal = sample_goal();
         let prompt = build_evaluation_prompt(&goal, &[]);
-        // Allow the explanatory note, but forbid treating tokens as limits.
         assert!(
             !prompt.contains("token budget"),
             "prompt must not reference token budget"
@@ -1940,7 +1904,6 @@ mod tests {
     fn prompt_contains_decision_rules() {
         let goal = sample_goal();
         let prompt = build_evaluation_prompt(&goal, &[]);
-        // The prompt should explain the 3 decision rules.
         assert!(prompt.contains("1."));
         assert!(prompt.contains("2."));
         assert!(prompt.contains("3."));
@@ -2159,7 +2122,6 @@ mod tests {
         assert!(prompt.contains("Return ONLY the JSON object"));
     }
 
-    // ── Integration: prompt + normalization (no CLI) ──────────────────
 
     #[test]
     fn complete_decision_roundtrip() {
@@ -2241,7 +2203,6 @@ mod tests {
         assert!(result.confidence <= 1.0);
     }
 
-    // ── G-C16: hard guard against completion without observable action ─
 
     #[test]
     fn g_c16_complete_with_no_observable_action_is_downgraded_to_continue() {
@@ -2333,8 +2294,6 @@ mod tests {
         assert_eq!(result.reason_id, GoalReasonId::Unsafe);
     }
 
-    // ────── resolve_timeout_secs: env var resolution ──────
-    //
     // G-C6-FIX-RUST item 2: cover every branch of `resolve_timeout_secs`:
     //   - env var absent → DEFAULT_TIMEOUT_SECS (240)
     //   - valid numeric ≥ 10 → honored
@@ -2438,8 +2397,6 @@ mod tests {
         );
     }
 
-    // ────── CliTimeout message carries the effective budget ──────
-    //
     // G-C6-FIX-RUST item 2: the user-facing message must contain the
     // number of seconds actually used (not a hardcoded literal). This
     // guards against a regression where someone changes the Display
@@ -2483,8 +2440,6 @@ mod tests {
         );
     }
 
-    // ────── WIRING TEST: Goal uses CliSpawn (managed), not global ──────
-    //
     // Catches the failure mode the G-C1 QA flagged: `goal_evaluator`
     // resolving the CLI via `cli_path::resolve().unwrap_or("verboo")`,
     // which falls back to the system-installed `verboo` global. End
@@ -2579,7 +2534,6 @@ mod tests {
         );
     }
 
-    // ── G-C18: tool_output in TranscriptItem ──────────────────────────
 
     #[test]
     fn g_c18_tool_output_deserializes_from_camel_case() {
@@ -2706,14 +2660,12 @@ mod tests {
             prompt.contains("[truncated"),
             "G-C18: truncated tool_output must contain truncation sentinel"
         );
-        // The first 800 chars of the output must be present.
         assert!(
             prompt.contains(&"A".repeat(800)),
             "G-C18: first 800 chars of tool_output must survive truncation"
         );
     }
 
-    // ── G-C18-FIX: char-boundary-safe truncation + multibyte coverage ─
 
     #[test]
     fn g_c18_fix_truncate_char_safe_does_not_panic_on_multibyte() {
@@ -2768,13 +2720,12 @@ mod tests {
     fn g_c18_fix_truncate_char_safe_sentinel_reports_chars_not_bytes() {
         // G-C18-FIX: the sentinel must report how many CHARS were cut,
         // not the total length, so the model knows what's missing.
-        let s: String = "áéíóúç".chars().cycle().take(1500).collect(); // 1500 chars
+        let s: String = "áéíóúç".chars().cycle().take(1500).collect();
         let truncated = truncate_char_safe(&s, 800);
         assert!(
             truncated.contains("[truncated"),
             "G-C18-FIX: sentinel present"
         );
-        // Extract the number from the sentinel.
         let prefix = "[truncated ";
         let num_start = truncated.find(prefix).unwrap() + prefix.len();
         let num_end = truncated[num_start..].find(' ').unwrap() + num_start;
@@ -2816,8 +2767,6 @@ mod tests {
         );
     }
 
-    // ── G-C18-MEDICAO: realistic prompt decomposition ────────────────
-    //
     // Decompose the prompt into its fixed and variable blocks using a
     // REALISTIC fixture — not the synthetic 7-char tool_output that gave
     // 3.8K tokens vs 41K in field. The fixture models what a real script
@@ -3008,7 +2957,6 @@ mod tests {
         }
     }
 
-    // ── TaskImpossible: symbolic artifact → pause + non-empty reason ──
 
     #[test]
     fn symbolic_artifact_triggers_pause_with_task_impossible() {
@@ -3031,7 +2979,6 @@ mod tests {
         );
     }
 
-    // ── Counterfactual: real delivery must NOT be flagged ──────────────
 
     #[test]
     fn real_delivery_not_flagged_as_task_impossible() {
@@ -3052,7 +2999,6 @@ mod tests {
         assert_eq!(result.reason_id, GoalReasonId::Done);
     }
 
-    // ── parse_reason_id: taskImpossible does not fall to default ───────
 
     #[test]
     fn parse_reason_id_task_impossible_does_not_fall_to_default() {

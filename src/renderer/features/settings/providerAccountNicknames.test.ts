@@ -16,7 +16,6 @@ describe('provider account nicknames (P3)', () => {
     window.localStorage.clear()
     setProviderAccountNickname('codex', 'local-a', 'Work Codex')
     expect(getProviderAccountNickname('codex', 'local-a')).toBe('Work Codex')
-    // A different account stays untouched.
     expect(getProviderAccountNickname('codex', 'local-b')).toBeUndefined()
     expect(getProviderAccountNickname('claude', 'local-a')).toBeUndefined()
   })

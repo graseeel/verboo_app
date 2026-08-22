@@ -643,7 +643,6 @@ async function runLlmAgentTurnWithinBudget({
       }
     }
 
-    // Add assistant message (with tool_calls) to conversation.
     messages.push({
       role: 'assistant',
       content: completion.content,
@@ -842,7 +841,6 @@ async function runLlmAgentTurnWithinBudget({
         }
       }
 
-      // Build text result for the conversation.
       // Tool role content remains a string. Vision pixels travel in a separate
       // user message after every tool response from this step has been added.
       let resultText = ''
@@ -1081,7 +1079,6 @@ async function runLlmAgentTurnWithinBudget({
 
   if (signal?.aborted) throw new Error('Agent turn cancelled')
 
-  // Reached max steps without text-only response.
   return {
     assistantMessage: looksPortuguese(userMessage)
       ? `Execução incompleta: alcancei o limite de ${MAX_AGENT_STEPS} etapas antes de concluir e verificar o pedido.`
@@ -1090,7 +1087,6 @@ async function runLlmAgentTurnWithinBudget({
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────
 
 /**
  * Keep only bounded user/assistant text from the visible panel conversation.
@@ -1252,8 +1248,6 @@ function isInterruptedBrowserResume(text, conversationHistory) {
 function hasPageInspectionIntent(text) {
   const pageReference =
     /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\b(?:a|o|da|do|na|no)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current|inicial|home)\b/i
-  // Page inspection: the user asks to look at / read / describe what's
-  // on the page.
   // PÓS-GATE Farol: explain/define joined the inspection family so the
   // PAGE-anchored explanation path stays browser ("explique esta página",
   // "explain this page") while the topic explanation stays conversation
@@ -1382,7 +1376,6 @@ export function requiresScreenshot(userMessage) {
   return /\b(?:tire|tirar|faca|fazer|take|capture)\b.{0,24}\b(?:um |uma |a )?(?:print|screenshot|screen shot|captura)\b/i.test(text)
 }
 
-/** @param {unknown} value */
 function normalizeIntentText(value) {
   return String(value ?? '')
     .normalize('NFD')
@@ -1465,7 +1458,6 @@ function extractFindSelectors(findResult) {
   return [...text.matchAll(/selector="([^"]+)"/g)].map((match) => match[1])
 }
 
-/** @param {string} json */
 function canonicalJson(json) {
   try {
     return JSON.stringify(sortJsonValue(JSON.parse(json)))
@@ -1474,7 +1466,6 @@ function canonicalJson(json) {
   }
 }
 
-/** @param {unknown} value */
 function sortJsonValue(value) {
   if (Array.isArray(value)) return value.map(sortJsonValue)
   if (!value || typeof value !== 'object') return value
@@ -1663,9 +1654,6 @@ export function looksPortuguese(text) {
   )
 }
 
-/**
- * @param {string} text
- */
 function looksEnglish(text) {
   if (!text) return false
   return /\b(open|go to|search|play|put on|find|please|the|and|for|with|youtube|music|song|video)\b/i.test(

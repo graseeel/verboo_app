@@ -1475,7 +1475,7 @@ textarea {
 }
 
 /* Compact mode select — pill segmented control.
- * Single row on >= 280px; wraps on narrow viewports. */
+ * Pills flow inline and wrap to the next line when they do not fit. */
 .mode-inline {
   display: flex;
   flex-wrap: wrap;

@@ -315,7 +315,6 @@ describe('TopBar workspace panel controls', () => {
     )
 
     const trigger = screen.getByRole('button', { name: 'Simuladores' })
-    // Menu closed → tooltip available on hover.
     expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')
 
     // Menu OPEN → tooltip is not rendered, so it cannot cover the menu items.
@@ -323,7 +322,6 @@ describe('TopBar workspace panel controls', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument()
     expect(trigger).not.toHaveAttribute('data-tooltip')
 
-    // Closing restores the tooltip.
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')

@@ -2087,7 +2087,6 @@ fn build_stream_json_input(request: &AgentTurnRequest, prompt: &str) -> Option<S
         return None;
     }
 
-    // Build content blocks: text first, then images.
     let mut content = Vec::with_capacity(images.len() + 1);
     content.push(serde_json::json!({
         "type": "text",
@@ -2436,17 +2435,11 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
 /// adding it does not change the routing envelope.
 fn todowrite_language_instruction(language: LanguageCode) -> String {
     if language == LanguageCode::PtBr {
-        // PT: write steps in the conversation language; keep
-        // identifiers intact. Names of files, paths, commands, flags,
-        // identifiers, and code snippets MUST stay as-is.
         "Escreva os passos do TodoWrite (campos content e activeForm) \
          no idioma da conversa. Preserve intactos: nomes de arquivo, \
          caminhos, comandos, flags, identificadores e trechos de código."
             .to_string()
     } else {
-        // EN: write steps in the conversation language; keep
-        // identifiers intact. Filenames, paths, commands, flags,
-        // identifiers, and code snippets MUST stay as-is.
         "Write TodoWrite steps (content and activeForm fields) in the \
          conversation's language. Keep intact: filenames, paths, \
          commands, flags, identifiers, and code snippets."
@@ -2950,14 +2943,13 @@ fn personality_label(value: &PersonalityMode, language: LanguageCode) -> &'stati
     }
 }
 
-// ── Parsing helpers ─────────────────────────────────────────────────
 
 /// Strip ANSI escape sequences + DECSET 2026 (in-band mode switch that
 /// breaks JSON parsing). Mirrors Electron's `cleanTerminalText`.
 pub fn clean_terminal_text(value: &str) -> String {
-    // Body unchanged — promoted to `pub` so the research-subagent runner
-    // (services/research_subagent_runner.rs) can reuse the exact same
-    // cleaning logic that the main turn stream uses.
+    // Promoted to `pub` so the research-subagent runner
+    // (services/research_subagent_runner.rs) reuses the same cleaning
+    // logic as the main turn stream.
     clean_terminal_text_impl(value)
 }
 
@@ -4628,8 +4620,6 @@ mod tests {
         assert!(prompt.contains("Next step"));
     }
 
-    // ── build_attachment_lines tests ────────────────────────────────
-    //
     // These verify the "PDF alucinado" fix: extracted text is injected
     // inline, and when no text is available + no vision, an explicit
     // warning tells the model NOT to invent content.
@@ -6006,7 +5996,7 @@ mod tests {
         // Counterfactual: the bypass is reserved-command-only. A
         // normal message MUST still get the prefix or the existing
         // workspace-context guarantee (test
-        // `build_prompt_resume_omits_app_instructions` at line 3845)
+        // `build_prompt_resume_omits_app_instructions`)
         // silently regresses. This test is the load-bearing one for
         // "don't break the normal case".
         let req = request_with_message("Hello");

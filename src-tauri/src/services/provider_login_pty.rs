@@ -1963,7 +1963,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
              e o killpg mata o CLI aos ~4s => ERR_CONNECTION_REFUSED no callback."
         );
 
-        // Agora o token do provedor aparece no blob (OAuth completou).
+        // Token do provedor aparece no blob — OAuth completou.
         set_fake_blob("codex", Some("codex-oauth-tok"));
         assert!(
             wait_until(Duration::from_secs(10), || {
@@ -2242,7 +2242,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             )
             .expect("start deve abrir o PTY");
 
-        // URL do OAuth observado (awaiting_browser).
         assert!(
             wait_until(Duration::from_secs(15), || {
                 events
@@ -2403,7 +2402,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             )
             .expect("start deve abrir o PTY");
 
-        // URL do OAuth observado (awaiting_browser).
         assert!(
             wait_until(Duration::from_secs(15), || {
                 events

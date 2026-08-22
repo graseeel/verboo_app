@@ -800,7 +800,6 @@ describe('BrowserPanel', () => {
     expect(onSetWidth).toHaveBeenCalledWith(760)
   })
 
-  // ── Tab strip tests ──
 
   it('creates a real tab calling browserApi.createTab', async () => {
     const onCreateTab = vi.fn().mockResolvedValue(sessionWithTabs('tab-new', 'tab-new'))

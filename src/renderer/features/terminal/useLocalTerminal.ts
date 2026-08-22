@@ -53,7 +53,6 @@ export function useLocalTerminal() {
     const nextWidth = persistTerminalWidth(clampWidthForViewport(terminalWidth))
     setTerminalWidth(nextWidth)
 
-    // Try to restore existing session first
     const existingSession = await window.verboo.terminalGetState()
     if (existingSession?.running) {
       sessionIdRef.current = existingSession.id
@@ -62,7 +61,6 @@ export function useLocalTerminal() {
       return existingSession
     }
 
-    // Start new session
     const request: LocalTerminalStartRequest = {
       cwd,
       cols: Math.floor((nextWidth - 24) / 9),
@@ -154,13 +152,11 @@ export function useLocalTerminal() {
     const nextWidth = persistTerminalWidth(clampWidthForViewport(terminalWidth))
     setTerminalWidth(nextWidth)
 
-    // Stop current session
     if (sessionIdRef.current) {
       await window.verboo.terminalStop(sessionIdRef.current)
       sessionIdRef.current = undefined
     }
 
-    // Start new in given cwd
     const request: LocalTerminalStartRequest = {
       cwd,
       cols: Math.floor((nextWidth - 24) / 9),

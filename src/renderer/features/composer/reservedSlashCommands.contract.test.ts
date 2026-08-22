@@ -67,7 +67,7 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-// ─── Source-file loaders (text only — no transpile, no runtime import) ──
+// Source-file loaders — text only: no transpile, no runtime import.
 
 const TURN_SERVICE_RS =
   'src-tauri/src/services/turn_service.rs'
@@ -84,7 +84,6 @@ function readRepoFile(relPath: string): string {
   return fs.readFileSync(abs, 'utf8').replace(/\r/g, '')
 }
 
-// ─── Parsers ────────────────────────────────────────────────────────────
 
 /**
  * Extract the entries of the Rust `RESERVED_SLASH_COMMANDS` const
@@ -211,7 +210,6 @@ function extractCliDispatchingReservedCommands(
   const dispatchSites: { line: number; name: string }[] = []
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]
-    // Strip the TS line comment (`// ...`).
     const codeOnly = rawLine.replace(/\/\/.*$/, '')
     const linePattern = new RegExp(slashPrefixPattern.source, 'g')
     let m: RegExpExecArray | null
@@ -251,7 +249,6 @@ function extractCliDispatchingReservedCommands(
   return rendererReservedNames.filter(n => dispatched.has(n))
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────
 
 describe('D-D cross-fence contract: RESERVED_SLASH_COMMANDS ↔ renderer reserved commands', () => {
   const rustSource = readRepoFile(TURN_SERVICE_RS)

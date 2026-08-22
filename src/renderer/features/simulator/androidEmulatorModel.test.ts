@@ -132,7 +132,6 @@ describe('androidEmulatorModel — fail-open classifier', () => {
 })
 
 
-// ── PA-27: picker grouping + stream defaults ───────────────────────────────
 
 describe('androidEmulatorModel — device picker grouping (PA-27)', () => {
   const pixel8: AndroidDevice = {
@@ -185,7 +184,6 @@ describe('androidEmulatorModel — device picker grouping (PA-27)', () => {
 })
 
 
-// ── PA-36: friendly AVD presentation ───────────────────────────────────────
 
 describe('androidEmulatorModel — friendly AVD label (PA-36)', () => {
   it('humanizes the bundled-style AVD name with its API suffix', () => {

@@ -33,9 +33,6 @@ use tokio::sync::{Notify, Semaphore};
 use crate::models::plugins::PluginError;
 use crate::services::marketplace_manifest_service::MarketplacePluginEntry;
 
-// ════════════════════════════════════════════════════════════════════
-// Constants
-// ════════════════════════════════════════════════════════════════════
 
 /// Cache TTL for a HIT (icon was fetched successfully): 7 days.
 const TTL_HIT_SECS: u64 = 7 * 24 * 60 * 60;
@@ -93,9 +90,6 @@ const GENERIC_HOST_BLOCKLIST: &[&str] = &[
 /// v3: added `ttl_secs` field to CacheIndexEntry (hit=7d, miss=1d).
 const CACHE_VERSION: u32 = 3;
 
-// ════════════════════════════════════════════════════════════════════
-// Public types
-// ════════════════════════════════════════════════════════════════════
 
 /// Result of `plugin_icon`. `None` means the FE should render a monogram
 /// fallback (no icon available, toggle off, or fetch failed).
@@ -149,9 +143,6 @@ pub struct VersionedCacheIndex {
     pub entries: CacheIndex,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Public API
-// ════════════════════════════════════════════════════════════════════
 
 /// Resolves the icon for a plugin. On-demand only — never called at launch.
 ///
@@ -194,9 +185,7 @@ pub async fn resolve_plugin_icon(
     // Load the index ONCE and reuse across all cache operations.
     let mut index = load_index(&cache_dir);
 
-    // ════════════════════════════════════════════════════════════════
-    // Phase 1 — homepage link-tag icon (current flow)
-    // ════════════════════════════════════════════════════════════════
+    // Phase 1 — homepage link-tag icon
     let homepage: Option<&str> = entry.homepage.as_deref().filter(|h| !h.is_empty());
     let homepage_domain: Option<String> = homepage.and_then(extract_domain);
 
@@ -299,9 +288,7 @@ pub async fn resolve_plugin_icon(
         }
     }
 
-    // ════════════════════════════════════════════════════════════════
     // Phase 2 — GitHub owner avatar fallback (Feedback-3 Item 6)
-    // ════════════════════════════════════════════════════════════════
     if let Some(owner) = &entry.github_owner {
         // Privacy gate (Feedback-4 Item 2): NUNCA mostrar avatar de
         // pessoa física. Only Organization accounts bypass this gate.
@@ -351,9 +338,7 @@ pub async fn resolve_plugin_icon(
         write_miss_to_cache(&cache_dir, avatar_domain, &mut index);
     }
 
-    // ════════════════════════════════════════════════════════════════
     // Phase 3 — monogram (no icon available)
-    // ════════════════════════════════════════════════════════════════
     Ok(PluginIconResult {
         icon_path: None,
         domain: None,
@@ -361,9 +346,6 @@ pub async fn resolve_plugin_icon(
     })
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: domain extraction
-// ════════════════════════════════════════════════════════════════════
 
 /// Extracts the domain from a homepage URL. Returns `None` if the URL is
 /// not http(s) or has no host. Strips `www.` prefix for dedupe.
@@ -484,7 +466,6 @@ pub(crate) fn is_ssrf_safe_url(url: &str) -> bool {
 /// from Rust's `FromStr` (decimal integer IP, hex IP, octal-prefixed octets,
 /// IPv4-mapped IPv6). The guideline: "na dúvida, REJEITAR — é só um ícone."
 pub(crate) fn is_private_ip(host: &str) -> bool {
-    // ── Non-standard IP encodings (glibc divergence) ──────────────────
 
     // 1. Hex integer: "0x7f000001" → 127.0.0.1 (glibc). Rust rejects this
     //    as an Ipv4Addr parse. Reject any host with `0x` / `0X` prefix.
@@ -518,7 +499,6 @@ pub(crate) fn is_private_ip(host: &str) -> bool {
         return true;
     }
 
-    // ── Standard IP literals ──────────────────────────────────────────
 
     // IPv4 literal.
     if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
@@ -607,9 +587,6 @@ fn is_ipv6_link_local(ip: &std::net::Ipv6Addr) -> bool {
     (segments[0] & 0xffc0) == 0xfe80
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: cache
-// ════════════════════════════════════════════════════════════════════
 
 /// Loads the cache index from `index.json`. Returns an empty map if the
 /// file is missing or unparseable (tolerant — a corrupt index doesn't
@@ -862,9 +839,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: fetch
-// ════════════════════════════════════════════════════════════════════
 
 /// Validated icon data — bytes + detected extension.
 struct IconData {
@@ -882,9 +856,7 @@ async fn semaphore() -> &'static Arc<Semaphore> {
         .await
 }
 
-// ════════════════════════════════════════════════════════════════════
 // Internal: GitHub owner-type gate (Feedback-4 Item 2 + scale fixes)
-// ════════════════════════════════════════════════════════════════════
 //
 // Decision: NUNCA mostrar avatar de pessoa física. Antes de buscar o
 // avatar via `https://github.com/{owner}.png`, verificamos o type do
@@ -980,7 +952,7 @@ fn fresh_type(typ: OwnerType, fetched_at: u64, now: u64) -> Option<OwnerType> {
 async fn fetch_owner_type(owner: &str, cache_dir: Option<&Path>) -> Option<OwnerType> {
     let now = now_secs();
 
-    // ── Layer 1: in-memory cache (fast path) ──────────────────────────
+    // Layer 1: in-memory cache (fast path)
     {
         let cache = owner_type_cache().lock().ok()?;
         if let Some((typ, fetched_at)) = cache.get(owner) {
@@ -993,7 +965,7 @@ async fn fetch_owner_type(owner: &str, cache_dir: Option<&Path>) -> Option<Owner
         }
     }
 
-    // ── Layer 2: on-disk cache (survives restart) ─────────────────────
+    // Layer 2: on-disk cache (survives restart)
     if let Some(dir) = cache_dir {
         let disk = load_owner_types_disk(dir);
         if let Some(entry) = disk.get(owner) {
@@ -1010,7 +982,7 @@ async fn fetch_owner_type(owner: &str, cache_dir: Option<&Path>) -> Option<Owner
         }
     }
 
-    // ── Singleflight: if a request for this owner is in-flight, wait ─
+    // Singleflight: if a request for this owner is in-flight, wait
     // Use `entry()` to atomically determine if we're the leader (we
     // inserted) or a follower (someone else's Arc is already stored).
     let (notify, is_leader) = {
@@ -1037,7 +1009,7 @@ async fn fetch_owner_type(owner: &str, cache_dir: Option<&Path>) -> Option<Owner
         return None;
     }
 
-    // ── Layer 3: API call (leader only) ──────────────────────────────
+    // Layer 3: API call (leader only)
     let result = query_github_owner_type(owner).await;
 
     let cached_type = match result {
@@ -1111,9 +1083,7 @@ async fn query_github_owner_type(owner: &str) -> Option<OwnerType> {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
 // Internal: GitHub avatar fetch (Feedback-3 Item 6)
-// ════════════════════════════════════════════════════════════════════
 
 /// Fetches a GitHub owner avatar (`https://github.com/{owner}.png`) with
 /// SSRF-safe redirect handling. The `github.com` endpoint redirects to
@@ -1420,9 +1390,6 @@ pub(crate) fn validate_icon(bytes: &[u8], _content_type: &str) -> Option<&'stati
     None
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -1438,7 +1405,6 @@ mod tests {
             .block_on(fut)
     }
 
-    // ── extract_domain ─────────────────────────────────────────────────
 
     #[test]
     fn extract_domain_https() {
@@ -1497,7 +1463,6 @@ mod tests {
         );
     }
 
-    // ── extract_github_owner_from_url (Phase 1 GitHub gate) ──────────
 
     #[test]
     fn extract_github_owner_from_url_parses_github_com() {
@@ -1540,7 +1505,6 @@ mod tests {
         assert_eq!(extract_github_owner_from_url("https://github.com"), None);
     }
 
-    // ── is_generic_host (blocklist) ───────────────────────────────────
 
     #[test]
     fn is_generic_host_blocks_github() {
@@ -1592,7 +1556,6 @@ mod tests {
         assert!(is_generic_host("foo.raw.githubusercontent.com"));
     }
 
-    // ── SSRF guard (is_ssrf_safe_url + is_private_ip) ─────────────────
 
     #[test]
     fn ssrf_rejects_http() {
@@ -1672,7 +1635,6 @@ mod tests {
         assert!(!is_private_ip("example.com"));
     }
 
-    // ── SSRF regression: non-standard IP encodings ───────────────────
 
     #[test]
     fn ssrf_rejects_decimal_integer_ip() {
@@ -1797,7 +1759,6 @@ mod tests {
         assert!(is_ssrf_safe_url("https://example0x00.com/icon.png"));
     }
 
-    // ── HTML link-tag discovery (extract_icon_link + extract_base_href) ─
 
     #[test]
     fn extract_icon_link_absolute_href() {
@@ -1978,7 +1939,6 @@ mod tests {
         );
     }
 
-    // ── TTL differentiation (hit 7d, miss 1d) ──────────────────────────
 
     #[test]
     fn ttl_hit_is_7_days() {
@@ -2082,7 +2042,6 @@ mod tests {
         assert!(check_cache(&index, "example.com", dir.path()).is_none());
     }
 
-    // ── resolve_plugin_icon blocklist integration ─────────────────────
 
     #[test]
     fn resolve_plugin_icon_blocklisted_domain_returns_none_without_fetch() {
@@ -2221,7 +2180,7 @@ mod tests {
         assert!(!result.cached);
     }
 
-    // ── Phase 1 GitHub Organization gate validation (Feedback-4 correction) ─
+    // Phase 1 GitHub Organization gate validation (Feedback-4 correction)
 
     #[test]
     fn resolve_plugin_icon_github_user_owner_blocks_phase1() {
@@ -2373,7 +2332,6 @@ mod tests {
         assert_eq!(result.domain.as_deref(), Some("42crunch.com"));
     }
 
-    // ── cache eviction of blocklisted domains ─────────────────────────
 
     #[test]
     fn load_index_evicts_blocklisted_domains() {
@@ -2569,7 +2527,6 @@ mod tests {
         assert!(result.cached);
     }
 
-    // ── validate_icon (magic bytes) ───────────────────────────────────
 
     #[test]
     fn validate_icon_png() {
@@ -2626,7 +2583,6 @@ mod tests {
         assert_eq!(validate_icon(svg, "image/png"), None);
     }
 
-    // ── hash_domain ────────────────────────────────────────────────────
 
     #[test]
     fn hash_domain_is_deterministic() {
@@ -2649,7 +2605,6 @@ mod tests {
         assert_eq!(h.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
     }
 
-    // ── cache (load/save/check) ────────────────────────────────────────
 
     #[test]
     fn cache_round_trip() {
@@ -2736,7 +2691,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // ── write_to_cache + LRU ───────────────────────────────────────────
 
     #[test]
     fn write_to_cache_creates_file_and_index() {
@@ -2812,7 +2766,6 @@ mod tests {
         assert!(index.contains_key("site-2.com"), "newest should remain");
     }
 
-    // ── resolve_plugin_icon (integration) ─────────────────────────────
 
     #[test]
     fn resolve_plugin_icon_toggle_off_returns_none() {

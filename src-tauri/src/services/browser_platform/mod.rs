@@ -40,9 +40,7 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{attach_bridge, evaluate, snapshot_png, BridgeHandle};
 
-// ---------------------------------------------------------------------------
 // Helpers compartilhados entre os 3 adaptadores de plataforma.
-// ---------------------------------------------------------------------------
 
 /// Sanitiza tab_id para uso como identificador: não-alnum vira `_`.
 pub fn sanitize_tab_id(tab_id: &str) -> String {
@@ -122,7 +120,7 @@ mod contract_tests {
         assert_eq!(result.as_deref(), Some("verboo"));
     }
 
-    // ---- Testes de contrato entre plataformas ----
+// Testes de contrato entre plataformas
 
     #[test]
     fn handler_name_provides_isolation() {
@@ -153,7 +151,7 @@ mod contract_tests {
         assert_eq!(w, "verboo-trusted-tab_001");
     }
 
-    // ---- Os templates CRUOS contêm os placeholders esperados ----
+// Os templates CRUOS contêm os placeholders esperados
     // (Se um placeholder sumir do arquivo, ninguém substitui.)
 
     #[test]
@@ -173,7 +171,7 @@ mod contract_tests {
         assert!(tpl.contains("%DOCUMENT_TOKEN%"));
     }
 
-    // ---- Depois de renderizar, NADA de % sobrevive ----
+// Depois de renderizar, NADA de % sobrevive
 
     #[test]
     fn render_transport_replaces_all_placeholders() {

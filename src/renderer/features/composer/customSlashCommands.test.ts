@@ -134,8 +134,8 @@ describe('getCustomCommandToken', () => {
   })
 
   it('preserves carriage-return terminators without padding', () => {
-    // 'hello\r\n' ends with \n (already in the no-pad set); \r is the
-    // additional terminator we extended the check to cover.
+    // 'hello\r\n' ends in \n (already a no-pad terminator); bare \r must
+    // also skip padding.
     expect(getCustomCommandToken(makeCommand({ name: 'demo', body: 'hello\r' }))).toBe('hello\r')
   })
 })

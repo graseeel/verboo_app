@@ -108,13 +108,11 @@ export function createSelectionContextController({
     return task
   }
 
-  /** @param {PendingSelectionContext} context */
   const put = (context) => mutateContexts((contexts) => {
     contexts[String(context.tabId)] = context
     return context
   })
 
-  /** @param {PendingSelectionContext} context */
   const replaceIfCurrent = (context) => mutateContexts((contexts) => {
     const existing = contexts[String(context.tabId)]
     if (existing?.id !== context.id) return null
@@ -122,7 +120,6 @@ export function createSelectionContextController({
     return context
   })
 
-  /** @param {PendingSelectionContext} context */
   const notify = (context) => {
     broadcast({
       type: MSG.SELECTION_CONTEXT_CHANGED,
@@ -162,10 +159,6 @@ export function createSelectionContextController({
     return true
   }
 
-  /**
-   * @param {PendingSelectionContext} context
-   * @param {Promise<void>} panelOpening
-   */
   async function completeSelectionContext(context, panelOpening) {
     try {
       await panelOpening

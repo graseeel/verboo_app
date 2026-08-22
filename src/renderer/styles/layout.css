@@ -167,16 +167,15 @@
 }
 
 .sidebar-shell.is-peek .app-sidebar {
-  /* Peek enter: opacity 0→1 + translateX(-12px)→0, 260ms ease-out. GPU-only
-     (transform + opacity) so the sidebar slides in without layout thrash.
+  /* GPU-only (transform + opacity): slides in without layout thrash.
      260ms is perceptible but not sluggish — the sidebar reads as "arriving". */
   animation: sidebar-peek-enter 260ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .sidebar-shell.is-peek-leaving .app-sidebar {
-  /* Leave fade: opacity 1→0 + translateX(-10px), 220ms. Faster than enter
-     (exit < entrance) so the sidebar retreats snappily. The shell is
-     position:absolute now, so the grid collapses underneath simultaneously. */
+  /* Faster than enter (exit < entrance) so the retreat reads snappy.
+     The shell is position:absolute now, so the grid collapses underneath
+     simultaneously. */
   animation: sidebar-peek-leave 220ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
@@ -190,7 +189,6 @@
   to   { opacity: 0; transform: translateX(-10px); }
 }
 
-/* Collapse button that lives next to "New chat" inside the sidebar. */
 .sidebar-newchat-row {
   display: flex;
   align-items: stretch;

@@ -31,10 +31,9 @@ import type {
   ChromeIntegrationAggregate,
 } from '../../../shared/types'
 
-// ─── Mocks ──────────────────────────────────────────────────────────────────
 vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
 
-// ─── Derived aggregate (mirrors Rust-side computation) ──────────────────────
+// Derived aggregate (mirrors Rust-side computation).
 function computeAggregate(status: ChromeIntegrationStatus): ChromeIntegrationAggregate {
   if (status.extension === 'missing' && status.bridge === 'missing' && status.mcp === 'missing') {
     return 'notConfigured'
@@ -46,7 +45,6 @@ function computeAggregate(status: ChromeIntegrationStatus): ChromeIntegrationAgg
   return 'ready'
 }
 
-// ─── Test hook: useChromeIntegration ────────────────────────────────────────
 function useChromeIntegration(mockBridge: Pick<VerbooBridgeMock, 'getChromeIntegrationStatus' | 'chromeIntegrationConfigure' | 'chromeIntegrationTest'>) {
   const [status, setStatus] = useState<ChromeIntegrationStatus | undefined>()
   const [loading, setLoading] = useState(true)
@@ -88,7 +86,6 @@ function useChromeIntegration(mockBridge: Pick<VerbooBridgeMock, 'getChromeInteg
   return { status, loading, error, testing, aggregate, refresh, configure, testConnection }
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('MCP Status Integration', () => {
   let bridge: ReturnType<typeof createVerbooBridgeMock>
@@ -213,7 +210,6 @@ describe('MCP Status Integration', () => {
       })
 
       expect(bridge.chromeIntegrationConfigure).toHaveBeenCalled()
-      // Status refreshed after configure
       expect(result.current.status?.extension).toBe('managed')
     })
 
@@ -279,7 +275,6 @@ describe('MCP Status Integration', () => {
         testPromise = result.current.testConnection()
       })
 
-      // After act, the state update should be flushed
       expect(result.current.testing).toBe(true)
 
       await act(async () => {

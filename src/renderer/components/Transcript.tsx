@@ -380,7 +380,6 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
     setEditMode(false)
   }
 
-  // Inline edit UI
   if (editMode) {
     return (<>
       <article className={`message-row ${visualRole} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>

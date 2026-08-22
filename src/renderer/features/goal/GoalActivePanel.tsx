@@ -85,17 +85,11 @@ export function GoalActivePanel({
   // same guard as backstop for non-panel entry points.
   const isBatch = (goal.tasks?.length ?? 0) > 0
 
-  // G-C6-FIX-UI: surface the evaluator's specific error message when
-  // paused by infraError. The Rust evaluator emits a useful timeout/
-  // failure reason (e.g. "Goal evaluator CLI timed out after 240s...")
-  // that the scheduler stores in goal.lastEvaluation.reason. Before
-  // this fix, the panel showed only the generic "Erro de
-  // infraestrutura do avaliador" — the specific message was written
-  // to state but never rendered. We use the existing (previously
-  // orphan) goal.errorPausedBody key, interpolating {message} with
-  // the reason text. Falls back to nothing if reason is absent or
-  // empty — the generic pauseReason already shows, never an empty
-  // string or "undefined".
+  // Surface the evaluator's specific infraError message: the Rust
+  // evaluator's timeout/failure reason arrives via goal.lastEvaluation.reason
+  // and renders through the goal.errorPausedBody key ({message}). With no
+  // reason, nothing extra shows — the generic pauseReason already covers it,
+  // never an empty string.
   const evaluatorErrorMessage =
     isPaused && goal.pauseReason === 'infraError' && goal.lastEvaluation?.reason
       ? t('goal.errorPausedBody', { message: goal.lastEvaluation.reason })
@@ -254,10 +248,8 @@ export function GoalActivePanel({
       </div>
 
       <div className="goal-active-panel-objective">
-        {/* quieter redesign: the "OBJECTIVE" uppercase label was removed —
-            the text under the Goal header is self-evident, and the user
-            rejects labels that read as noise. The i18n key and CSS rule
-            were removed together (no orphan on either side). */}
+        {/* Quieter redesign: no "OBJECTIVE" label — self-evident under the
+            Goal header, and the user rejects labels that read as noise. */}
         {editing ? (
           <textarea
             ref={editInputRef}
@@ -291,10 +283,9 @@ export function GoalActivePanel({
       )}
 
       <div className="goal-active-panel-actions">
-        {/* quieter redesign: every action is icon-only with tooltip, the
-            SAME vocabulary as the compact strip (product.md: consistent
-            affordances across the surface). The i18n keys stay consumed
-            as aria-label/title — nothing orphaned. */}
+        {/* Icon-only actions with tooltips — same vocabulary as the compact
+            strip (product.md: consistent affordances across the surface);
+            the i18n keys stay consumed as aria-label/title. */}
         {editing ? (
           <>
             <button

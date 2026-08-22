@@ -1,5 +1,4 @@
 /**
- * src/renderer/features/ocr/ocrService.ts
  *
  * Lazy-loaded tesseract.js wrapper that runs OCR on local image files using
  * bundled WASM + worker assets. Eng+por traineddata are downloaded on first
@@ -17,7 +16,6 @@
 import { createWorker } from 'tesseract.js'
 import type { Worker } from 'tesseract.js'
 
-// ── Config ────────────────────────────────────────────────────
 
 /** Paths relative to the webview root — served from dist-renderer/ */
 const ASSET_BASE = '/tessdata/'
@@ -31,18 +29,14 @@ const CORE_PATH = `${ASSET_BASE}tesseract-core-simd-lstm.js`
  */
 const DEFAULT_LANG_PATH = '/tessdata/'
 
-/** Languages to load */
 const LANGS = 'eng+por'
 
-/** Teardown idle worker after 30s of inactivity */
 const IDLE_TEARDOWN_MS = 30_000
 
-// ── State ──────────────────────────────────────────────────────
 
 let worker: Worker | null = null
 let idleTimer: ReturnType<typeof setTimeout> | null = null
 
-// ── Helpers ─────────────────────────────────────────────────────
 
 function scheduleTeardown() {
   if (idleTimer) clearTimeout(idleTimer)
@@ -69,7 +63,6 @@ async function terminateWorker() {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
 }
 
-// ── Public API ─────────────────────────────────────────────────
 
 export type OcrResult = {
   text: string

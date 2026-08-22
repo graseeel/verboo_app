@@ -20,7 +20,6 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
   const { toast } = useToast()
   const summary = profile.summary
   const activity = profile.activity ?? []
-  // ── Upload state ──────────────────────────────────────────
   const [pendingFile, setPendingFile] = useState<{ file: File; previewUrl: string } | undefined>()
   const [isSaving, setIsSaving] = useState(false)
   const initialProfileLoadAttempted = useRef(false)
@@ -54,7 +53,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
         </section>
       )}
 
-      {/* ── Avatar section ──────────────────────────────────── */}
+      {/* Avatar section */}
       <section className="profile-panel avatar-editor-panel">
         <div className="avatar-editor-main">
           <div className="avatar-editor-preview">
@@ -126,7 +125,6 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
                     const file = e.target.files?.[0]
                     if (!file) return
                     console.log('[avatar] file picked:', file.name, file.type, file.size)
-                    // Validate MIME — accept image/png, image/jpeg, image/webp.
                     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
                       console.warn('[avatar] rejected format:', file.type, file.name)
                       toast(t('settings.avatarUploadErrorType'))

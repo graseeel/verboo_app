@@ -53,7 +53,6 @@ describe('verboo-bridge — IS_TAURI guard', () => {
   })
 
   afterEach(() => {
-    // Restore window.verboo and __TAURI_INTERNALS__.
     if (originalVerboo !== undefined) {
       ;(window as unknown as Record<string, unknown>).verboo = originalVerboo
     } else {
@@ -367,7 +366,6 @@ describe('verboo-bridge — API shape', () => {
 
   it('returns a cleanup function from event subscriptions', async () => {
     expect(api).toBeDefined()
-    // onAgentEvent returns a cleanup fn — calling it must not throw.
     const cleanup = (api as Record<string, (cb: () => void) => () => void>).onAgentEvent(() => {})
     expect(typeof cleanup).toBe('function')
     expect(() => cleanup()).not.toThrow()

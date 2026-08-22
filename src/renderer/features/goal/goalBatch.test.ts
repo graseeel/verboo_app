@@ -200,7 +200,6 @@ function makeBatchGoal(
   return goal
 }
 
-// ─── ACEITE 1: CANONICAL REPRO ──────────────────────────────────────
 // T2 ASSERTION CHANGE — BY DESIGN, not regression (declared per the
 // Maestro's warning): under T1 this repro ended 'blocked' with the
 // goal stuck on task 1 forever. Under T2's state matrix (row 8), the
@@ -309,7 +308,6 @@ describe('T1 aceite 1 + T2 rows 8/13 — CANONICAL REPRO: completion by prose ne
   })
 })
 
-// ─── ACEITE 2 + 3: boundary reset, snapshot, POSSE ──────────────────
 describe('T1 aceites 2+3 — batch advance: counter reset, evaluator snapshot, owner untouched', () => {
   it('a 2-task batch advances in place: turnsRunThisTask resets at the boundary, the evaluator gets the PER-TASK snapshot', async () => {
     const goal = makeBatchGoal([{ text: 'Write the module' }, { text: 'Add the tests' }])
@@ -383,7 +381,6 @@ describe('T1 aceites 2+3 — batch advance: counter reset, evaluator snapshot, o
   })
 })
 
-// ─── ACEITE 4: legacy single-task goal, NO REGRESSION ───────────────
 describe('T1 aceite 4 — legacy single-task goal: behavior intact', () => {
   it('a goal WITHOUT tasks completes exactly as before: same object to the evaluator, global counter, D1 never consulted', async () => {
     const goal = createGoalState({
@@ -422,7 +419,6 @@ describe('T1 aceite 4 — legacy single-task goal: behavior intact', () => {
   })
 })
 
-// ─── (f) toolless opt-out, declared PER TASK ─────────────────────────
 describe('T1 (f) — toolless opt-out: evidence waived, turns still required', () => {
   it('a toolless task completes with ZERO action evidence after a real turn — but NOT with zero turns', async () => {
     const goal = makeBatchGoal([{ text: 'Write a haiku in chat', toolless: true }])
@@ -489,7 +485,6 @@ describe('T1 (f) — toolless opt-out: evidence waived, turns still required', (
   })
 })
 
-// ─── Building blocks: whitelist, snapshot, advance, creation ────────
 describe('T1 (c) — D1 whitelist on activityKind (the REAL TranscriptItem shape)', () => {
   it('ACTION_ACTIVITY_KINDS is exactly the whitelist — and thinking is NOT in it', () => {
     expect([...ACTION_ACTIVITY_KINDS].sort()).toEqual([

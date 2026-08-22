@@ -18,7 +18,6 @@ import { readSoundsEnabled, writeSoundsEnabled } from './soundStorage'
  * the limitation is declared in sounds.ts.
  */
 
-/* ── Fake Web Audio graph, recording every scheduled node ── */
 
 type FakeParam = {
   setValueAtTime: ReturnType<typeof vi.fn>

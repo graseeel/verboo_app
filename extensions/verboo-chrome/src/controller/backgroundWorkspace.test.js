@@ -98,7 +98,7 @@ test('turn lease changes target only after an explicit tabs action', async () =>
   await assert.rejects(() => lease.selectTab(88, 9), /outside_workspace/)
 })
 
-// ── PÓS-CAMPO-6 (B): lease target revalidation + load wait ─────────
+// PÓS-CAMPO-6 (B): lease target revalidation + load wait.
 
 const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
 
@@ -210,7 +210,7 @@ test('PÓS-CAMPO-6: reset clears the lease storage', async () => {
   assert.equal(storage.session.verbooBackgroundWorkspace, undefined)
 })
 
-// ── PÓS-CAMPO-7: lease URL EQUALITY (stale-but-controllable lease) ──
+// PÓS-CAMPO-7: lease URL EQUALITY (stale-but-controllable lease).
 
 test('PÓS-CAMPO-7: a stale-but-controllable lease is re-navigated to the user URL and the load is awaited', async () => {
   const { chromeApi, updates } = makeChromeApi({

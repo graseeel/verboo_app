@@ -3,15 +3,12 @@
 //! The desktop backend is a thin shell-out wrapper around the `verboo plugin`
 //! CLI commands. These types model the JSON payloads the CLI 0.13 emits on
 //! `list --json`, `list --json --available`, and `marketplace list --json`,
-//! plus the 9-variant error union used to classify CLI failures for the FE.
+//! plus the error union used to classify CLI failures for the FE.
 //!
 //! Real CLI shapes verified 2026-07-13 against `@verboo/code` 0.13.0.
 
 use serde::{Deserialize, Serialize};
 
-// ════════════════════════════════════════════════════════════════════
-// Enums
-// ════════════════════════════════════════════════════════════════════
 
 /// Scope of a plugin install. Mirrors the CLI's `--scope` flag values.
 /// Note: the CLI accepts a fourth `managed` scope ONLY on `plugin update`;
@@ -56,9 +53,6 @@ pub enum MarketplaceTrust {
     Community,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Plugin + AvailablePlugin
-// ════════════════════════════════════════════════════════════════════
 
 /// An installed plugin row. Mirrors `verboo plugin list --json` (real shape
 /// verified 2026-07-13). The CLI's bare `list` payload omits `name` and
@@ -98,7 +92,7 @@ pub struct Plugin {
     /// today — kept optional so the FE can populate it from cache later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_commit_sha: Option<String>,
-    // ── Optional fields only present in `--available` rows ──────────
+    // Optional fields only present in `--available` rows
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,9 +175,6 @@ pub struct AvailablePlugin {
     pub install_count: u64,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PluginSource (discriminated union)
-// ════════════════════════════════════════════════════════════════════
 
 /// The CLI emits `source` either as an object with a `source` discriminator
 /// field OR as a relative path shorthand string (e.g. `"./plugins/x"`).
@@ -239,9 +230,6 @@ pub enum PluginSourceObject {
     },
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Marketplace
-// ════════════════════════════════════════════════════════════════════
 
 /// A configured marketplace source. Mirrors `verboo plugin marketplace list
 /// --json` (verified 2026-07-13). `plugin_count` and `trust` are FE-derived
@@ -270,9 +258,6 @@ pub struct Marketplace {
     pub plugin_count: Option<u64>,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PluginValidateResult
-// ════════════════════════════════════════════════════════════════════
 
 /// Result of `verboo plugin validate <path>`. The CLI does NOT emit JSON
 /// today (verified 2026-07-13); we coarse-parse stdout/stderr markers
@@ -418,15 +403,11 @@ impl std::fmt::Display for PluginError {
 
 impl std::error::Error for PluginError {}
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── PluginScope ────────────────────────────────────────────────────
 
     #[test]
     fn plugin_scope_serializes_lowercase() {
@@ -454,7 +435,7 @@ mod tests {
         assert_eq!(PluginScope::Local.as_cli_arg(), "local");
     }
 
-    // ── Plugin round-trip against real CLI 0.13 shape ─────────────────
+    // Plugin round-trip against real CLI 0.13 shape
 
     #[test]
     fn plugin_parses_real_cli_list_payload() {
@@ -620,7 +601,7 @@ mod tests {
         assert!(!json.contains("description"));
     }
 
-    // ── AvailablePlugin + PluginSource discriminated union ────────────
+    // AvailablePlugin + PluginSource discriminated union
 
     #[test]
     fn available_plugin_parses_git_subdir_source() {
@@ -813,7 +794,6 @@ mod tests {
         assert!(back.available.is_empty());
     }
 
-    // ── Marketplace ────────────────────────────────────────────────────
 
     #[test]
     fn marketplace_parses_real_cli_payload() {
@@ -863,7 +843,6 @@ mod tests {
         assert!(!json.contains("\"pluginCount\""));
     }
 
-    // ── PluginError ────────────────────────────────────────────────────
 
     #[test]
     fn plugin_error_serializes_with_kind_tag() {
@@ -1007,7 +986,6 @@ mod tests {
         assert_eq!(variants.len(), 10);
     }
 
-    // ── PluginValidateResult ──────────────────────────────────────────
 
     #[test]
     fn validate_result_round_trip() {

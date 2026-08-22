@@ -117,9 +117,8 @@ export function AppSidebar({
   useEffect(() => {
     if (archivedConversations.length === 0) setArchivedChatsOpen(false)
   }, [archivedConversations.length])
-  // Search is now handled by the command palette (⌘K / ⌘P). The sidebar no
-  // longer keeps a local query or inline input — clicking "Pesquisar" opens
-  // the palette via onOpenSearch. Conversations/projects render unfiltered
+  // Search lives in the command palette (⌘K / ⌘P): clicking "Pesquisar"
+  // opens it via onOpenSearch. Conversations/projects render unfiltered
   // here; filtering happens in the palette.
   const visibleConversations = useMemo(() => conversations, [conversations])
   const visibleProjects = useMemo(() => projects, [projects])

@@ -95,7 +95,6 @@ describe('AnnotationChip — panel', () => {
     openPanel()
     expect(screen.getByText(/the chosen excerpt/)).toBeTruthy()
     expect(screen.getByText('Selected text')).toBeTruthy()
-    // Contrafactual: the comment label must NOT exist for a comment-less item.
     expect(screen.queryByText('Your comment')).toBeNull()
   })
 
@@ -228,7 +227,6 @@ describe('AnnotationChip — POSSE (via the store the App uses)', () => {
     expect(screen.getByRole('button', { name: /annotation/i }).textContent).toContain('1 annotation')
     openPanel()
     expect(screen.getByText(/alpha-from-A/)).toBeTruthy()
-    // Contrafactual: B's quote must NOT reach A's screen.
     expect(screen.queryByText(/beta-from-B/)).toBeNull()
   })
 })

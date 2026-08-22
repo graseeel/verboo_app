@@ -40,7 +40,6 @@ describe('StepFlow hideFinalTextId', () => {
       { id: 't1:activity:0', role: 'assistant', kind: 'activity', activityKind: 'edit', text: 'Editou arquivo', activityDetail: 'foo.ts', timestamp: 0 },
     ]
     const { container } = render(<StepFlow items={items} hideFinalTextId="t1:text:0" />)
-    // Text block with matching id is hidden
     expect(container.querySelectorAll('.step-text').length).toBe(0)
     // Actions block still renders — non-text blocks are untouched
     expect(container.querySelectorAll('.step-actions').length).toBe(1)

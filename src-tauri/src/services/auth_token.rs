@@ -9,7 +9,6 @@ use crate::services::credentials_store::CredentialsStore;
 ///   1. CLI OAuth token (with refresh) from the CLI keychain/store.
 ///   2. API key (`vbk_…`) from the app credential store.
 pub fn resolve_token(credentials: &CredentialsStore) -> Option<String> {
-    // Try CLI OAuth token first
     match cli_credentials::get_access_token() {
         Some(tok) if !tok.trim().is_empty() => {
             eprintln!("[verboo:auth-token] resolved CLI OAuth token ({} chars)", tok.len());
@@ -22,7 +21,6 @@ pub fn resolve_token(credentials: &CredentialsStore) -> Option<String> {
             eprintln!("[verboo:auth-token] no CLI token found — falling back to API key");
         }
     }
-    // Fallback to API key from credential store
     match credentials.get_api_key() {
         Ok(Some(key)) if !key.trim().is_empty() => {
             eprintln!("[verboo:auth-token] resolved API key ({} chars)", key.len());

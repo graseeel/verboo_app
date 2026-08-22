@@ -263,7 +263,6 @@ describe('SimulatorOnboarding — manual guide and fail-open', () => {
     fireEvent.click(screen.getByRole('button', { name: /Automatic setup/ }))
     await flush()
 
-    // The pre-onboarding card, verbatim: issue text + refresh button.
     const legacy = container.querySelector('.ios-simulator-requirement')
     expect(legacy, 'old static card must render when the backend lacks the commands').toBeTruthy()
     expect(legacy).toHaveTextContent('Create an iOS simulator in Xcode, then refresh this panel.')

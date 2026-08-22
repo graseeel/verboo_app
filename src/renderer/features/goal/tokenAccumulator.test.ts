@@ -95,7 +95,7 @@ describe('G-C14: shouldAccumulateTokensForTurn — dedupe gate', () => {
       }
     }
 
-    expect(usedInputTokens).toBe(2_000) // two distinct turns, each summed once
+    expect(usedInputTokens).toBe(2_000)
   })
 
   it('handles three emissions for the same turn (defensive — only first accumulates)', () => {
@@ -115,7 +115,7 @@ describe('G-C14: shouldAccumulateTokensForTurn — dedupe gate', () => {
       }
     }
 
-    expect(usedInputTokens).toBe(500) // only the first emission
+    expect(usedInputTokens).toBe(500)
   })
 })
 

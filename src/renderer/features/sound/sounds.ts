@@ -86,8 +86,7 @@ export function resolveSoundForEvent(
   }
 }
 
-/* ── Synthesis ──────────────────────────────────────────────────────
- * One note = { frequency Hz, start offset s, duration s, peak gain }.
+/* One note = { frequency Hz, start offset s, duration s, peak gain }.
  * Envelope: 12ms linear attack (no click), exponential release. */
 
 const ATTACK_S = 0.012

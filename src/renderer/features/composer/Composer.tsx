@@ -227,7 +227,6 @@ export function Composer({
   const goalModeActive = isGoalCommandDraft(value)
   const dropActive = dragDepth > 0 || nativeDragging
 
-  // ── @-mention skill palette ─────────────────────────────────────────────
   const atQuery = getAtQuery(value)
 
   const matchingAtSkills = useMemo(() => {
@@ -357,7 +356,7 @@ export function Composer({
     textareaRef.current?.focus()
   }
 
-  // ── Voice input (Web Speech API, no backend key) ────────────────────────
+  // Voice input — Web Speech API, no backend key (no local API key needed).
   // Lazy handle: created on the first toggle so a session never opens the
   // mic until the user explicitly asks for it. Cleanup runs on unmount and
   // whenever the composer is discarded so we never leave the OS mic open.

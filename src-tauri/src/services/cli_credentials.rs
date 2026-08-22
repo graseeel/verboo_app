@@ -88,7 +88,6 @@ fn reset_cache() {
 ///
 /// Never panics. Returns None on any failure (caller falls back to API key).
 pub fn get_access_token() -> Option<String> {
-    // Fast path: cache hit (no keychain read).
     {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
@@ -100,9 +99,8 @@ pub fn get_access_token() -> Option<String> {
         }
     }
 
-    // Slow path: serialize the store read + possible refresh. Re-check the
-    // cache after taking the lock because another caller may have refreshed
-    // while this caller was waiting.
+    // Serialize store read + refresh behind REFRESH_LOCK; re-check the cache
+    // after taking the lock — another caller may have refreshed while waiting.
     let _refresh_guard = REFRESH_LOCK.lock().ok()?;
     {
         let cached = CACHE.lock().ok()?;
@@ -126,7 +124,6 @@ pub fn get_access_token() -> Option<String> {
         }
     };
 
-    // Update cache with what we just read.
     {
         if let Ok(mut c) = CACHE.lock() {
             *c = Some(credentials.clone());
@@ -137,8 +134,7 @@ pub fn get_access_token() -> Option<String> {
         return Some(credentials.access_token);
     }
 
-    // Refresh. On failure, fall back to the current token if it hasn't
-    // expired yet (the 60s skew gives us a buffer).
+    // On refresh failure, fall back to the still-valid current token (the 60s skew buffers).
     match refresh_access_token(&credentials) {
         Some(refreshed) => {
             {
@@ -210,10 +206,6 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 
 /// Reads the CLI credentials blob (cross-platform).
 ///
-/// macOS: reads from system Keychain via `/usr/bin/security`.
-/// Windows: reads DPAPI-encrypted file (primary) with plaintext fallback.
-/// Linux: reads Secret Service first, then the plaintext fallback.
-///
 /// (a) Windows DPAPI (2026-08-07): the CLI's `windowsCredentialStorage`
 /// writes via DPAPI (`ProtectedData.Protect` with `CurrentUser` scope)
 /// to `~/.verboo/Verboo_Code-credentials.secure.dpapi`. The plaintext
@@ -247,7 +239,6 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     if cfg!(target_os = "macos") {
         read_keychain_blob()
     } else if cfg!(target_os = "windows") {
-        // (a) Windows: DPAPI primary, plaintext fallback.
         #[cfg(windows)]
         {
             read_windows_dpapi_blob().or_else(read_file_blob)
@@ -327,9 +318,6 @@ fn read_keychain_blob() -> Option<Value> {
     parse_json_blob(&output)
 }
 
-/// Writes the blob back to macOS Keychain via `/usr/bin/security
-/// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
-///
 /// Lê o blob de credenciais do CLI (keychain) — o blob guarda token POR
 /// PROVEDOR (`{ codex: {...}, claude: {...} }` — medido no clone verboo-cli:
 /// CODEX_STORAGE_KEY='codex'). Fonte da evidência de conexão por provedor
@@ -342,6 +330,9 @@ pub(crate) fn read_provider_credentials_blob() -> Option<Value> {
     read_credentials_blob()
 }
 
+/// Writes the blob back to macOS Keychain via `/usr/bin/security
+/// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
+///
 /// Always scopes to `$USER`/`$LOGNAME` so we never update the Desktop
 /// `api-key` Keychain item that shares this service name.
 fn write_keychain_blob(blob: &Value) -> bool {
@@ -483,7 +474,7 @@ fn write_linux_secret_blob(blob: &Value) -> bool {
     wrote && child.wait().is_ok_and(|status| status.success())
 }
 
-// ── (a) Windows DPAPI credentials ───────────────────────────────────
+// (a) Windows DPAPI credentials
 //
 // Clone `windowsCredentialStorage.ts:98-146`:
 //   - Primary store: DPAPI (`ProtectedData.Protect` with `CurrentUser`
@@ -651,11 +642,6 @@ fn build_dpapi_write_script(path: &str, entropy: &str) -> String {
     )
 }
 
-/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
-/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
-/// Returns the decrypted JSON blob, or None if the file is missing /
-/// decryption fails.
-///
 /// Renames a corrupted DPAPI file to `<name>.invalid-<timestamp>` so the
 /// login flow can restart clean instead of being stuck (issue #72). The
 /// file is PRESERVED (not deleted) for diagnosis.
@@ -681,6 +667,11 @@ fn quarantine_corrupted_dpapi_file(file_path: &std::path::Path) {
     }
 }
 
+/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
+/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
+/// Returns the decrypted JSON blob, or None if the file is missing /
+/// decryption fails.
+///
 /// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
 /// logic (`dpapi_file_path_for`, `dpapi_entropy_for`,
 /// `build_dpapi_read_script`) is tested on mac; the PowerShell call
@@ -1212,7 +1203,7 @@ mod tests {
         let _ = cli_credentials_file_path();
     }
 
-    // ─── Cold launch race regression tests ───────────────────────────
+    // Cold launch race regression tests
     //
     // Bug being prevented: on a cold launch (process start, empty cache),
     // the first call to `get_access_token()` had to read the keychain —
@@ -1267,9 +1258,9 @@ mod tests {
     /// Cold-launch contract: once the cache is populated, subsequent
     /// calls must hit the fast path and return the same token WITHOUT
     /// re-reading the store. This pins the invariant that prevents the
-    //  race: if a future refactor breaks the cache (e.g. clears it on
-    ///  every call), parallel callers would all hammer the keychain and
-    ///  race again.
+    /// race: if a future refactor breaks the cache (e.g. clears it on
+    /// every call), parallel callers would all hammer the keychain and
+    /// race again.
     #[test]
     fn cold_launch_cache_hit_returns_cached_token_without_reread() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -1289,7 +1280,6 @@ mod tests {
             *c = Some(creds.clone());
         }
 
-        // Fast path: must return the cached token, no keychain read.
         let tok = get_access_token();
         assert_eq!(
             tok.as_deref(),
@@ -1298,7 +1288,6 @@ mod tests {
              the fast path is broken and parallel callers will race on the keychain"
         );
 
-        // Cache must still hold the token (not cleared by the read).
         {
             let c = CACHE.lock().unwrap();
             assert!(
@@ -1341,8 +1330,7 @@ mod tests {
         // original token back — NOT None.
         // NOTE: this calls the real refresh_access_token which would hit
         // the network. But refresh_access_token returns None immediately
-        // when refresh_token is None/empty (line 366-369), so no network
-        // call happens.
+        // when refresh_token is None/empty, so no network call happens.
         let tok = get_access_token();
         assert_eq!(
             tok.as_deref(),
@@ -1387,7 +1375,7 @@ mod tests {
         );
     }
 
-    // ── (a) Windows DPAPI pure logic ───────────────────────────────
+    // (a) Windows DPAPI pure logic
     //
     // The pure functions (path/entropy derivation) are tested on mac.
     // The PowerShell OS call (`read_windows_dpapi_blob`) is

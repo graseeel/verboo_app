@@ -109,11 +109,9 @@ export function resolveChecklistPlacement(input: ChecklistPlacementInput): Check
  * drop point to the resolved resting position — the "volta sozinho".
  */
 
-/** Card width in px (fixed, like the approved prototype). */
+/** Fixed width, per the approved prototype. */
 export const CHECKLIST_CARD_WIDTH = 288
-/** Distance from the right edge / top when parked at home. */
 export const CHECKLIST_CARD_MARGIN = 16
-/** Minimum clearance to any window edge, in px. */
 export const CHECKLIST_WINDOW_EDGE = 8
 /** Magnetic snap radius around the home corner, in px. */
 export const CHECKLIST_SNAP = 48

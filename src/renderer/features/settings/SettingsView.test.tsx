@@ -359,12 +359,9 @@ describe('SettingsView → T11: aba Provedores (ordem do dono — provedores sae
       onActiveTabChange,
     }))
 
-    // Navigation entry exists (own tab, NOT the browser-icon one)…
     const navTab = screen.getByRole('button', { name: 'Providers' })
-    // …is selectable (routes through onActiveTabChange like every tab)…
     fireEvent.click(navTab)
     expect(onActiveTabChange).toHaveBeenCalledWith('providers')
-    // …and shows the provider cards with the billing note that rode along.
     expect(screen.getByRole('heading', { name: 'Providers', level: 1 })).toBeInTheDocument()
     expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.getByText('Claude')).toBeInTheDocument()
@@ -380,10 +377,8 @@ describe('SettingsView → T11: aba Provedores (ordem do dono — provedores sae
       providerStatuses: [codexDisconnected, claudeDisconnected],
     }))
 
-    // Integrations keeps its own subject (Chrome)…
     expect(screen.getByRole('heading', { name: 'Integrations', level: 1 })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Verboo in Chrome', level: 2 })).toBeInTheDocument()
-    // …and NOTHING from the provider section survived there.
     expect(container.querySelector('.provider-card')).toBeNull()
     expect(screen.queryByText('Codex')).toBeNull()
     expect(screen.queryByText('Claude')).toBeNull()
@@ -399,12 +394,10 @@ describe('SettingsView → T11: aba Provedores (ordem do dono — provedores sae
       onProviderConnect,
     }))
 
-    // The invite: every disconnected card offers an ENABLED Connect.
     expect(screen.getAllByText(/^Not connected$/i)).toHaveLength(2)
     const connectButtons = screen.getAllByRole('button', { name: /^Connect$/i })
     expect(connectButtons).toHaveLength(2)
     for (const button of connectButtons) expect(button).toHaveProperty('disabled', false)
-    // …and the invite WORKS from zero: the click starts the provider's flow.
     fireEvent.click(connectButtons[0])
     expect(onProviderConnect).toHaveBeenCalledWith('codex')
   })

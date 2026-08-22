@@ -15,7 +15,7 @@ import {
   hasImperativeWithObject,
 } from './intentSignals.js'
 
-// ── L1: deictic imperative → browser tools ─────────────────────────
+// L1: deictic imperative → browser tools.
 
 test('L1: deictic imperative opens browser tools (any language, no verb list)', () => {
   assert.equal(hasDeicticImperativeIntent('crie o produto desta página'), true)
@@ -43,7 +43,7 @@ test('L1: genuine conversation stays conversation (no anchor / no page noun)', (
   assert.equal(hasDeicticImperativeIntent('mande uma mensagem para ela'), false)
 })
 
-// ── L3: browser-unavailability admission (assistant reply) ─────────
+// L3: browser-unavailability admission (assistant reply).
 
 test('L3: PT-BR admissions are detected (case-insensitive)', () => {
   assert.equal(hasBrowserUnavailableAdmission('O navegador não está disponível neste momento.'), true)
@@ -80,7 +80,7 @@ test('L3: only the reply opening is scanned (300 chars)', () => {
   const leadingAdmission = 'o navegador não está disponível. ' + 'contexto. '.repeat(40)
   assert.equal(hasBrowserUnavailableAdmission(leadingAdmission), true)
 })
-// ── L2: imperative with concrete object (fall-open with a page) ────
+// L2: imperative with concrete object (fall-open with a page).
 
 test('L2: imperative with concrete object matches (no verb list)', () => {
   assert.equal(hasImperativeWithObject('crie o produto ethos'), true)
@@ -104,7 +104,7 @@ test('L2: "me conte sobre esta página" stays out (sobre is not an article)', ()
   assert.equal(hasImperativeWithObject('me explique sobre o assunto'), false)
 })
 
-// ── L2 PÓS-GATE: explanation + desire gates (Farol contra-examples) ─
+// L2 PÓS-GATE: explanation + desire gates (Farol contra-examples).
 
 test('L2 PÓS-GATE: direct explanation forms stay conversation (PT/EN)', () => {
   assert.equal(hasImperativeWithObject('explique a teoria'), false)
@@ -158,7 +158,7 @@ test('L2 PÓS-GATE: COMMUNICATION imperatives stay browser (product decision)', 
   assert.equal(hasImperativeWithObject('send a message to joão'), true)
 })
 
-// ── L2 PÓS-RE-GATE: knowledge family — 'de' optional + EN to know ──
+// L2 PÓS-RE-GATE: knowledge family — 'de' optional + EN to know.
 
 test('L2 PÓS-RE-GATE: literal Farol forms — saber/conhecer stay conversation', () => {
   assert.equal(hasImperativeWithObject('quero saber o que é ethos'), false)
@@ -170,7 +170,7 @@ test('L2 PÓS-RE-GATE: literal Farol forms — saber/conhecer stay conversation'
   assert.equal(hasImperativeWithObject('queria saber o preço'), false)
 })
 
-// ── T6-B (Ciclo dos Achados de Campo): dêitico vence o gate de conhecimento ──
+// T6-B (Ciclo dos Achados de Campo): dêitico vence o gate de conhecimento.
 
 test('T6-B: âncora dêitica de página (deste/desta/this + substantivo) vence o DESIRE_GATE — a pergunta é sobre a página', () => {
   assert.equal(hasImperativeWithObject('quero saber o preço deste produto'), true)
