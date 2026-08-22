@@ -350,6 +350,13 @@ type QueuedFollowUp = {
   message: string
   request: AgentTurnRequest
   sideChat?: boolean
+  /** How this entry interacts with the queue panel. TOTAL discriminator:
+   *  every constructor sets it explicitly.
+   *  - 'internal' still participates in the functional queue loop (it drains
+   *    and resumes the CLI) but never renders in the panel;
+   *  - 'visible' is user-manageable in the panel (send now / edit / remove),
+   *    regardless of who originated the message text. */
+  queueVisibility: 'visible' | 'internal'
   turnModel: {
     modelId?: string
     modelDisplayName?: string
@@ -824,6 +831,11 @@ export function App() {
     annotations?: Annotation[]
   }>>({})
   const autoApprovalSent = useRef<Set<string>>(new Set())
+  // TurnIds whose trusted-command prompt was already STAGED (latched) for
+  // auto-approval. detectPermissionRequest runs over the ACCUMULATED turn
+  // text on every stdout chunk, so once a prompt is consumed any later
+  // chunk re-matches the same request — this latch prevents restaging it.
+  const autoApprovalLatchedTurnIds = useRef<Set<string>>(new Set())
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
   const turnTextSegmentCount = useRef<Record<string, number>>({})
   const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
@@ -3584,6 +3596,7 @@ export function App() {
       id: `queue:${crypto.randomUUID()}`,
       conversationId,
       message,
+      queueVisibility: 'visible',
       sideChat,
       turnModel,
       // applyAnnotations com lista vazia devolve a MESMA referência (a chave
@@ -3938,6 +3951,10 @@ export function App() {
 
     const command = turnLastCommand.current[turnId] ?? extractCommandFromPermissionText(combined)
     const trusted = command ? findTrustedCommand(command, userSettingsRef.current) : undefined
+    // A latched turn must not restage its trusted prompt: later chunks of the
+    // same accumulated stdout re-match the request. Manual prompts (untrusted
+    // commands) are unaffected.
+    if (trusted && autoApprovalLatchedTurnIds.current.has(turnId)) return
 
     setPendingPermissionPrompts(current => {
       if (Object.values(current).some(prompt => prompt.turnId === turnId)) return current
@@ -3951,6 +3968,7 @@ export function App() {
       }
       return { ...current, [prompt.id]: prompt }
     })
+    if (trusted) autoApprovalLatchedTurnIds.current.add(turnId)
   }
 
   async function respondToPermissionPrompt(
@@ -3990,7 +4008,12 @@ export function App() {
       conversationLanguageFallback(prompt.conversationId),
     )
     const message = buildPermissionFollowUpMessage(prompt, decision, automatic, responseLanguage)
-    const followUp = createPermissionFollowUp(prompt.conversationId, message, responseLanguage)
+    const followUp = createPermissionFollowUp(
+      prompt.conversationId,
+      message,
+      responseLanguage,
+      automatic ? 'internal' : 'visible',
+    )
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
 
@@ -4002,7 +4025,12 @@ export function App() {
     await runTurn(followUp)
   }
 
-  function createPermissionFollowUp(conversationId: string, message: string, responseLanguage: LanguageCode): QueuedFollowUp {
+  function createPermissionFollowUp(
+    conversationId: string,
+    message: string,
+    responseLanguage: LanguageCode,
+    queueVisibility: QueuedFollowUp['queueVisibility'] = 'visible',
+  ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
@@ -4013,6 +4041,7 @@ export function App() {
       id: `queue:${crypto.randomUUID()}`,
       conversationId,
       message,
+      queueVisibility,
       turnModel,
       request: {
         conversationId,
@@ -5944,6 +5973,9 @@ export function App() {
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
+    // The latch dies with its siblings: a NEW logical turn (new turnId) may
+    // stage its own auto-approval; the Set must not grow for the whole session.
+    autoApprovalLatchedTurnIds.current.delete(turnId)
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -7056,7 +7088,7 @@ export function App() {
             onRemoveAttachment={removeAttachment}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
-            queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId)}
+            queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId && item.queueVisibility !== 'internal')}
             onQueueSendNow={queueItemId => { void interjectMessage(queueItemId) }}
             onQueueEdit={editQueuedItem}
             onQueueRemove={removeQueuedItem}
