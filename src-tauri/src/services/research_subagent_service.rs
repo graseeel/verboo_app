@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::models::types::{
     AccessMode, AgentResultStatus, LanguageCode, ResearchSubagentRequest, ResearchSubagentResult,
@@ -165,7 +166,6 @@ impl ResearchSubagentService {
 
 }
 
-// ── Pure helpers (module-private) ──────────────────────────────────────
 
 fn research_topic_for(index: u32, total: u32, message: &str, language: &LanguageCode) -> String {
     if *language == LanguageCode::PtBr {
@@ -420,7 +420,6 @@ fn summarize_output(text: &str, language: &LanguageCode) -> String {
             "Research completed without a text summary.".into()
         };
     }
-    // Split on 2+ consecutive newlines.
     let paragraphs: Vec<&str> = text
         .split(|c: char| c == '\n')
         .collect::<Vec<_>>()
@@ -461,7 +460,6 @@ fn extract_findings(text: &str) -> Vec<String> {
         .lines()
         .map(|l| {
             let trimmed = l.trim();
-            // Strip leading - or *
             trimmed
                 .strip_prefix("- ")
                 .or_else(|| trimmed.strip_prefix("* "))
@@ -628,21 +626,15 @@ fn clamp_u32(value: u32, min: u32, max: u32) -> u32 {
     value.max(min).min(max)
 }
 
-/// Minimal uuid v4 generator (avoids pulling a new crate dependency just for
-/// research subagent IDs).
-fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    // 16 hex chars from nanos + random suffix from thread id + counter.
-    let thread_id = std::thread::current().id();
-    let tid_hash = format!("{:?}", thread_id)
-        .bytes()
-        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    let combined = (nanos as u64) ^ tid_hash.rotate_left(17);
-    let hi = (nanos >> 64) as u64 ^ tid_hash;
+/// Process-wide counter mixed into every generated ID so two calls in the
+/// same nanosecond on the same thread still produce different values.
+static UUID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Pure: mixes the entropy sources into the id string. Shape is frozen:
+/// 8-4-4-4-12 hex with a literal `4` as the version nibble.
+fn mix_uuid(nanos: u128, tid_hash: u64, counter: u64) -> String {
+    let combined = (nanos as u64) ^ tid_hash.rotate_left(17) ^ counter.rotate_left(31);
+    let hi = (nanos >> 64) as u64 ^ tid_hash ^ counter;
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
         (combined & 0xffff_ffff) as u32,
@@ -651,6 +643,24 @@ fn uuid_v4() -> String {
         ((hi >> 16) & 0xffff) as u16,
         hi & 0xffff_ffff_ffff
     )
+}
+
+/// Minimal uuid v4 generator (avoids pulling a new crate dependency just for
+/// research subagent IDs).
+fn uuid_v4() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Entropy: wall-clock nanos mixed with a hash of the thread id and a
+    // process-wide counter.
+    let thread_id = std::thread::current().id();
+    let tid_hash = format!("{:?}", thread_id)
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let counter = UUID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    mix_uuid(nanos, tid_hash, counter)
 }
 
 #[cfg(test)]
@@ -700,7 +710,6 @@ mod tests {
         }
     }
 
-    // ── snippet ────────────────────────────────────────────────────────
 
     #[test]
     fn snippet_truncates_long_strings() {
@@ -728,7 +737,6 @@ mod tests {
         assert_eq!(s, "café 🦀 test");
     }
 
-    // ── cleanup_output ─────────────────────────────────────────────────
 
     #[test]
     fn cleanup_output_strips_ansi_csi() {
@@ -760,7 +768,6 @@ mod tests {
         assert_eq!(cleanup_output("\x1b[31mcafé 🦀\x1b[0m"), "café 🦀");
     }
 
-    // ── is_read_only_shell_command ─────────────────────────────────────
 
     #[test]
     fn read_only_allows_ls_cat_grep() {
@@ -815,7 +822,6 @@ mod tests {
         assert!(!is_read_only_shell_command("   "));
     }
 
-    // ── detect_read_only_violation ─────────────────────────────────────
 
     #[test]
     fn violation_detects_edit_tool() {
@@ -906,7 +912,6 @@ mod tests {
         assert!(detect_read_only_violation(&payload, &LanguageCode::EnUs).is_some());
     }
 
-    // ── source_from_tool_payload ───────────────────────────────────────
 
     #[test]
     fn source_extracts_file_path_from_read() {
@@ -958,7 +963,6 @@ mod tests {
         assert!(source_from_tool_payload(&json!("x")).is_none());
     }
 
-    // ── summarize_output ───────────────────────────────────────────────
 
     #[test]
     fn summarize_returns_default_for_empty() {
@@ -985,7 +989,6 @@ mod tests {
         assert!(s.chars().count() <= 420);
     }
 
-    // ── extract_findings ───────────────────────────────────────────────
 
     #[test]
     fn extract_findings_strips_bullets() {
@@ -1023,7 +1026,6 @@ mod tests {
         assert_eq!(findings.len(), 8);
     }
 
-    // ── research_topic_for ─────────────────────────────────────────────
 
     #[test]
     fn topic_for_single_subagent_includes_message() {
@@ -1056,7 +1058,6 @@ mod tests {
         assert!(second.contains("contexto complementar"));
     }
 
-    // ── build_research_prompt ──────────────────────────────────────────
 
     #[test]
     fn prompt_english_includes_rules_and_topic() {
@@ -1078,7 +1079,6 @@ mod tests {
         assert!(prompt.contains("Subagente: 2 de 2"));
     }
 
-    // ── ResearchSubagentService::build_requests ────────────────────────
 
     #[test]
     fn build_requests_clamps_count_to_max() {
@@ -1115,7 +1115,6 @@ mod tests {
         assert!(requests[0].id.contains(':'));
     }
 
-    // ── failed_result ──────────────────────────────────────────────────
 
     #[test]
     fn failed_result_constructs_failure_shape() {
@@ -1158,7 +1157,6 @@ mod tests {
         assert_eq!(result.sources.len(), 8);
     }
 
-    // ── access_mode ────────────────────────────────────────────────────
 
     #[test]
     fn research_access_mode_is_approval() {
@@ -1176,5 +1174,23 @@ mod tests {
     #[test]
     fn research_max_subagents_matches_electron() {
         assert_eq!(ResearchSubagentService::max_subagents(), 2);
+    }
+
+    // Canário do counter: com nanos e tid FIXOS, só o counter varia — as duas
+    // chamadas têm que produzir IDs diferentes. Se o counter sair da mistura,
+    // ambas retornam a mesma string e este teste fica vermelho.
+    #[test]
+    fn mix_uuid_counter_distinguishes_same_nanos_same_thread() {
+        let a = super::mix_uuid(1_700_000_000_000_000_000, 0xdead_beef, 0);
+        let b = super::mix_uuid(1_700_000_000_000_000_000, 0xdead_beef, 1);
+        assert_ne!(a, b, "same nanos+tid, different counters must differ");
+        // Formato congelado: 8-4-4-4-12 hex com '4' na posição de versão.
+        for id in [&a, &b] {
+            let parts: Vec<&str> = id.split('-').collect();
+            let lens: Vec<usize> = parts.iter().map(|p| p.len()).collect();
+            assert_eq!(lens, vec![8, 4, 4, 4, 12], "id shape must stay 8-4-4-4-12 hex: {id}");
+            assert!(id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+            assert_eq!(&id[14..15], "4", "version nibble must be '4': {id}");
+        }
     }
 }

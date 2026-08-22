@@ -28,7 +28,6 @@
  * @typedef {import('./controller/protocol.js').ToolCall} ToolCall
  */
 
-// ── Constants ───────────────────────────────────────────────
 
 /**
  * Navigate-intent verbs in EN + PT (with optional prepositions).
@@ -39,9 +38,8 @@ const NAVIGATE_INTENT_RE =
   /\b(open|go\s+to|navigate|visit|abra|abrir|abre|vai\s+para|ir\s+para|acessar|acesso)\b/i
 
 /**
- * Known site tokens → canonical URL. Order matters: when a message
- * contains multiple tokens (e.g. "search youtube for X"), the first
- * match wins (see extractUrl).
+ * Known site tokens → canonical URL. When a message contains several
+ * tokens, the LONGEST match wins (tokens are tried longest-first).
  *
  * NOT exhaustive — bare domain-like words that aren't in this map
  * must NOT be guessed. Only sites we are confident about ship here.
@@ -125,7 +123,6 @@ const WEAK_QUERY_TOKENS = new Set([
   'para', 'por', 'com', 'ela', 'ele', 'eles', 'elas', 'isso', 'aqui', 'la', 'lá', 'the', 'a', 'o',
 ])
 
-// ── Public API ───────────────────────────────────────────────
 
 /**
  * Plan tool calls for a user message.
@@ -219,7 +216,6 @@ export function planForMessage(userMessage, activeTabUrl) {
     if (siteToken) {
       plan.push(buildNavigateToolCall(siteToken, 'Open the requested page'))
     } else {
-      // Intent without a recognisable site — be honest about it.
       return {
         plan: [],
         assistantMessage:
@@ -301,11 +297,9 @@ export function matchSiteToken(text) {
   // accidentally match a single word that's a substring.
   const ordered = Object.keys(SITE_TOKEN_MAP).sort((a, b) => b.length - a.length)
   for (const token of ordered) {
-    // Word-boundary match for short tokens (≤2 chars like "x") to
-    // avoid matching arbitrary words.
-    const re = token.length <= 2
-      ? new RegExp(`(?:^|\\b)${escapeRegExp(token)}(?:\\b|$)`, 'i')
-      : new RegExp(`(?:^|\\b)${escapeRegExp(token)}(?:\\b|$)`, 'i')
+    // Word-boundary anchored on both sides for every token, regardless
+    // of token length.
+    const re = new RegExp(`(?:^|\\b)${escapeRegExp(token)}(?:\\b|$)`, 'i')
     if (re.test(lower)) return SITE_TOKEN_MAP[token]
   }
   return null
@@ -342,7 +336,6 @@ export function nonControllablePageMessage(url) {
   return `This page cannot be controlled (${shortScheme(url)} or other internal page). Open a normal website first, then ask me to read or act on it.`
 }
 
-// ── Internal helpers ─────────────────────────────────────────
 
 function buildNavigateToolCall(url, reasoning) {
   return {
@@ -356,9 +349,6 @@ function buildNavigateToolCall(url, reasoning) {
   }
 }
 
-/**
- * @param {string} reasoning
- */
 function buildClickFirstYoutubeResult(reasoning) {
   const selector = YOUTUBE_FIRST_RESULT_SELECTOR
   return {
@@ -372,16 +362,12 @@ function buildClickFirstYoutubeResult(reasoning) {
   }
 }
 
-/**
- * @param {string} text
- */
 function wantsYoutubePlay(text) {
   return /\b(coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|m[uú]sica|music|song|songs)\b/i.test(
     String(text ?? ''),
   )
 }
 
-/** @param {string|undefined|null} url */
 function isYoutubeResultsUrl(url) {
   if (!url || typeof url !== 'string') return false
   try {
@@ -392,7 +378,6 @@ function isYoutubeResultsUrl(url) {
   }
 }
 
-/** @param {string|undefined|null} url */
 function isYoutubeWatchUrl(url) {
   if (!url || typeof url !== 'string') return false
   try {
@@ -446,16 +431,12 @@ export function extractYoutubeSearchQuery(text) {
   return q
 }
 
-/**
- * @param {string} q
- */
 function isWeakYoutubeQuery(q) {
   const tokens = String(q)
     .toLowerCase()
     .split(/\s+/)
     .filter((t) => t.length > 0)
   if (tokens.length === 0) return true
-  // Single short filler, or every token is a stopword.
   if (tokens.length === 1 && (tokens[0].length < 3 || WEAK_QUERY_TOKENS.has(tokens[0]))) {
     return true
   }
@@ -498,9 +479,6 @@ function isAlreadyOnYoutubeResultsFor(activeTabUrl, youtubeQuery) {
   return hits >= Math.ceil(wantTokens.length * 0.6)
 }
 
-/**
- * @param {string} userMessage
- */
 function youtubeAlreadyPlayingMessage(userMessage) {
   const pt =
     /[áàâãéêíóôõúç]/i.test(userMessage) ||
@@ -511,9 +489,6 @@ function youtubeAlreadyPlayingMessage(userMessage) {
   return 'Already on a YouTube video. Name another song if you want something else.'
 }
 
-/**
- * @param {string} userMessage
- */
 function youtubeNeedTitleMessage(userMessage) {
   const pt =
     /[áàâãéêíóôõúç]/i.test(userMessage) ||
