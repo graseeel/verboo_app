@@ -753,6 +753,7 @@ impl AndroidFrameSink for OrderedAttachSink {
     }
 
     fn error(&self, message: String) {
+        self.order.lock().unwrap().push("error".to_string());
         self.errors.lock().unwrap().push(message);
     }
 

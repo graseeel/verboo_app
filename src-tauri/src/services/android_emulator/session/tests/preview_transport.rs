@@ -851,6 +851,56 @@ fn saturated_generation_fails_before_stopping_current_preview() {
 }
 
 #[test]
+fn first_preview_gate_failure_emits_terminal_preview_state_before_attach_error() {
+    let root = tempfile::tempdir().unwrap();
+    let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    let sink = Arc::new(OrderedAttachSink::default());
+    let provider = Arc::new(OneFramePreviewFactoryProvider::new(rgb_image(2, 3)));
+    let legacy = Arc::new(RecordingLegacyPreviewBackendFactory::new(sink.order_arc()));
+    let session = test_android_session_for_mode(
+        AndroidEmulatorOwnership::Verboo,
+        PreviewMode::Vaf1,
+        7,
+        Some(4242),
+    );
+    *session.stream_fps.lock().unwrap() = 60;
+    seed_session_seq_last_for_test(u32::MAX);
+    sink.lifecycle(AndroidEmulatorStartupStage::GeneratingFirstPreview);
+    let (control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+        visible: true,
+        stop: false,
+    });
+    session.preview.install_control(control_tx).unwrap();
+    run_preview_coordinator(
+        service.runner.clone(),
+        session.clone(),
+        control_rx,
+        provider,
+        legacy,
+        sink.clone(),
+    );
+    assert_eq!(
+        session.first_preview.status(),
+        FirstPreviewState::Failed(FirstPreviewError::SequenceExhausted)
+    );
+    assert!(finish_started_preview(sink.as_ref(), &session, PreviewStart::Coordinator).is_err());
+
+    let order = sink.order();
+    let terminal = "preview-state:7:adbFallback:60:true:unavailable";
+    assert!(
+        order.iter().any(|entry| entry == terminal),
+        "fail-closed preview-state missing: {order:?}"
+    );
+    assert!(
+        !sink.errors().is_empty(),
+        "attach error missing: {order:?}"
+    );
+    assert_order_before(&order, terminal, "error");
+    assert_order_before(&order, "preview-state:7:grpc", terminal);
+    assert!(!order.iter().any(|entry| entry == "lifecycle:ready"));
+}
+
+#[test]
 fn fallback_png_failure_and_cancel_are_the_only_initial_terminal_errors() {
     let root = tempfile::tempdir().unwrap();
     let runner = Arc::new(ExternalAttachRunner::default());

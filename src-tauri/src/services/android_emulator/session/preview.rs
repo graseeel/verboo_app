@@ -279,12 +279,54 @@ pub(super) fn grpc_reason(error: grpc::GrpcError) -> PreviewReason {
     }
 }
 
+fn fail_closed_reason(error: &FirstPreviewError) -> Option<PreviewReason> {
+    match error {
+        FirstPreviewError::Cancelled => None,
+        FirstPreviewError::Unauthenticated => Some(PreviewReason::Unauthenticated),
+        FirstPreviewError::Unsupported => Some(PreviewReason::Unsupported),
+        FirstPreviewError::Unavailable
+        | FirstPreviewError::SequenceExhausted
+        | FirstPreviewError::Event(_)
+        | FirstPreviewError::LegacyPng(_) => Some(PreviewReason::Unavailable),
+    }
+}
+
+fn requested_preview_fps(stream_fps: u16) -> u16 {
+    AndroidStreamFps::try_from(stream_fps)
+        .map(AndroidStreamFps::get)
+        .unwrap_or(AndroidStreamFps::Fps60.get())
+}
+
+fn emit_fail_closed_preview_state(
+    sink: &dyn AndroidFrameSink,
+    session: &AndroidSession,
+    error: &FirstPreviewError,
+) {
+    let Some(reason) = fail_closed_reason(error) else {
+        return;
+    };
+    let requested_fps = requested_preview_fps(
+        *session
+            .stream_fps
+            .lock()
+            .expect("Android stream rate poisoned"),
+    );
+    let _ = sink.preview_state(PreviewState {
+        generation: session.generation,
+        source: PreviewSource::AdbFallback,
+        requested_fps,
+        degraded: true,
+        reason: Some(reason),
+    });
+}
+
 pub(super) fn fail_first_or_emit_terminal(
     sink: &dyn AndroidFrameSink,
-    first_preview: &FirstPreviewGate,
+    session: &AndroidSession,
     error: FirstPreviewError,
 ) {
-    if !first_preview.fail(error.clone()) {
+    emit_fail_closed_preview_state(sink, session, &error);
+    if !session.first_preview.fail(error.clone()) {
         sink.error(format!("Android emulator preview failed: {error:?}"));
     }
 }
@@ -320,13 +362,13 @@ pub(super) fn coordinate_fallback(
     }) {
         let error = FirstPreviewError::Event(error);
         session.preview.health.terminal(error.clone());
-        fail_first_or_emit_terminal(sink, session.first_preview.as_ref(), error.clone());
+        fail_first_or_emit_terminal(sink, session, error.clone());
         return Err(error);
     }
     if let Err(error) = legacy.emit_first_png() {
         let error = FirstPreviewError::LegacyPng(error);
         session.preview.health.terminal(error.clone());
-        fail_first_or_emit_terminal(sink, session.first_preview.as_ref(), error.clone());
+        fail_first_or_emit_terminal(sink, session, error.clone());
         return Err(error);
     }
     session.preview.health.adb_active();
@@ -405,7 +447,7 @@ pub(super) fn run_preview_coordinator(
             #[cfg(test)]
             wait_test_pause(&session.preview.failed_availability_pause);
             if publish_availability_unless_stopped(session.as_ref(), PreviewAvailability::Unavailable) {
-                fail_first_or_emit_terminal(sink.as_ref(), session.first_preview.as_ref(), error);
+                fail_first_or_emit_terminal(sink.as_ref(), session.as_ref(), error);
             }
         }
         WorkerOutcome::Stopped => {
@@ -541,6 +583,7 @@ pub(super) fn finish_started_preview(
             Ok(())
         }
         Err(error) => {
+            emit_fail_closed_preview_state(sink, session, &error);
             sink.error(format!("Android emulator preview failed: {error:?}"));
             Err(error)
         }
