@@ -5,7 +5,9 @@
 //! LIMITS (declared): downloads use `curl` (present on macOS, Windows 10+
 //! and most Linux distros) and `unzip`/`tar`; sdkmanager/avdmanager need a
 //! JRE on the host. The real download/install runs are exercised by CI
-//! (3 OSes) and the field test on the owner's mac.
+//! (3 OSes) and the field test on the owner's mac. The pinned `win`
+//! artifact is an x86_64 build; Windows-on-Arm hosts run it under OS x64
+//! emulation — unproven in the field.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,21 +18,29 @@ use super::CommandRunner;
 
 /// Pinned public Google build of the command-line tools. All four variants
 /// (mac_arm64/mac_x86_64/linux/win) exist for this build (verified
-/// 2026-08-19). Public artifact, not owner-specific.
+/// 2026-08-19). The legacy universal `commandlinetools-mac-*` artifact is
+/// 404 on this build. Public artifact, not owner-specific.
 pub const CMDLINE_TOOLS_VERSION: &str = "15859902";
 
 /// Pure: the public cmdline-tools download URL for a host (os, arch).
-/// mac uses the arch-specific variant (mac_arm64/mac_x86_64); the download
-/// helper falls back to the universal `mac` URL if the variant 404s
-/// (Google changed the naming across builds).
+/// `os` accepts both spellings callers may hold — the short token
+/// ("mac"/"win") and the std::env::consts::OS value ("macos"/"windows").
+/// Unknown OS, or an unknown mac arch, returns an empty string
+/// (fail-closed): there is no universal `commandlinetools-mac-*` artifact
+/// on the pinned build to fall back to.
 pub fn cmdline_tools_url(os: &str, arch: &str) -> String {
     let token = match os {
         "linux" => "linux".to_string(),
-        "win" => "win".to_string(),
-        "mac" => match arch {
+        "win" | "windows" => {
+            // Single official artifact is an x86_64 build (Google publishes
+            // no win_arm64 zip); on ARM64 Windows it runs under OS x64
+            // emulation — unproven in the field.
+            "win".to_string()
+        }
+        "mac" | "macos" => match arch {
             "aarch64" | "arm64" => "mac_arm64".to_string(),
             "x86_64" | "x64" | "amd64" => "mac_x86_64".to_string(),
-            _ => "mac".to_string(),
+            _ => return String::new(),
         },
         _ => return String::new(),
     };
@@ -285,9 +295,7 @@ pub fn download_cmdline_tools(
     cancel: &AtomicBool,
     on_percent: &mut dyn FnMut(u8),
 ) -> Result<(), String> {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let url = cmdline_tools_url(os, arch);
+    let url = cmdline_tools_url(std::env::consts::OS, std::env::consts::ARCH);
     if url.is_empty() {
         return Err("unsupported platform for Android command-line tools".to_string());
     }
@@ -301,25 +309,9 @@ pub fn download_cmdline_tools(
         "-f".to_string(),
         "-o".to_string(),
         zip_path.to_string_lossy().into_owned(),
-        url.clone(),
+        url,
     ];
-    let result = run_with_progress("curl", &args, cancel, deadline, on_percent);
-    if result.is_err() && os == "mac" {
-        // Google changed the mac naming across builds: fall back to the
-        // universal `mac` URL when the arch-specific variant 404s.
-        let fallback = cmdline_tools_url("mac", "universal");
-        if !fallback.is_empty() && fallback != url {
-            let _ = std::fs::remove_file(&zip_path);
-            if let Some(last) = args.last_mut() {
-                *last = fallback;
-            }
-            run_with_progress("curl", &args, cancel, deadline, on_percent)?;
-        } else {
-            return result;
-        }
-    } else {
-        result?;
-    }
+    run_with_progress("curl", &args, cancel, deadline, on_percent)?;
 
     unzip_archive(&zip_path, &sdk_path.join("cmdline-tools"))?;
     // The zip extracts to a top-level `cmdline-tools/`; the SDK expects
@@ -622,15 +614,46 @@ mod tests {
         assert!(linux.ends_with("_latest.zip"));
         let win = cmdline_tools_url("win", "x86_64");
         assert!(win.contains("commandlinetools-win-"));
+        // Alias: std::env::consts::OS reports "windows" on Windows hosts.
+        let windows = cmdline_tools_url("windows", "x86_64");
+        assert!(windows.contains("commandlinetools-win-"));
+        // Windows has a single official artifact: ARM64 hosts receive the
+        // x86_64 zip (runs under OS emulation — see the module LIMITS).
+        assert_eq!(
+            cmdline_tools_url("windows", "aarch64"),
+            cmdline_tools_url("windows", "x86_64")
+        );
         let mac_arm = cmdline_tools_url("mac", "aarch64");
         assert!(mac_arm.contains("commandlinetools-mac_arm64-"));
+        // Alias: std::env::consts::OS reports "macos" on Apple hosts.
+        let macos_arm = cmdline_tools_url("macos", "aarch64");
+        assert!(macos_arm.contains("commandlinetools-mac_arm64-"));
         let mac_x64 = cmdline_tools_url("mac", "x86_64");
         assert!(mac_x64.contains("commandlinetools-mac_x86_64-"));
-        // Unknown arch on mac → universal URL.
-        let mac_universal = cmdline_tools_url("mac", "universal");
-        assert!(mac_universal.contains("commandlinetools-mac-"));
+        let macos_amd64 = cmdline_tools_url("macos", "amd64");
+        assert!(macos_amd64.contains("commandlinetools-mac_x86_64-"));
+        // The universal commandlinetools-mac-* artifact is 404 on the pinned
+        // build (verified against dl.google.com): unknown arch fails closed.
+        assert_eq!(cmdline_tools_url("mac", "universal"), "");
+        assert_eq!(cmdline_tools_url("macos", "universal"), "");
         // Unsupported OS → empty.
         assert_eq!(cmdline_tools_url("ios", "aarch64"), "");
+    }
+
+    /// Canary: production calls this with std::env::consts::{OS, ARCH}.
+    /// The literal table must cover the real host values — this exact gap
+    /// made macOS fail with "unsupported platform for Android command-line
+    /// tools" before any download (env says "macos"; the old table only
+    /// knew "mac").
+    #[test]
+    fn cmdline_tools_url_resolves_for_the_running_host() {
+        let url = cmdline_tools_url(std::env::consts::OS, std::env::consts::ARCH);
+        assert!(
+            !url.is_empty(),
+            "host {}/{} must map to a published cmdline-tools artifact",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
     }
 
     #[test]
