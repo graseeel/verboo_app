@@ -184,13 +184,31 @@ export function createRgbWebglPainter(
     bundle = null
     gl = null
   }
+  const latchContextLost = () => {
+    // Transição IDEMPOTENTE (F-02R): perda observada na drenagem/veredito OU
+    // pelo handler DOM — TODO draw devolve null sem tocar GL até o restore
+    // reconstruir os recursos e limpar o latch. Handler tardio não duplica
+    // a liberação: releaseAll sobre gl/bundle nulos é no-op.
+    lost = true
+    uploadedWidth = 0
+    uploadedHeight = 0
+    releaseAll()
+  }
   if (!initialize()) reportTerminalOnce()
   const painter: RgbWebglPainter = {
     draw(frame) {
       if (disposed || lost || !gl || !bundle) return null
       const context = gl
+      const resized = canvas.width !== frame.width || canvas.height !== frame.height
       if (canvas.width !== frame.width) canvas.width = frame.width
       if (canvas.height !== frame.height) canvas.height = frame.height
+      if (resized) {
+        // Reassertion DEFENSIVA (L-1): a spec NÃO define reset de UNPACK no
+        // resize; reaplicar o par no caminho raro de rotação garante o estado
+        // esperado antes de qualquer upload, custo desprezível.
+        context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, false)
+        context.pixelStorei(context.UNPACK_ALIGNMENT, 1)
+      }
       context.useProgram(bundle.program)
       context.activeTexture(context.TEXTURE0)
       context.bindTexture(context.TEXTURE_2D, bundle.texture)
@@ -198,10 +216,40 @@ export function createRgbWebglPainter(
       context.enableVertexAttribArray(positionLocation)
       context.vertexAttribPointer(positionLocation, 2, context.FLOAT, false, 0, 0)
       if (uploadedWidth !== frame.width || uploadedHeight !== frame.height) {
+        // Baseline limpa ANTES da chamada (F-02): getError consome UM flag
+        // por leitura da fila acumulada desde a última sondagem — sem drenar,
+        // um flag antigo seria atribuído injustamente a esta alocação.
+        let contextLostDrained = false
+        let pendingError = context.getError()
+        while (pendingError !== context.NO_ERROR) {
+          if (pendingError === context.CONTEXT_LOST_WEBGL) contextLostDrained = true
+          pendingError = context.getError()
+        }
+        // Context loss é ESTADO PERSISTENTE (F-02R): o sentinel é entregue uma
+        // única vez e as leituras seguintes veem NO_ERROR com GL no-op —
+        // isContextLost cobre o caso de outro caller ter consumido o sentinel.
+        // Observada em QUALQUER ponto, a perda TRAVA o painter até o restore.
+        if (contextLostDrained || context.isContextLost()) {
+          latchContextLost()
+          return null
+        }
         context.texImage2D(
           context.TEXTURE_2D, 0, context.RGB, frame.width, frame.height, 0,
           context.RGB, context.UNSIGNED_BYTE, frame.pixels,
         )
+        // (Re)alocação NÃO é hot path: com a baseline drenada, este veredito
+        // diz respeito SOMENTE ao texImage2D acima. Falha ⇒ frame não pintado;
+        // dims zeradas forçam realocação no próximo draw.
+        const uploadError = context.getError()
+        if (uploadError !== context.NO_ERROR) {
+          if (uploadError === context.CONTEXT_LOST_WEBGL) {
+            latchContextLost()
+            return null
+          }
+          uploadedWidth = 0
+          uploadedHeight = 0
+          return null
+        }
         uploadedWidth = frame.width
         uploadedHeight = frame.height
       } else {
@@ -231,9 +279,8 @@ export function createRgbWebglPainter(
     painter,
     handleContextLost(event) {
       if (disposed) return
-      event.preventDefault()
-      lost = true
-      releaseAll()
+      event.preventDefault()   // autoriza o restore; tardio não duplica liberação
+      latchContextLost()
     },
     handleContextRestored() {
       if (disposed || !lost) return

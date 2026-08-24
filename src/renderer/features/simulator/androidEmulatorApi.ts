@@ -158,13 +158,102 @@ export type AndroidEmulatorElementHit = SimulatorElementHit
 
 export type AndroidEmulatorMediaFile = { path: string }
 
+export type AndroidPreviewTransport = 'legacyPng' | 'vaf1'
+export type AndroidFrameErrorCode =
+  | 'stale_generation'
+  | 'no_frame'
+  | 'unavailable'
+  | 'unauthenticated'
+  | 'unsupported'
+export type AndroidFrameError =
+  | { code: 'stale_generation'; currentGeneration: number }
+  | { code: Exclude<AndroidFrameErrorCode, 'stale_generation'> }
+const ANDROID_FRAME_UNIT_CODES: readonly Exclude<AndroidFrameErrorCode, 'stale_generation'>[] = [
+  'no_frame', 'unavailable', 'unauthenticated', 'unsupported',
+]
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+/** Rejeição do read_frame: chaves EXATAS; qualquer desvio ⇒ unavailable. */
+export function parseFrameError(reason: unknown): AndroidFrameError {
+  if (typeof reason !== 'object' || reason === null) return { code: 'unavailable' }
+  const record = reason as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (record.code === 'stale_generation') {
+    if (keys.length !== 2 || !('currentGeneration' in record)) return { code: 'unavailable' }
+    if (!isSafePositiveInteger(record.currentGeneration)) return { code: 'unavailable' }
+    return { code: 'stale_generation', currentGeneration: record.currentGeneration }
+  }
+  const unitCode = ANDROID_FRAME_UNIT_CODES.find(code => code === record.code)
+  if (unitCode && keys.length === 1) return { code: unitCode }
+  return { code: 'unavailable' }
+}
+export type AndroidFrameReady = { generation: number; seq: number }
+export type AndroidPreviewSource = 'grpc' | 'adbFallback'
+export type AndroidPreviewReason =
+  | 'gpuSoftware'
+  | 'unavailable'
+  | 'unauthenticated'
+  | 'unsupported'
+export type AndroidPreviewStateEvent = {
+  generation: number
+  source: AndroidPreviewSource
+  requestedFps: 30 | 60
+  degraded: boolean
+  reason?: AndroidPreviewReason
+}
+const PREVIEW_STATE_KEYS: readonly string[] = [
+  'generation', 'source', 'requestedFps', 'degraded', 'reason',
+]
+const PREVIEW_STATE_REASONS: readonly AndroidPreviewReason[] = [
+  'gpuSoftware', 'unavailable', 'unauthenticated', 'unsupported',
+]
+/** Guard exato do preview-state; NUNCA inventa campo ausente. */
+export function parsePreviewState(payload: unknown): AndroidPreviewStateEvent | null {
+  if (typeof payload !== 'object' || payload === null) return null
+  const candidate = payload as Record<string, unknown>
+  const keys = Object.keys(candidate)
+  if (keys.length < 4 || keys.length > 5) return null
+  if (!keys.every(key => PREVIEW_STATE_KEYS.includes(key))) return null
+  const generation = candidate.generation
+  if (!isSafePositiveInteger(generation)) return null
+  if (candidate.source !== 'grpc' && candidate.source !== 'adbFallback') return null
+  if (candidate.requestedFps !== 30 && candidate.requestedFps !== 60) return null
+  if (typeof candidate.degraded !== 'boolean') return null
+  const rawReason: unknown = candidate.reason
+  const reason =
+    rawReason === undefined ? undefined : PREVIEW_STATE_REASONS.find(item => item === rawReason)
+  if (rawReason !== undefined && reason === undefined) return null
+  return reason === undefined
+    ? { generation, source: candidate.source, requestedFps: candidate.requestedFps, degraded: candidate.degraded }
+    : { generation, source: candidate.source, requestedFps: candidate.requestedFps, degraded: candidate.degraded, reason }
+}
+
 export const androidEmulatorApi = {
   requirements: () => invoke<AndroidEmulatorRequirements>('android_emulator_requirements'),
   setupStart: (mode: AndroidEmulatorSetupMode, resume: AndroidEmulatorSetupResume = {}) =>
     invoke<void>('android_emulator_setup_start', { mode, ...resume }),
   setupCancel: () => invoke<void>('android_emulator_setup_cancel'),
-  attach: (avdName: string, streamFps: number, fallbackFps: number) =>
-    invoke<AndroidEmulatorSession>('android_emulator_attach', { avdName, streamFps, fallbackFps }),
+  attach: (
+    avdName: string,
+    streamFps: number,
+    fallbackFps: number,
+    previewTransport?: AndroidPreviewTransport,
+  ) => {
+    // Payload byte-a-byte quando previewTransport não é fornecido (compat).
+    const payload: {
+      avdName: string; streamFps: number; fallbackFps: number;
+      previewTransport?: AndroidPreviewTransport
+    } = { avdName, streamFps, fallbackFps }
+    if (previewTransport !== undefined) payload.previewTransport = previewTransport
+    return invoke<AndroidEmulatorSession>('android_emulator_attach', payload)
+  },
+  readFrame: (generation: number) =>
+    invoke<ArrayBuffer>('android_emulator_read_frame', { generation }),
+  onFrameReady: (handler: (ready: AndroidFrameReady) => void): Promise<UnlistenFn> =>
+    listenInTauri<AndroidFrameReady>('android-emulator:frame-ready', handler),
+  onPreviewState: (handler: (state: AndroidPreviewStateEvent) => void): Promise<UnlistenFn> =>
+    listenInTauri<AndroidPreviewStateEvent>('android-emulator:preview-state', handler),
   detach: () => invoke<void>('android_emulator_detach'),
   end: () => invoke<void>('android_emulator_end'),
   setVisible: (visible: boolean) => invoke<void>('android_emulator_set_visible', { visible }),

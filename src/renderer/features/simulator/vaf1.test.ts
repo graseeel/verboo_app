@@ -85,6 +85,17 @@ describe('parseVaf1', () => {
     if (!result.ok) return
     expect(result.frame.generation).toBe(Number.MAX_SAFE_INTEGER)
   })
+  it('keeps the u64 timestampUs on the wire: unsafe values are refused as strings', () => {
+    const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 1n
+    expect(parseVaf1(vaf1Buffer({ timestampUs: unsafe, width: 2, height: 2 }))).toEqual({
+      ok: false, reason: 'unsafe-timestamp', rawTimestamp: unsafe.toString(10),
+    })
+    const edge = BigInt(Number.MAX_SAFE_INTEGER)
+    const result = parseVaf1(vaf1Buffer({ timestampUs: edge, width: 2, height: 2 }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.frame.timestampUs).toBe(edge)
+  })
   it('refuses zero generation and zero seq (native allocator starts at 1)', () => {
     expect(parseVaf1(vaf1Buffer({ generation: 0n, width: 2, height: 2 })))
       .toEqual({ ok: false, reason: 'zero-generation' })

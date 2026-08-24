@@ -11,6 +11,8 @@ function makeFrame(opts: { generation?: number; seq?: number; width: number; hei
     pixels: new Uint8Array(width * height * 3),
   }
 }
+/** Constantes de erro do stub GL (CONTEXT_LOST_WEBGL = 0x9242, valor real). */
+const GL_ERROR = { NO_ERROR: 0, OUT_OF_MEMORY: 21, CONTEXT_LOST_WEBGL: 0x9242 } as const
 /** Stub WebGL gravador: wrap(method, impl) registra E delega. */
 function makeGlHarness(fail: {
   createShaderReturnsNull?: boolean
@@ -21,12 +23,37 @@ function makeGlHarness(fail: {
   createBufferReturnsNull?: boolean
   createTextureReturnsNull?: boolean
   contextUnavailable?: boolean
+  /** Quantas chamadas texImage2D iniciais enfileiram OUT_OF_MEMORY. */
+  texImage2DFailures?: number
+  /** Quantas chamadas texImage2D iniciais PERDEM o contexto (sem erro de fila). */
+  texImage2DLosses?: number
+  /** Fila de erros GL PRÉ-EXISTENTE (acumulada desde a última leitura). */
+  pendingGlErrors?: number[]
+  /** Contexto JÁ perdido na criação (estado persistente, não item de fila). */
+  contextAlreadyLost?: boolean
 } = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = []
   const deletions: string[] = []
   let shaderId = 0
   let programId = 0
   let compileIndex = 0
+  // Semântica real do GL: FILA de flags — getError consome UM por chamada.
+  const glErrorQueue: number[] = [...(fail.pendingGlErrors ?? [])]
+  let texImageFailures = fail.texImage2DFailures ?? 0
+  let texImageLosses = fail.texImage2DLosses ?? 0
+  // Context loss é ESTADO persistente do contexto: o sentinel CONTEXT_LOST_WEBGL
+  // é entregue UMA única vez pelo getError; as leituras seguintes veem NO_ERROR
+  // até o restore, e as chamadas GL comuns viram no-op.
+  let contextLost = fail.contextAlreadyLost ?? false
+  let contextLostSentinelPending = contextLost
+  // Spec WebGL: a restauração LIMPA o flag de contexto perdido — não há
+  // sentinel pendente após o restore. O sentinel só volta a ser entregue se
+  // outra perda ocorrer no novo contexto.
+  const setContextLost = (lostNow: boolean) => {
+    contextLost = lostNow
+    if (lostNow) contextLostSentinelPending = true
+    else contextLostSentinelPending = false
+  }
   function wrap<T>(method: string, impl: (...args: never[]) => T): (...args: never[]) => T {
     return (...args: never[]) => {
       calls.push({ method, args })
@@ -40,6 +67,8 @@ function makeGlHarness(fail: {
     TEXTURE_MIN_FILTER: 12, TEXTURE_MAG_FILTER: 13, LINEAR: 14,
     UNPACK_FLIP_Y_WEBGL: 15, UNPACK_ALIGNMENT: 16, TEXTURE0: 17,
     RGB: 18, UNSIGNED_BYTE: 19, TRIANGLE_STRIP: 20,
+    NO_ERROR: GL_ERROR.NO_ERROR, OUT_OF_MEMORY: GL_ERROR.OUT_OF_MEMORY,
+    CONTEXT_LOST_WEBGL: GL_ERROR.CONTEXT_LOST_WEBGL,
   }
   const shaderSourceBodies: string[] = []
   const texImageCalls: Array<{ args: unknown[] }> = []
@@ -82,8 +111,27 @@ function makeGlHarness(fail: {
     activeTexture: wrap('activeTexture', () => {}),
     useProgram: wrap('useProgram', () => {}),
     uniform1i: wrap('uniform1i', () => {}),
-    texImage2D: wrap('texImage2D', (...args: unknown[]) => { texImageCalls.push({ args }) }),
+    texImage2D: wrap('texImage2D', (...args: unknown[]) => {
+      texImageCalls.push({ args })
+      if (texImageFailures > 0) {
+        texImageFailures -= 1
+        glErrorQueue.push(c.OUT_OF_MEMORY)
+      } else if (texImageLosses > 0) {
+        texImageLosses -= 1
+        setContextLost(true)
+      }
+    }),
     texSubImage2D: wrap('texSubImage2D', () => {}),
+    getError: wrap('getError', () => {
+      const queued = glErrorQueue.shift()
+      if (queued !== undefined) return queued
+      if (contextLostSentinelPending) {
+        contextLostSentinelPending = false
+        return c.CONTEXT_LOST_WEBGL
+      }
+      return c.NO_ERROR
+    }),
+    isContextLost: wrap('isContextLost', () => contextLost),
     viewport: wrap('viewport', () => {}),
     drawArrays: wrap('drawArrays', () => {}),
     deleteTexture: wrap('deleteTexture', (t: object) => { deletions.push(`texture#${JSON.stringify(t)}`) }),
@@ -95,7 +143,12 @@ function makeGlHarness(fail: {
   } as unknown as HTMLCanvasElement
   const callsOf = (method: string) => calls.filter(call => call.method === method)
   const deletedKinds = (prefix: string) => deletions.filter(entry => entry.startsWith(prefix))
-  return { canvas, callsOf, shaderSourceBodies, texImageCalls, deletedKinds, c }
+  // Cenário F-02R-02: outro caller do contexto drenou o sentinel
+  // CONTEXT_LOST_WEBGL antes do draw do painter (contexto compartilhado). A
+  // drenagem interna do painter agora vê NO_ERROR mas o contexto AINDA está
+  // perdido — só isContextLost() cobre esse caso.
+  const preConsumeSentinel = () => gl.getError()
+  return { canvas, callsOf, shaderSourceBodies, texImageCalls, deletedKinds, setContextLost, preConsumeSentinel, c }
 }
 describe('createRgbWebglPainter', () => {
   it('paints a submitted frame: receipt carries identity, drawnSize, timestampUs', () => {
@@ -119,6 +172,122 @@ describe('createRgbWebglPainter', () => {
     painter.draw(makeFrame({ seq: 2, width: 720, height: 1600 }))
     expect(h.callsOf('texImage2D')).toHaveLength(1)
     expect(h.callsOf('texSubImage2D')).toHaveLength(1)
+  })
+  it('reallocates via texImage2D on every dimension change (rotation 720x1600↔1600x720)', () => {
+    const h = makeGlHarness()
+    const { painter } = createRgbWebglPainter(h.canvas)
+    painter.draw(makeFrame({ seq: 1, width: 720, height: 1600 }))
+    painter.draw(makeFrame({ seq: 2, width: 720, height: 1600 }))
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('texSubImage2D')).toHaveLength(1)
+    const rotated = painter.draw(makeFrame({ seq: 3, width: 1600, height: 720 }))
+    expect(rotated).toMatchObject({ width: 1600, height: 720 })
+    expect([h.canvas.width, h.canvas.height]).toEqual([1600, 720])
+    expect(h.callsOf('texImage2D')).toHaveLength(2)
+    expect(h.texImageCalls[1]?.args[3]).toBe(1600)
+    expect(h.texImageCalls[1]?.args[4]).toBe(720)
+    const back = painter.draw(makeFrame({ seq: 4, width: 720, height: 1600 }))
+    expect(back).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(3)
+    expect(h.callsOf('texSubImage2D')).toHaveLength(1)
+    expect([h.canvas.width, h.canvas.height]).toEqual([720, 1600])
+  })
+  it('reapplies the two UNPACK pixel stores only when the canvas resizes', () => {
+    const h = makeGlHarness()
+    const { painter } = createRgbWebglPainter(h.canvas)
+    painter.draw(makeFrame({ width: 720, height: 1600 }))
+    const beforeSteady = h.callsOf('pixelStorei').length
+    painter.draw(makeFrame({ width: 720, height: 1600 }))   // sem resize: nada
+    expect(h.callsOf('pixelStorei')).toHaveLength(beforeSteady)
+    painter.draw(makeFrame({ width: 1600, height: 720 }))   // rotação: resize
+    // Reassertion DEFENSIVA no caminho raro de resize: a spec NÃO define
+    // reset de UNPACK; o par deve ser reaplicado antes de qualquer upload.
+    expect(h.callsOf('pixelStorei').slice(beforeSteady)).toEqual([
+      { method: 'pixelStorei', args: [h.c.UNPACK_FLIP_Y_WEBGL, false] },
+      { method: 'pixelStorei', args: [h.c.UNPACK_ALIGNMENT, 1] },
+    ])
+  })
+  it('drains pre-existing error flags: pending errors + a VALID texImage2D still paint (F-02)', () => {
+    // Dois flags antigos na fila (ex.: hot path não sonda erros) — sem a
+    // drenagem prévia, o veredito pós-texImage2D leria um flag ALHEIO.
+    const h = makeGlHarness({ pendingGlErrors: [GL_ERROR.OUT_OF_MEMORY, GL_ERROR.OUT_OF_MEMORY] })
+    const { painter } = createRgbWebglPainter(h.canvas)
+    const receipt = painter.draw(makeFrame({ width: 720, height: 1600 }))
+    expect(receipt).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+    // 3 leituras de drenagem (OOM, OOM, NO_ERROR) + 1 veredito pós-chamada.
+    expect(h.callsOf('getError')).toHaveLength(4)
+  })
+  it('clean baseline + a REAL texImage2D error: null, no drawArrays, realloc next frame (F-02)', () => {
+    const h = makeGlHarness({ texImage2DFailures: 1 })
+    const { painter } = createRgbWebglPainter(h.canvas)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('drawArrays')).toHaveLength(0)
+    // dims zeradas ⇒ o próximo draw REALOCA via texImage2D (não texSubImage2D).
+    const receipt = painter.draw(frame)
+    expect(receipt).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(2)
+    expect(h.callsOf('texSubImage2D')).toHaveLength(0)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+  })
+  it('context loss seen in the drain LATCHES: every draw is null without touching GL until restore (F-02R)', () => {
+    const h = makeGlHarness({ contextAlreadyLost: true })
+    const { painter, handleContextLost, handleContextRestored } = createRgbWebglPainter(h.canvas)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(0)
+    // Latch: os draws seguintes NÃO tocam GL (sem drenagem nova, sem texImage2D).
+    expect(painter.draw(frame)).toBeNull()
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('getError')).toHaveLength(2)   // só a drenagem do 1º draw
+    expect(h.callsOf('texImage2D')).toHaveLength(0)
+    expect(h.callsOf('drawArrays')).toHaveLength(0)
+    // Handler DOM tardio é idempotente: preventDefault, SEM dupla liberação.
+    const lateEvent = { preventDefault: vi.fn() } as unknown as Event
+    handleContextLost(lateEvent)
+    expect(lateEvent.preventDefault).toHaveBeenCalled()
+    expect(h.deletedKinds('texture#')).toHaveLength(1)
+    expect(painter.draw(frame)).toBeNull()
+    // Restore explícito reconstrói os recursos e destrava o painter.
+    h.setContextLost(false)
+    handleContextRestored()
+    expect(painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+  })
+  it('context loss DURING texImage2D latches via the post-call verdict (F-02R)', () => {
+    const h = makeGlHarness({ texImage2DLosses: 1 })
+    const { painter, handleContextRestored } = createRgbWebglPainter(h.canvas)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(1)   // a chamada que perdeu o contexto
+    expect(h.callsOf('drawArrays')).toHaveLength(0)
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(1)   // sem nova tentativa enquanto lost
+    h.setContextLost(false)
+    handleContextRestored()
+    expect(painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(2)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+  })
+  it('full cycle: handler loss → draws null without touching GL → restored → valid draw (F-02R)', () => {
+    const h = makeGlHarness()
+    const handlers = createRgbWebglPainter(h.canvas)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    expect(handlers.painter.draw(frame)).not.toBeNull()
+    const probesBeforeLoss = h.callsOf('getError').length
+    handlers.handleContextLost({ preventDefault: vi.fn() } as unknown as Event)
+    expect(handlers.painter.draw(frame)).toBeNull()
+    expect(handlers.painter.draw(frame)).toBeNull()
+    // null vem do latch local — zero sondagem GL enquanto perdido.
+    expect(h.callsOf('getError')).toHaveLength(probesBeforeLoss)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+    handlers.handleContextRestored()
+    expect(handlers.painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('drawArrays')).toHaveLength(2)
   })
   it('sets UNPACK_FLIP_Y false and UNPACK_ALIGNMENT 1 (rows are width*3)', () => {
     const h = makeGlHarness()
@@ -214,5 +383,72 @@ describe('createRgbWebglPainter', () => {
     expect(h.deletedKinds('buffer#')).toHaveLength(1)
     expect(h.deletedKinds('texture#')).toHaveLength(1)
     expect(handlers.painter.draw(makeFrame({ width: 8, height: 8 }))).toBeNull()
+  })
+  it('context lost with sentinel ALREADY CONSUMED by another caller LATCHES via isContextLost (F-02R-02)', () => {
+    // Outro caller do contexto (contexto compartilhado) consumiu o sentinel
+    // CONTEXT_LOST_WEBGL ANTES do draw do painter. A drenagem interna do
+    // painter agora vê apenas NO_ERROR — sem o branch || context.isContextLost()
+    // o painter emitiria receipt com GL no-op, abrindo uma janela de
+    // falso sucesso entre o flag setado e o dispatch do evento DOM.
+    const h = makeGlHarness({ contextAlreadyLost: true })
+    const { painter, handleContextRestored } = createRgbWebglPainter(h.canvas)
+    // Drena o sentinel externamente — simula o "outro caller".
+    const consumed = h.preConsumeSentinel()
+    expect(consumed).toBe(h.c.CONTEXT_LOST_WEBGL)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    // O draw do painter deve latchar via isContextLost(): null, zero texImage2D.
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(0)
+    expect(h.callsOf('drawArrays')).toHaveLength(0)
+    // isContextLost() FOI chamado — pina o branch que cobre o caso.
+    expect(h.callsOf('isContextLost').length).toBeGreaterThanOrEqual(1)
+    // Latch persistiu: draws seguintes seguem null sem tocar GL.
+    expect(painter.draw(frame)).toBeNull()
+    expect(h.callsOf('texImage2D')).toHaveLength(0)
+    // Restore real (spec limpa o flag de perda) reconstrói e destrava.
+    h.setContextLost(false)
+    handleContextRestored()
+    expect(painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
+  })
+  it('steady-state texSubImage2D path makes zero getError / zero isContextLost calls (F-02R-03a)', () => {
+    // O design 60fps exige zero sondagem no hot path saudável. Conta as
+    // chamadas DEPOIS do draw inicial (realocação) e compara com o draw em
+    // dimensão repetida (steady-state). Mutação adicionando uma sonda no
+    // steady-state saudável manteria verde sem este teste.
+    const h = makeGlHarness()
+    const { painter } = createRgbWebglPainter(h.canvas)
+    painter.draw(makeFrame({ seq: 1, width: 720, height: 1600 }))   // realocação
+    const afterFirstDraw = {
+      getError: h.callsOf('getError').length,
+      isContextLost: h.callsOf('isContextLost').length,
+    }
+    // Dez draws em dimensão repetida: devem cair todos no ramo texSubImage2D.
+    for (let i = 0; i < 10; i += 1) {
+      expect(painter.draw(makeFrame({ seq: i + 2, width: 720, height: 1600 }))).not.toBeNull()
+    }
+    expect(h.callsOf('getError')).toHaveLength(afterFirstDraw.getError)
+    expect(h.callsOf('isContextLost')).toHaveLength(afterFirstDraw.isContextLost)
+    expect(h.callsOf('texSubImage2D')).toHaveLength(10)
+    expect(h.callsOf('texImage2D')).toHaveLength(1)   // só o upload inicial
+  })
+  it('handler loss + restore restores baseline drain on the next draw (F-02R-03b)', () => {
+    // Spec WebGL: a restauração LIMPA o flag de contexto perdido — não há
+    // sentinel pendente após o restore. O harness pré-F-02R-03b deixava o
+    // sentinel vivo; mutação que NÃO limpa `contextLostSentinelPending` no
+    // setContextLost(false) faria o draw pós-restore relatchar em falso.
+    const h = makeGlHarness()
+    const handlers = createRgbWebglPainter(h.canvas)
+    const frame = makeFrame({ width: 720, height: 1600 })
+    // Loss observada SÓ pelo handler DOM — sentinel nunca lido via getError.
+    handlers.handleContextLost({ preventDefault: vi.fn() } as unknown as Event)
+    expect(handlers.painter.draw(frame)).toBeNull()
+    // Restore com sentinel não consumido: a spec zera o flag, então o draw
+    // pós-restore deve PINTAR (não relatchar).
+    handlers.handleContextRestored()
+    expect(handlers.painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
+    expect(h.callsOf('texImage2D')).toHaveLength(1)
+    expect(h.callsOf('drawArrays')).toHaveLength(1)
   })
 })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { FrameStats } from './frameStats'
 const TIME_ORIGIN_MS = 1_000_000_000
 function producerUsFor(paintedAtMs: number, lagMs: number): bigint {
@@ -15,6 +15,33 @@ describe('FrameStats', () => {
       })
     })
     expect(stats.producerToPaintP95Ms()).toBe(25)
+  })
+  it('defaults the epoch to performance.timeOrigin exactly', () => {
+    const origin = vi.spyOn(performance, 'timeOrigin', 'get').mockReturnValue(5_000)
+    try {
+      const stats = new FrameStats()
+      // epoch 5000 + paintedAt 12 ⇒ producer exato em 5012 ms (lag zero).
+      stats.recordPaint({ seq: 1, timestampUs: 5_012_000n, paintedAtMs: 12 })
+      expect(stats.producerToPaintP95Ms()).toBe(0)
+    } finally {
+      origin.mockRestore()
+    }
+  })
+  it('falls back to Date.now() − performance.now() when timeOrigin is absent', () => {
+    const origin = vi.spyOn(performance, 'timeOrigin', 'get')
+      .mockReturnValue(undefined as unknown as number)
+    const now = vi.spyOn(performance, 'now').mockReturnValue(30)
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    try {
+      const stats = new FrameStats()
+      // epoch fallback 10000−30=9970 + paintedAt 30 ⇒ producer em 10000 ms.
+      stats.recordPaint({ seq: 1, timestampUs: 10_000_000n, paintedAtMs: 30 })
+      expect(stats.producerToPaintP95Ms()).toBe(0)
+    } finally {
+      origin.mockRestore()
+      now.mockRestore()
+      dateNow.mockRestore()
+    }
   })
   it('computes presented fps over a synthetic 60-frame 50fps window', () => {
     const stats = new FrameStats()

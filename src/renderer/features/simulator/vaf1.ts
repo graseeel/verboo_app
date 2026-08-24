@@ -8,6 +8,7 @@ export type Vaf1Frame = {
   generation: number
   /** Seq local monotônica do native (sobrevive a reopen/rotação). */
   seq: number
+  /** u64 garantido ≤ Number.MAX_SAFE_INTEGER pelo parser — Number() lossless. */
   timestampUs: bigint
   width: number
   height: number
@@ -26,6 +27,7 @@ export type Vaf1Parse =
   | { ok: false; reason: 'size-exceeds-bounds'; width: number; height: number }
   | { ok: false; reason: 'exact-size-mismatch'; expectedBytes: number; actualBytes: number }
   | { ok: false; reason: 'unsafe-generation'; rawGeneration: string }
+  | { ok: false; reason: 'unsafe-timestamp'; rawTimestamp: string }
 export function parseVaf1(buffer: ArrayBuffer): Vaf1Parse {
   if (buffer.byteLength < VAF1_HEADER_BYTES) {
     return { ok: false, reason: 'too-short', actualBytes: buffer.byteLength }
@@ -55,6 +57,12 @@ export function parseVaf1(buffer: ArrayBuffer): Vaf1Parse {
   if (seq === 0) {
     return { ok: false, reason: 'zero-seq' }          // SessionSeq.native inicia em 1
   }
+  const rawTimestampUs = view.getBigUint64(16, true)
+  if (rawTimestampUs > BigInt(Number.MAX_SAFE_INTEGER)) {
+    // Simétrico à generation: lag producer-to-paint converte para Number —
+    // um u64 inseguro corromperia a matemática de latência silenciosamente.
+    return { ok: false, reason: 'unsafe-timestamp', rawTimestamp: rawTimestampUs.toString(10) }
+  }
   const width = view.getUint32(24, true)
   const height = view.getUint32(28, true)
   if (width === 0 || height === 0) {
@@ -78,7 +86,7 @@ export function parseVaf1(buffer: ArrayBuffer): Vaf1Parse {
     frame: {
       generation: Number(rawGeneration),
       seq,
-      timestampUs: view.getBigUint64(16, true),
+      timestampUs: rawTimestampUs,
       width,
       height,
       pixels: new Uint8Array(buffer, VAF1_HEADER_BYTES, width * height * 3),

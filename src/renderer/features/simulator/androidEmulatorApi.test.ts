@@ -33,7 +33,7 @@ vi.mock('@tauri-apps/api/event', () => ({
     listenMock(eventName, callback),
 }))
 
-import { androidEmulatorApi } from './androidEmulatorApi'
+import { androidEmulatorApi, parseFrameError, parsePreviewState, type AndroidFrameReady } from './androidEmulatorApi'
 
 function defineTauriRuntime() {
   Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
@@ -230,5 +230,90 @@ describe('androidEmulatorApi — frozen event channels', () => {
     const donePayload = { ready: false, issue: 'accelMissing' }
     listenMock.mock.calls[1]?.[1]({ payload: donePayload })
     expect(done).toHaveBeenCalledWith(donePayload)
+  })
+})
+
+describe('androidEmulatorApi — VAF1 wire vocabulary', () => {
+  let originalInternals: PropertyDescriptor | undefined
+
+  beforeEach(() => {
+    originalInternals = Object.getOwnPropertyDescriptor(window, '__TAURI_INTERNALS__')
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
+    listenMock.mockClear()
+    vi.mocked(invoke).mockClear()
+    vi.mocked(invoke).mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    if (originalInternals) {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', originalInternals)
+    } else {
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
+    }
+  })
+
+  it('parses every unit error and degrades malformed envelopes to unavailable', () => {
+    for (const code of ['no_frame', 'unavailable', 'unauthenticated', 'unsupported'] as const) {
+      expect(parseFrameError({ code })).toEqual({ code })
+    }
+    expect(parseFrameError({ code: 'no_frame', currentGeneration: 1 })).toEqual({ code: 'unavailable' })
+    expect(parseFrameError({ code: 'unavailable', foo: 'bar' })).toEqual({ code: 'unavailable' })
+    expect(parseFrameError({ code: 'stale_generation' })).toEqual({ code: 'unavailable' })
+    expect(parseFrameError({ code: 'stale_generation', currentGeneration: 2, seq: 9 }))
+      .toEqual({ code: 'unavailable' })
+    expect(parseFrameError({ code: 'stale_generation', currentGeneration: 0 }))
+      .toEqual({ code: 'unavailable' })
+    expect(parseFrameError('boom')).toEqual({ code: 'unavailable' })
+    expect(parseFrameError(null)).toEqual({ code: 'unavailable' })
+  })
+  it('keeps stale_generation safe-bound (>=1) and drops anything else', () => {
+    expect(parseFrameError({ code: 'stale_generation', currentGeneration: 42 }))
+      .toEqual({ code: 'stale_generation', currentGeneration: 42 })
+    expect(parseFrameError({
+      code: 'stale_generation', currentGeneration: Number.MAX_SAFE_INTEGER,
+    })).toEqual({ code: 'stale_generation', currentGeneration: Number.MAX_SAFE_INTEGER })
+  })
+  it('preview-state guard accepts the frozen shape and rejects extras/zero/unknown', () => {
+    const base = { generation: 1, source: 'grpc', requestedFps: 60, degraded: false }
+    const parsed = parsePreviewState(base)
+    expect(parsed && Object.keys(parsed).sort())
+      .toEqual(['degraded', 'generation', 'requestedFps', 'source'])
+    expect(parsePreviewState({ ...base, degraded: true, reason: 'gpuSoftware' }))
+      .toMatchObject({ degraded: true, reason: 'gpuSoftware' })
+    // Pin F-01 (falso positivo no gate): 30 pertence ao domínio congelado 30|60.
+    expect(parsePreviewState({ ...base, requestedFps: 30 }))
+      .toMatchObject({ requestedFps: 30 })
+    expect(parsePreviewState({ ...base, seq: 3 })).toBeNull()
+    expect(parsePreviewState({ ...base, generation: 0 })).toBeNull()
+    expect(parsePreviewState({ ...base, source: 'vnc' })).toBeNull()
+    expect(parsePreviewState({ ...base, requestedFps: 45 })).toBeNull()
+    expect(parsePreviewState({ ...base, reason: null, seq: 1 })).toBeNull()
+    expect(parsePreviewState(null)).toBeNull()
+  })
+  it('attach keeps the legacy payload byte-a-byte without previewTransport', async () => {
+    await androidEmulatorApi.attach('Verboo_Device_API_35', 30, 2)
+    const [, payload] = vi.mocked(invoke).mock.calls.at(-1) as unknown as [string, Record<string, unknown>]
+    expect(payload).toEqual({ avdName: 'Verboo_Device_API_35', streamFps: 30, fallbackFps: 2 })
+    expect('previewTransport' in payload).toBe(false)
+    await androidEmulatorApi.attach('AVD', 60, 1, 'vaf1')
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('android_emulator_attach',
+      { avdName: 'AVD', streamFps: 60, fallbackFps: 1, previewTransport: 'vaf1' })
+    await androidEmulatorApi.attach('AVD', 60, 1, 'legacyPng')
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('android_emulator_attach',
+      { avdName: 'AVD', streamFps: 60, fallbackFps: 1, previewTransport: 'legacyPng' })
+  })
+  it('subscribes frame-ready/preview-state channels verbatim and maps readFrame', async () => {
+    defineTauriRuntime()
+    const ready = vi.fn<(ready: AndroidFrameReady) => void>()
+    const state = vi.fn()
+    await androidEmulatorApi.onFrameReady(ready)
+    await androidEmulatorApi.onPreviewState(state)
+    expect(listenMock.mock.calls.map(([name]) => name))
+      .toEqual(['android-emulator:frame-ready', 'android-emulator:preview-state'])
+    listenMock.mock.calls[0]?.[1]({ payload: { generation: 3, seq: 5 } })
+    expect(ready).toHaveBeenCalledWith({ generation: 3, seq: 5 })
+    vi.mocked(invoke).mockResolvedValue(new ArrayBuffer(48))
+    await androidEmulatorApi.readFrame(3)
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('android_emulator_read_frame', { generation: 3 })
   })
 })

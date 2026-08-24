@@ -8,8 +8,8 @@ export type PaintSample = {
 export type FrameStatsOptions = {
   windowMs?: number
   capacity?: number
-  /** Época ms da origem do clock performance. Produção:
-   *  `performance.timeOrigin`. Default: Date.now() − performance.now(). */
+  /** Época ms da origem do clock performance. Default: performance.timeOrigin;
+   *  fallback Date.now() − performance.now() quando o campo não existe. */
   timeOriginMs?: number
 }
 export type FrameStatsSnapshot = {
@@ -18,6 +18,13 @@ export type FrameStatsSnapshot = {
   rendererDropped: number
 }
 const DEFAULT_CAPACITY = 4096
+/** performance.timeOrigin é a época EXATA do clock performance; o fallback
+ *  reconstrói a mesma época (aproximada) em runtimes sem o campo. */
+function defaultTimeOriginMs(): number {
+  return Number.isFinite(performance.timeOrigin)
+    ? performance.timeOrigin
+    : Date.now() - performance.now()
+}
 export class FrameStats {
   readonly capacity: number
   private readonly windowMs: number
@@ -29,7 +36,7 @@ export class FrameStats {
   constructor(options: FrameStatsOptions = {}) {
     this.windowMs = options.windowMs ?? 60_000
     this.capacity = options.capacity ?? DEFAULT_CAPACITY
-    this.timeOriginMs = options.timeOriginMs ?? (Date.now() - performance.now())
+    this.timeOriginMs = options.timeOriginMs ?? defaultTimeOriginMs()
   }
   reset(): void {
     this.lags.length = 0
