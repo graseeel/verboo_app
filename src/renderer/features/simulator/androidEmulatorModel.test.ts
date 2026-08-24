@@ -16,6 +16,7 @@ import {
   ANDROID_EMULATOR_AUTO_CAPABLE_ISSUES,
   ANDROID_EMULATOR_ISSUES,
   ANDROID_EMULATOR_SETUP_STEPS,
+  ANDROID_EMULATOR_STREAM_RATES,
   DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
   DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
   androidDeviceDisplayLabel,
@@ -27,6 +28,7 @@ import {
   isAndroidEmulatorIssue,
   isAndroidEmulatorSetupStep,
   isUnknownCommandError,
+  normalizeAndroidStreamFps,
 } from './androidEmulatorModel'
 
 describe('androidEmulatorModel — frozen issue vocabulary', () => {
@@ -176,11 +178,6 @@ describe('androidEmulatorModel — device picker grouping (PA-27)', () => {
 
     expect(groups.map(group => group.key)).toEqual(['phone:35', 'tablet:34', 'other:35'])
   })
-
-  it('pins the renderer-side stream defaults for the screencap loop', () => {
-    expect(DEFAULT_ANDROID_EMULATOR_STREAM_FPS).toBe(2)
-    expect(DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS).toBe(1)
-  })
 })
 
 
@@ -231,5 +228,18 @@ describe('androidEmulatorModel — friendly AVD label (PA-36)', () => {
       .toEqual([echoed])
     expect(groupAndroidEmulatorDevices([echoed], 'all', 'verboo_device').flatMap(group => group.devices))
       .toEqual([echoed])
+  })
+})
+
+describe('androidEmulatorModel — stream rate vocabulary (F3 §9)', () => {
+  it('offers exactly [60, 30], defaults to 60 and normalizes invalid to 60', () => {
+    expect([...ANDROID_EMULATOR_STREAM_RATES]).toEqual([60, 30])
+    expect(DEFAULT_ANDROID_EMULATOR_STREAM_FPS).toBe(60)
+    expect(DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS).toBe(1)
+    for (const value of [undefined, null, 0, 15, 45, 99, '60', true, '30', false, NaN, Infinity, -30]) {
+      expect(normalizeAndroidStreamFps(value)).toBe(60)
+    }
+    expect(normalizeAndroidStreamFps(30)).toBe(30)
+    expect(normalizeAndroidStreamFps(60)).toBe(60)
   })
 })

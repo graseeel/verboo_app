@@ -95,11 +95,15 @@ export function errorText(err: unknown): string | undefined {
 }
 
 
-/** Renderer-side stream defaults for android_emulator_attach. The preview is
- *  an `adb exec-out screencap` PNG loop — far slower than the iOS MJPEG
- *  stream, hence modest rates (the backend is free to clamp). */
-export const DEFAULT_ANDROID_EMULATOR_STREAM_FPS = 2
+/** Vocabulário congelado F3 §9: exatamente 60|30; ausente/inválido ⇒ 60. */
+export const ANDROID_EMULATOR_STREAM_RATES = [60, 30] as const
+export type AndroidStreamRate = 30 | 60
+export const DEFAULT_ANDROID_EMULATOR_STREAM_FPS: AndroidStreamRate = 60
+/** Fallback ADB PNG fixo INTERNO — sem seletor na UI. */
 export const DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS = 1
+export function normalizeAndroidStreamFps(value: unknown): AndroidStreamRate {
+  return value === 30 ? 30 : 60
+}
 
 export type AndroidDeviceFamilyFilter = 'all' | 'phone' | 'tablet'
 

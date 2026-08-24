@@ -425,7 +425,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
 
     await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
       'android_emulator_attach',
-      { avdName: 'Verboo_Device_API_35', streamFps: 2, fallbackFps: 1 },
+      { avdName: 'Verboo_Device_API_35', streamFps: 60, fallbackFps: 1 },
     ))
     const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
     act(() => {

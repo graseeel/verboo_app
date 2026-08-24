@@ -18,6 +18,7 @@ import {
   DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
   errorText,
   isUnknownCommandError,
+  normalizeAndroidStreamFps,
 } from './androidEmulatorModel'
 
 const INITIAL_LIFECYCLE: AndroidEmulatorLifecycleEvent = { stage: 'booting' }
@@ -129,7 +130,7 @@ export function useAndroidEmulatorPanel() {
       )
       sessionRef.current = next
       setSession(next)
-      setStreamFps(next.streamFps)
+      setStreamFps(normalizeAndroidStreamFps(next.streamFps))
       setFallbackFps(next.fallbackFps)
       setLifecycle(next.lifecycle)
       setRequirements(current => current ? {
@@ -299,13 +300,13 @@ export function useAndroidEmulatorPanel() {
   const setStreamRate = useCallback(async (nextFps: number) => {
     setError(undefined)
     if (!sessionRef.current) {
-      setStreamFps(nextFps)
+      setStreamFps(normalizeAndroidStreamFps(nextFps))
       return
     }
     try {
       const applied = await androidEmulatorApi.setStreamRate(nextFps)
       const value = applied ?? nextFps
-      setStreamFps(value)
+      setStreamFps(normalizeAndroidStreamFps(value))
       setSession(current => current ? { ...current, streamFps: value } : current)
       if (sessionRef.current) sessionRef.current = { ...sessionRef.current, streamFps: value }
     } catch (reason) {

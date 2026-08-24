@@ -247,4 +247,39 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       fileName: 'android-recording.mp4',
     })
   })
+
+  it('normalizes the echoed attach streamFps into the state (F5, line 133)', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    expect(view.result.current.streamFps).toBe(60)
+    expect(view.result.current.session?.streamFps).toBe(2)
+  })
+
+  it('normalizes the applied setStreamRate value into the state (F5, line 309)', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    await act(async () => { await view.result.current.setStreamRate(5) })
+
+    expect(view.result.current.streamFps).toBe(60)
+    expect(view.result.current.session?.streamFps).toBe(5)
+  })
+
+  it('setStreamRate(30) is identity under normalize (F5, identidade pin)', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    await act(async () => { await view.result.current.setStreamRate(30) })
+
+    expect(view.result.current.streamFps).toBe(30)
+  })
+
+  it('normalizes setStreamRate(5) before attach through the no-session path (F5, line 303)', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+
+    await act(async () => { await view.result.current.setStreamRate(5) })
+
+    expect(view.result.current.streamFps).toBe(60)
+  })
 })
