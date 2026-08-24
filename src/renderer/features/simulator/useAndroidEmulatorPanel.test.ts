@@ -18,7 +18,6 @@ const api = vi.hoisted(() => ({
   end: vi.fn(),
   setVisible: vi.fn(),
   setStreamRate: vi.fn(),
-  setFallbackRate: vi.fn(),
   tap: vi.fn(),
   drag: vi.fn(),
   typeText: vi.fn(),
@@ -100,7 +99,6 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     api.end.mockResolvedValue(undefined)
     api.setVisible.mockResolvedValue(undefined)
     api.setStreamRate.mockResolvedValue(undefined)
-    api.setFallbackRate.mockResolvedValue(undefined)
     api.tap.mockResolvedValue(undefined)
     api.drag.mockResolvedValue(undefined)
     api.typeText.mockResolvedValue(undefined)
@@ -197,20 +195,6 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     await act(async () => { await view.result.current.attach(device.avdName) })
     await act(async () => { await view.result.current.endSimulation() })
     expect(view.result.current.session).toBeUndefined()
-  })
-
-  it('exposes configurable stream and fallback rates through the F1 API', async () => {
-    const view = renderHook(() => useAndroidEmulatorPanel())
-    await act(async () => { await view.result.current.attach(device.avdName) })
-
-    await act(async () => {
-      await view.result.current.setStreamRate(5)
-      await view.result.current.setFallbackRate(0.5)
-    })
-
-    expect(api.setStreamRate).toHaveBeenCalledWith(5)
-    expect(api.setFallbackRate).toHaveBeenCalledWith(0.5)
-    expect(view.result.current.session).toMatchObject({ streamFps: 5, fallbackFps: 0.5 })
   })
 
   it('increments agentOpenRequest and forwards a starting presence from onOpenRequested', async () => {

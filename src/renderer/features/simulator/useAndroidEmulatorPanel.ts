@@ -672,23 +672,6 @@ export function useAndroidEmulatorPanel() {
     }
   }, [])
 
-  const setFallbackRate = useCallback(async (nextFps: number) => {
-    setError(undefined)
-    if (!sessionRef.current) {
-      setFallbackFps(nextFps)
-      return
-    }
-    try {
-      const applied = await androidEmulatorApi.setFallbackRate(nextFps)
-      const value = applied ?? nextFps
-      setFallbackFps(value)
-      setSession(current => current ? { ...current, fallbackFps: value } : current)
-      if (sessionRef.current) sessionRef.current = { ...sessionRef.current, fallbackFps: value }
-    } catch (reason) {
-      setError(errorText(reason))
-    }
-  }, [])
-
   useEffect(() => {
     let disposed = false
     const unlisteners: Array<() => void> = []
@@ -814,6 +797,5 @@ export function useAndroidEmulatorPanel() {
     captureScreen,
     toggleRecording,
     setStreamRate,
-    setFallbackRate,
   }
 }
