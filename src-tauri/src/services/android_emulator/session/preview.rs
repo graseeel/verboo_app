@@ -2,11 +2,20 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreviewAvailability {
+    Grpc,
+    Unavailable,
+    Unauthenticated,
+    Unsupported,
+}
+
 pub(crate) struct PreviewRuntime {
     pub(super) mode: PreviewMode,
     pub(super) slot: Arc<LatestSlot>,
     control: Mutex<Option<tokio::sync::watch::Sender<PreviewControl>>>,
     fallback_started: AtomicBool,
+    pub(super) availability: Mutex<PreviewAvailability>,
     pub(super) health: Arc<PreviewHealth>,
     #[cfg(test)]
     control_install_pause: Mutex<Option<TestPause>>,
@@ -21,6 +30,12 @@ impl PreviewRuntime {
             slot: Arc::new(LatestSlot::new(generation)),
             control: Mutex::new(None),
             fallback_started: AtomicBool::new(false),
+            availability: Mutex::new(match mode {
+                PreviewMode::Vaf1 => PreviewAvailability::Grpc,
+                PreviewMode::LegacyPrimary | PreviewMode::LegacyFallback => {
+                    PreviewAvailability::Unavailable
+                }
+            }),
             health: Arc::new(PreviewHealth::new()),
             #[cfg(test)]
             control_install_pause: Mutex::new(None),
@@ -219,6 +234,16 @@ pub(super) enum PreviewStart {
     Cancelled,
 }
 
+fn availability_for_reason(reason: Option<PreviewReason>) -> PreviewAvailability {
+    match reason {
+        Some(PreviewReason::Unauthenticated) => PreviewAvailability::Unauthenticated,
+        Some(PreviewReason::Unsupported) => PreviewAvailability::Unsupported,
+        Some(PreviewReason::Unavailable) | Some(PreviewReason::GpuSoftware) | None => {
+            PreviewAvailability::Unavailable
+        }
+    }
+}
+
 pub(super) fn grpc_reason(error: grpc::GrpcError) -> PreviewReason {
     match error {
         grpc::GrpcError::Unavailable => PreviewReason::Unavailable,
@@ -252,6 +277,11 @@ pub(super) fn coordinate_fallback(
         return Ok(CoordinatorOutcome::AlreadyOwned);
     }
     session.preview.slot.clear();
+    *session
+        .preview
+        .availability
+        .lock()
+        .expect("Android preview availability poisoned") = availability_for_reason(reason);
     let requested_fps = *session
         .stream_fps
         .lock()

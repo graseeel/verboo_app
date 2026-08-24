@@ -324,6 +324,16 @@ pub fn android_emulator_setup_cancel(
 }
 
 #[tauri::command]
+pub fn android_emulator_read_frame(
+    service: State<'_, AndroidEmulatorService>,
+    generation: u64,
+) -> Result<tauri::ipc::Response, preview::PreviewReadError> {
+    service
+        .read_frame_sync(generation)
+        .map(tauri::ipc::Response::new)
+}
+
+#[tauri::command]
 pub async fn android_emulator_attach(
     app: AppHandle,
     service: State<'_, AndroidEmulatorService>,

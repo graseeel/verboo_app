@@ -15,3 +15,4 @@ include!("tests/support.rs");
 include!("tests/lifecycle.rs");
 include!("tests/preview_transport.rs");
 include!("tests/preview_harden.rs");
+include!("tests/read_frame.rs");

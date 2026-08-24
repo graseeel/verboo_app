@@ -16,8 +16,8 @@ use tauri::{AppHandle, Emitter};
 
 use super::preview::{
     next_preview_generation, FirstPreviewError, FirstPreviewGate, FirstPreviewState, FrameReady,
-    LatestSlot, PreviewControl, PreviewEventSink, PreviewHealth, PreviewMode, PreviewReason,
-    PreviewSource, PreviewState, PreviewTransport, WorkerOutcome,
+    LatestSlot, PreviewControl, PreviewEventSink, PreviewHealth, PreviewMode, PreviewReadError,
+    PreviewReason, PreviewSource, PreviewState, PreviewTransport, WorkerOutcome,
 };
 use super::requirements::{self, AndroidDevice};
 use super::{
@@ -39,7 +39,7 @@ use boot::{
     OwnedBootAttempts, OwnedBootError, OwnedBootResult, SystemEmulatorLauncher,
     SystemOwnedBootAttempts,
 };
-pub(crate) use preview_runtime::PreviewRuntime;
+pub(crate) use preview_runtime::{PreviewAvailability, PreviewRuntime};
 use preview_runtime::{
     capture_and_emit, coordinate_fallback, finish_started_preview, run_android_frame_loop,
     run_preview_coordinator, start_preview_for_session, CoordinatorOutcome, LegacyPreviewBackend,
@@ -1056,6 +1056,38 @@ impl AndroidEmulatorService {
             return Err(format!("Android emulator preview failed: {error:?}"));
         }
         Ok(session.summary())
+    }
+
+    pub(crate) fn read_frame_sync(
+        &self,
+        generation: u64,
+    ) -> Result<Vec<u8>, PreviewReadError> {
+        let state = self
+            .state
+            .lock()
+            .expect("Android emulator state poisoned");
+        let session = state
+            .session
+            .as_ref()
+            .ok_or(PreviewReadError::Unavailable)?;
+        session.preview.slot.ensure_generation(generation)?;
+        if session.preview.mode != PreviewMode::Vaf1 {
+            return Err(PreviewReadError::Unsupported);
+        }
+        match session.preview.slot.take(generation) {
+            Err(PreviewReadError::NoFrame) => match *session
+                .preview
+                .availability
+                .lock()
+                .expect("Android preview availability poisoned")
+            {
+                PreviewAvailability::Grpc => Err(PreviewReadError::NoFrame),
+                PreviewAvailability::Unavailable => Err(PreviewReadError::Unavailable),
+                PreviewAvailability::Unauthenticated => Err(PreviewReadError::Unauthenticated),
+                PreviewAvailability::Unsupported => Err(PreviewReadError::Unsupported),
+            },
+            result => result,
+        }
     }
 
     pub(crate) fn set_visible_sync(&self, visible: bool) -> Result<(), String> {

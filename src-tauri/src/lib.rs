@@ -2614,6 +2614,7 @@ pub fn run() {
             services::android_emulator::android_emulator_setup_start,
             services::android_emulator::android_emulator_setup_cancel,
             services::android_emulator::android_emulator_attach,
+            services::android_emulator::android_emulator_read_frame,
             services::android_emulator::android_emulator_detach,
             services::android_emulator::android_emulator_end,
             services::android_emulator::android_emulator_set_visible,

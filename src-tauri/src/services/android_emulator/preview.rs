@@ -506,11 +506,15 @@ impl Orientation {
 }
 
 fn frame_interval_us(fps: u16) -> u64 {
-    1_000_000 / u64::from(fps)
+    match u64::from(fps) {
+        0 => u64::MAX,
+        fps => 1_000_000 / fps,
+    }
 }
 
 fn is_throttled(last_publish_us: Option<u64>, now_us: u64, fps: u16) -> bool {
-    last_publish_us.is_some_and(|last| now_us.saturating_sub(last) < frame_interval_us(fps))
+    fps == 0
+        || last_publish_us.is_some_and(|last| now_us.saturating_sub(last) < frame_interval_us(fps))
 }
 
 fn reason_for_grpc_error(error: super::grpc::GrpcError) -> PreviewReason {
@@ -1838,6 +1842,54 @@ mod tests {
         sink.wait_for_frames(2).await;
         assert_eq!(sink.frames().last().unwrap().seq, 2);
         assert_eq!(slot.dropped(), 1);
+        control_tx.send_replace(PreviewControl {
+            visible: true,
+            stop: true,
+        });
+        assert_eq!(task.await.unwrap(), WorkerOutcome::Stopped);
+    }
+
+    #[test]
+    fn zero_fps_is_fail_closed_without_division() {
+        assert!(is_throttled(None, 0, 0));
+        assert!(is_throttled(Some(1), 1, 0));
+        assert!(is_throttled(Some(1), u64::MAX, 0));
+        assert_eq!(frame_interval_us(0), u64::MAX);
+        assert_eq!(frame_interval_us(60), 1_000_000 / 60);
+        assert_eq!(frame_interval_us(30), 1_000_000 / 30);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_fps_fail_closed_drops_every_frame_without_panic() {
+        let (factory, mut senders) = PushStreamFactory::new(1);
+        let sender = senders.remove(0);
+        let sink = Arc::new(RecordingPreviewSink::default());
+        let slot = Arc::new(LatestSlot::new(7));
+        let rate = Arc::new(Mutex::new(0));
+        let clock = Arc::new(FakeClock::new(1, 1_000_000));
+        let (control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        let task = tokio::spawn(run_vaf1_worker(
+            7,
+            rate,
+            slot.clone(),
+            Arc::new(FirstPreviewGate::new()),
+            Arc::new(PreviewHealth::new()),
+            control_rx,
+            factory.clone(),
+            sink.clone(),
+            clock.clone(),
+            false,
+        ));
+        factory.wait_for_opens(1).await;
+        sender
+            .send(Ok(Some(worker_image(2, 3, 4_000_000_000))))
+            .unwrap();
+        clock.wait_for_monotonic_reads(1).await;
+        assert_eq!(sink.frames().len(), 0);
+        assert_eq!(slot.take(7), Err(PreviewReadError::NoFrame));
         control_tx.send_replace(PreviewControl {
             visible: true,
             stop: true,
