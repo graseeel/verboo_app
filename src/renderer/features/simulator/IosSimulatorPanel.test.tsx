@@ -284,6 +284,10 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     vi.mocked(invoke).mockReset()
     vi.mocked(invoke).mockResolvedValue({ ready: true, devices: [androidDevice] })
     listenMock.mockClear()
+    // F5 (Lacre): higiene — o mock de window.verboo.inspectFiles é setado por
+    // testes pontuais; sem reset no beforeEach, uma falha no meio vaza o stub
+    // para o teste seguinte (captureAnnotation honesta do hook faria sucesso).
+    delete (window as unknown as { verboo?: unknown }).verboo
   })
 
   afterEach(() => {
@@ -423,9 +427,12 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     fireEvent.focus(picker)
     fireEvent.click(screen.getByRole('option', { name: /Verboo Device API 35/ }))
 
+    // ERRATA Task 8: a produção envia previewTransport: 'vaf1' no payload
+    // de attach (hook Task 8 fix). Atualização do mounted test autorizada
+    // pelo gate (mesma classe do F1 da Task 5 — suíte verde no fechamento).
     await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
       'android_emulator_attach',
-      { avdName: 'Verboo_Device_API_35', streamFps: 60, fallbackFps: 1 },
+      { avdName: 'Verboo_Device_API_35', streamFps: 60, fallbackFps: 1, previewTransport: 'vaf1' },
     ))
     const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
     act(() => {
@@ -459,6 +466,17 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
 
   it('wires Android a11y selection, annotations, media, rates and reused tooltips through real components', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    // COMPLEMENTO ERRATA Task 8: o pipeline captureAnnotation do hook Android
+    // (useAndroidEmulatorPanel.ts:554-608) usa window.verboo.inspectFiles para
+    // extrair bytes/dims reais do PNG — sem este mock, o caminho captura
+    // → undefined → pendingCapture não setada → nota "Instrução" não renderiza.
+    // Resposta coerente com o capture_screen mockado abaixo (mesmo path +
+    // dims alinhadas ao frame publicado em width:1080/height:2400).
+    ;(window as unknown as { verboo: unknown }).verboo = {
+      inspectFiles: vi.fn().mockResolvedValue([
+        { path: '/captures/android-screen.png', size: 1000, width: 1080, height: 2400 },
+      ]),
+    }
     const addedAnnotation = vi.fn()
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === 'android_emulator_requirements') {
