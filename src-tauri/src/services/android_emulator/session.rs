@@ -1204,6 +1204,12 @@ impl AndroidEmulatorService {
             stop: true,
         });
         session.preview.slot.clear();
+        *session
+            .preview
+            .availability
+            .lock()
+            .expect("Android preview availability poisoned") =
+            PreviewAvailability::Unavailable;
         session.first_preview.fail(FirstPreviewError::Cancelled);
         let workers = std::mem::take(
             &mut *session

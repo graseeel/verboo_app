@@ -21,6 +21,8 @@ pub(crate) struct PreviewRuntime {
     control_install_pause: Mutex<Option<TestPause>>,
     #[cfg(test)]
     worker_publish_pause: Mutex<Option<TestPause>>,
+    #[cfg(test)]
+    failed_availability_pause: Mutex<Option<TestPause>>,
 }
 
 impl PreviewRuntime {
@@ -41,6 +43,8 @@ impl PreviewRuntime {
             control_install_pause: Mutex::new(None),
             #[cfg(test)]
             worker_publish_pause: Mutex::new(None),
+            #[cfg(test)]
+            failed_availability_pause: Mutex::new(None),
         }
     }
 
@@ -119,6 +123,13 @@ impl PreviewRuntime {
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         arm_test_pause(&self.worker_publish_pause)
+    }
+
+    #[cfg(test)]
+    pub(super) fn pause_before_failed_availability_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        arm_test_pause(&self.failed_availability_pause)
     }
 }
 
@@ -244,6 +255,22 @@ fn availability_for_reason(reason: Option<PreviewReason>) -> PreviewAvailability
     }
 }
 
+fn publish_availability_unless_stopped(
+    session: &AndroidSession,
+    next: PreviewAvailability,
+) -> bool {
+    let mut availability = session
+        .preview
+        .availability
+        .lock()
+        .expect("Android preview availability poisoned");
+    if session.stop.load(Ordering::Acquire) {
+        return false;
+    }
+    *availability = next;
+    true
+}
+
 pub(super) fn grpc_reason(error: grpc::GrpcError) -> PreviewReason {
     match error {
         grpc::GrpcError::Unavailable => PreviewReason::Unavailable,
@@ -277,11 +304,9 @@ pub(super) fn coordinate_fallback(
         return Ok(CoordinatorOutcome::AlreadyOwned);
     }
     session.preview.slot.clear();
-    *session
-        .preview
-        .availability
-        .lock()
-        .expect("Android preview availability poisoned") = availability_for_reason(reason);
+    if !publish_availability_unless_stopped(session, availability_for_reason(reason)) {
+        return Ok(CoordinatorOutcome::AlreadyOwned);
+    }
     let requested_fps = *session
         .stream_fps
         .lock()
@@ -366,12 +391,27 @@ pub(super) fn run_preview_coordinator(
             let _ = coordinate_fallback(session.as_ref(), reason, sink.as_ref(), backend.as_ref());
         }
         WorkerOutcome::Failed(error) => {
+            // Linearization (Maestro): the worker marks health/first_preview
+            // terminal before this arm. Overlap until availability is written is
+            // accepted — a concurrent read_frame_sync that sees an empty slot
+            // while still Grpc returns NoFrame. After this lock write, later
+            // reads observe Unavailable. Do not reorder that linearization.
+            // Clear the slot before publishing Unavailable so SequenceExhausted
+            // cannot serve a residual frame (same contract as coordinate_fallback).
+            // Coordinator availability writes check session.stop under the same
+            // lock so an in-flight Fallback cannot overwrite a cancel terminal.
             session.preview.health.terminal(error.clone());
-            fail_first_or_emit_terminal(sink.as_ref(), session.first_preview.as_ref(), error);
+            session.preview.slot.clear();
+            #[cfg(test)]
+            wait_test_pause(&session.preview.failed_availability_pause);
+            if publish_availability_unless_stopped(session.as_ref(), PreviewAvailability::Unavailable) {
+                fail_first_or_emit_terminal(sink.as_ref(), session.first_preview.as_ref(), error);
+            }
         }
         WorkerOutcome::Stopped => {
             let error = FirstPreviewError::Cancelled;
             session.preview.health.terminal(error.clone());
+            let _ = publish_availability_unless_stopped(session.as_ref(), PreviewAvailability::Unavailable);
             session.first_preview.fail(error);
         }
     }

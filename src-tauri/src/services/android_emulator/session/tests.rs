@@ -3,10 +3,11 @@
 use super::super::grpc::generated;
 use super::super::grpc::GrpcError;
 use super::super::preview::{
-    FirstPreviewError, FirstPreviewGate, FirstPreviewState, FrameReady, OpenStreamFuture,
-    PreviewControl, PreviewEventSink, PreviewHealthState, PreviewMode, PreviewReadError,
-    PreviewReason, PreviewSource, PreviewState, PreviewTransport, ScreenshotStream,
-    ScreenshotStreamFactory, StreamMessageFuture, ValidatedRgbFrame, MAX_SAFE_GENERATION,
+    seed_session_seq_last_for_test, FirstPreviewError, FirstPreviewGate, FirstPreviewState,
+    FrameReady, OpenStreamFuture, PreviewControl, PreviewEventSink, PreviewHealthState,
+    PreviewMode, PreviewReadError, PreviewReason, PreviewSource, PreviewState, PreviewTransport,
+    ScreenshotStream, ScreenshotStreamFactory, StreamMessageFuture, ValidatedRgbFrame,
+    MAX_SAFE_GENERATION,
 };
 use super::*;
 use std::collections::VecDeque;

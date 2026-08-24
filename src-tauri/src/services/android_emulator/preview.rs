@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -112,9 +114,31 @@ pub(crate) struct SessionSeq {
     last: u32,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_SESSION_SEQ_LAST: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn seed_session_seq_last_for_test(last: u32) {
+    TEST_SESSION_SEQ_LAST.with(|cell| cell.set(last));
+}
+
 impl SessionSeq {
     pub(crate) fn new() -> Self {
-        Self { last: 0 }
+        Self {
+            last: Self::initial_last(),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn initial_last() -> u32 {
+        0
+    }
+
+    #[cfg(test)]
+    fn initial_last() -> u32 {
+        TEST_SESSION_SEQ_LAST.with(|cell| cell.replace(0))
     }
 
     pub(crate) fn next(&mut self) -> Result<u32, SequenceError> {
