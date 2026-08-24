@@ -118,7 +118,7 @@ import { useWorkspacePanelSuspension, type WorkspacePanelKind } from './features
 import { useTheme } from './features/theme/useTheme'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
-import { LoginScreen, type AuthErrorState } from './components/LoginScreen'
+import { LoginScreen, type AuthErrorState, type LoginCliBootstrap } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript, type TranscriptMediaAttachment } from './components/Transcript'
 import { MEDIA_PREVIEW_TRANSITION_MS, MediaPreviewPanel } from './features/media-preview/MediaPreviewPanel'
@@ -491,6 +491,13 @@ export function App() {
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
+  // Total access state for the INITIAL snapshot read. 'checking' means the
+  // app does not yet know whether a CLI bootstrap is needed — during this
+  // window agent actions stay latched both pre- and post-login.
+  const [updateAccess, setUpdateAccess] = useState<
+    { kind: 'checking' } | { kind: 'resolved' } | { kind: 'error'; message: string }
+  >({ kind: 'checking' })
+  const updateSnapshotRef = useRef<UpdateSnapshot | undefined>(undefined)
   const [cliBootstrapSuccessVisible, setCliBootstrapSuccessVisible] = useState(false)
   const cliBootstrapInFlightRef = useRef(false)
   const cliBootstrapWasRequiredRef = useRef(false)
@@ -1319,35 +1326,66 @@ export function App() {
     })
   }, [])
 
+  // Single writer for the snapshot: keeps the ref mirror and marks the
+  // initial access as resolved no matter which path produced the value.
+  const applyUpdateSnapshot = useCallback((snapshot: UpdateSnapshot | undefined) => {
+    updateSnapshotRef.current = snapshot
+    setUpdateSnapshot(snapshot)
+    setUpdateAccess({ kind: 'resolved' })
+  }, [])
+
   const runCliBootstrap = useCallback(async () => {
     if (cliBootstrapInFlightRef.current) return
     cliBootstrapInFlightRef.current = true
+    // A retry started without an authoritative snapshot returns the
+    // presentation to checking instead of keeping a stale error pinned.
+    if (updateSnapshotRef.current === undefined) {
+      setUpdateAccess({ kind: 'checking' })
+    }
     try {
-      setUpdateSnapshot(await window.verboo.bootstrapCli())
+      applyUpdateSnapshot(await window.verboo.bootstrapCli())
     } catch (error) {
-      setUpdateSnapshot(current => current ? {
-        ...current,
-        status: 'error',
-        target: 'cli',
-        cliBootstrapRequired: true,
-        error: error instanceof Error ? error.message : String(error),
-      } : current)
+      const message = error instanceof Error ? error.message : String(error)
+      if (updateSnapshotRef.current === undefined) {
+        setUpdateAccess({ kind: 'error', message })
+      } else {
+        const current = updateSnapshotRef.current
+        applyUpdateSnapshot({
+          ...current,
+          status: 'error',
+          target: 'cli',
+          cliBootstrapRequired: true,
+          error: message,
+        })
+      }
     } finally {
       cliBootstrapInFlightRef.current = false
     }
-  }, [])
+  }, [applyUpdateSnapshot])
 
   useEffect(() => {
     let mounted = true
-    void window.verboo.getUpdateStatus().then(snapshot => {
-      if (!mounted || !snapshot) return
-      setUpdateSnapshot(snapshot)
-      if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
-        void runCliBootstrap()
-      }
-    })
+    void window.verboo.getUpdateStatus()
+      .then(snapshot => {
+        if (!mounted) return
+        // undefined (legacy mocks / no bootstrap feature) counts as resolved:
+        // the surface simply behaves as ready.
+        applyUpdateSnapshot(snapshot)
+        if (!snapshot) return
+        if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
+          void runCliBootstrap()
+        }
+      })
+      .catch(error => {
+        // A rejected getUpdateStatus is a REAL bootstrap failure: capture it
+        // locally (no unhandled rejection) and let the card show the cause.
+        // A LATE rejection after the live stream already delivered a
+        // snapshot is ignored — the snapshot remains the authority.
+        if (!mounted || updateSnapshotRef.current !== undefined) return
+        setUpdateAccess({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      })
     const unsubscribe = window.verboo.onUpdateStatus(snapshot => {
-      setUpdateSnapshot(snapshot)
+      applyUpdateSnapshot(snapshot)
       if (snapshot.status === 'downloaded') {
         toast(t('updates.readyToast'))
       }
@@ -1358,7 +1396,7 @@ export function App() {
       mounted = false
       unsubscribe()
     }
-  }, [runCliBootstrap, t, toast])
+  }, [applyUpdateSnapshot, runCliBootstrap, t, toast])
 
   const cliBootstrapRequired = updateSnapshot?.cliBootstrapRequired === true
 
@@ -1388,7 +1426,27 @@ export function App() {
     }
   }, [])
 
-  const cliAgentActionsBlocked = cliBootstrapRequired || cliBootstrapSuccessVisible
+  // Single derivation of the bootstrap presentation for BOTH surfaces.
+  // An existing snapshot is the AUTHORITY and wins over any initial-access
+  // state; checking/error access only describe the pre-snapshot window.
+  const loginCliBootstrap: LoginCliBootstrap =
+    updateSnapshot !== undefined
+      ? cliBootstrapSuccessVisible
+        ? { phase: 'success', stage: updateSnapshot.bootstrapStage ?? 'cli' }
+        : updateSnapshot.cliBootstrapRequired === true
+          ? updateSnapshot.status === 'error'
+            ? { phase: 'error', stage: updateSnapshot.bootstrapStage ?? 'cli', error: updateSnapshot.error }
+            : { phase: 'installing', stage: updateSnapshot.bootstrapStage ?? 'cli', percent: updateSnapshot.percent }
+          : { phase: 'ready', stage: updateSnapshot.bootstrapStage ?? 'cli' }
+      : updateAccess.kind === 'checking'
+        ? { phase: 'checking', stage: 'runtime' }
+        : updateAccess.kind === 'error'
+          ? { phase: 'error', stage: 'runtime', error: updateAccess.message }
+          : { phase: 'ready', stage: 'cli' }
+
+  // Unknown (checking) and errored bootstrap latch agent actions exactly like
+  // an in-progress download — the shell may render, but never act.
+  const cliAgentActionsBlocked = loginCliBootstrap.phase !== 'ready'
   const whatsNewReady = configLoaded
     && settingsLoaded
     && updateSnapshot !== undefined
@@ -6385,6 +6443,8 @@ export function App() {
             if (event.status) setCliAuth(event.status)
             return validateAccess(true)
           }}
+          cliBootstrap={loginCliBootstrap}
+          onCliBootstrapRetry={() => { void runCliBootstrap() }}
         />
         <FeedbackDialog
           open={feedbackOpen}
@@ -6690,16 +6750,12 @@ export function App() {
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
-        {activeView === 'chat' && cliAgentActionsBlocked && (
+        {activeView === 'chat' && loginCliBootstrap.phase !== 'ready' && (
           <CliBootstrapGate
-            phase={cliBootstrapSuccessVisible
-              ? 'success'
-              : updateSnapshot?.status === 'error'
-                ? 'error'
-                : 'installing'}
-            stage={updateSnapshot?.bootstrapStage ?? 'cli'}
-            percent={updateSnapshot?.percent}
-            error={updateSnapshot?.error}
+            phase={loginCliBootstrap.phase}
+            stage={loginCliBootstrap.stage}
+            percent={loginCliBootstrap.percent}
+            error={loginCliBootstrap.error}
             onRetry={() => { void runCliBootstrap() }}
             onOpenSettings={() => {
               setSettingsTab('security')

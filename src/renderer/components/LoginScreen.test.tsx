@@ -74,6 +74,8 @@ function makeProps(overrides: Partial<LoginScreenProps> = {}): LoginScreenProps 
     onStaySignedInChange: vi.fn(),
     onOpenFeedback: vi.fn(),
     onLoginComplete: vi.fn(),
+    cliBootstrap: { phase: 'ready' as const, stage: 'cli' as const },
+    onCliBootstrapRetry: vi.fn(),
     ...overrides,
   }
 }
@@ -768,5 +770,36 @@ describe('T6: apiKeyHelp no longer mentions unsigned beta builds (factually fals
     fireEvent.click(screen.getByRole('button', { name: /Use an API key/ }))
     const help = screen.getByText(/The key is encrypted locally/)
     expect(help.textContent).not.toMatch(/unsigned beta|unsigned/i)
+  })
+  it('the banner Retry cannot fire a CLI login once the bootstrap latch closes', async () => {
+    let attempts = 0
+    const props = makeProps({
+      onStartLogin: vi.fn(() => {
+        attempts += 1
+        return Promise.reject(new Error('boom'))
+      }),
+    })
+    const view = renderLogin(props)
+
+    // While ready: an explicit failure opens the retryable banner.
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Não foi possível concluir o login pelo CLI.')
+    expect(attempts).toBe(1)
+    const bannerRetry = screen.getByRole('button', { name: /Tentar de novo/ })
+
+    // Same mounted instance re-latched by the parent (bootstrap pending):
+    // the banner stays, but its Retry must be a no-op against startCliLogin.
+    view.rerender(
+      <I18nProvider language="pt-BR">
+        <LoginScreen
+          {...props}
+          cliBootstrap={{ phase: 'installing' as const, stage: 'runtime' as const, percent: 40 }}
+        />
+      </I18nProvider>,
+    )
+    expect(bannerRetry).toBeTruthy()
+    fireEvent.click(bannerRetry)
+    await act(async () => {})
+    expect(attempts).toBe(1)
   })
 })

@@ -73,6 +73,8 @@ function makeProps(overrides: Partial<LoginScreenProps> = {}): LoginScreenProps 
     onStaySignedInChange: vi.fn(),
     onOpenFeedback: vi.fn(),
     onLoginComplete: vi.fn(),
+    cliBootstrap: { phase: 'ready' as const, stage: 'cli' as const },
+    onCliBootstrapRetry: vi.fn(),
     ...overrides,
   }
 }

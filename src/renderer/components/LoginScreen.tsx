@@ -2,10 +2,23 @@ import { Check, Copy, ExternalLink, KeyRound, LogIn } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import type { CliAuthStatus, CredentialStatus, LanguageCode, LoginEvent, LoginResult, ModelDiscoveryResult } from '../../shared/types'
+import type { BootstrapStage, CliAuthStatus, CredentialStatus, LanguageCode, LoginEvent, LoginResult, ModelDiscoveryResult } from '../../shared/types'
 import wordmarkUrl from '../../../assets/branding/verboo-wordmark.png'
 import { LanguageSelector } from '../features/language/LanguageSelector'
 import { useI18n } from '../i18n'
+import { CliBootstrapCard } from './CliBootstrapGate'
+
+/** authoritative CLI bootstrap state as seen by THIS surface. While
+ *  it is not 'ready', CLI login actions are latched (the runtime may not
+ *  exist yet — a healthy first-boot download must never surface as an
+ *  error) and the preparation card replaces the CLI controls. Non-CLI
+ *  paths (API key, language, signup/dashboard/feedback) stay available. */
+export type LoginCliBootstrap = {
+  phase: 'checking' | 'installing' | 'error' | 'success' | 'ready'
+  stage: BootstrapStage
+  percent?: number
+  error?: string
+}
 
 /**
  * PA-37g: stable auth-error contract. The PRODUCER (App.validateAccess /
@@ -51,6 +64,12 @@ type LoginScreenProps = {
    * rendered locally with their specific cause and do NOT bubble.
    */
   onLoginComplete?: (event: LoginEvent) => Promise<boolean> | boolean
+  /** REQUIRED. Authoritative CLI bootstrap state derived by App from the
+   *  update snapshot; while it is not 'ready', the CLI login actions are
+   *  latched and the preparation card replaces them. */
+  cliBootstrap: LoginCliBootstrap
+  /** REQUIRED. Invoked by the card's Retry button on a bootstrap error. */
+  onCliBootstrapRetry: () => void
 }
 
 /**
@@ -144,6 +163,8 @@ export function LoginScreen({
   onStaySignedInChange,
   onOpenFeedback,
   onLoginComplete,
+  cliBootstrap,
+  onCliBootstrapRetry,
 }: LoginScreenProps) {
   const { t } = useI18n()
   const [apiKey, setApiKey] = useState('')
@@ -386,6 +407,9 @@ export function LoginScreen({
   }
 
   async function startLogin() {
+    // Latched exactly like checkExistingAuth: a bootstrap window that opens
+    // mid-flow (banner Retry, Git onboarding finish) cannot spawn the CLI.
+    if (cliBootstrap.phase !== 'ready') return
     const actionId = beginUserAction('cli-login')
     cliUserActionIdRef.current = actionId
     setCopied(false)
@@ -475,6 +499,9 @@ export function LoginScreen({
   }
 
   async function checkExistingAuth() {
+    // same latch as startLogin — a CLI re-validation during the
+    // bootstrap window cannot succeed and must not surface as an error.
+    if (cliBootstrap.phase !== 'ready') return
     const actionId = beginUserAction('existing-session')
     setStatusMessage(t('login.checkingSession'))
     try {
@@ -632,25 +659,50 @@ export function LoginScreen({
           </form>
         ) : (
           <>
-            <div className="login-actions">
-              <button
-                className="primary-action"
-                type="button"
-                onClick={startLogin}
-                // A1: disabled while a CLI login is in flight (spawning a
-                // second CLI would double the flow) — but ALWAYS re-enabled
-                // on idle/failed so the button can never get stuck.
-                disabled={
-                  checking ||
-                  cliLogin.phase === 'starting' ||
-                  cliLogin.phase === 'awaitingBrowser' ||
-                  cliLogin.phase === 'urlReady'
-                }
+            {/* while the CLI bootstrap is pending, the preparation
+                card (same markup/animation as the post-login gate) replaces
+                the CLI controls. Retry exists only on a real bootstrap
+                error; API key and tertiary paths stay below, untouched. */}
+            {cliBootstrap.phase !== 'ready' ? (
+              <div
+                className="login-cli-bootstrap"
+                role={cliBootstrap.phase === 'error' ? 'alert' : 'status'}
+                aria-live={cliBootstrap.phase === 'error' ? 'assertive' : 'polite'}
+                aria-busy={cliBootstrap.phase === 'checking' || cliBootstrap.phase === 'installing'}
               >
-                <LogIn size={18} />
-                {t('login.cliLogin')}
-              </button>
-            </div>
+                <CliBootstrapCard
+                  phase={cliBootstrap.phase}
+                  stage={cliBootstrap.stage}
+                  percent={cliBootstrap.percent}
+                  error={cliBootstrap.error}
+                  actions={cliBootstrap.phase === 'error' && (
+                    <button className="button primary" type="button" onClick={onCliBootstrapRetry}>
+                      {t('cliBootstrap.retry')}
+                    </button>
+                  )}
+                />
+              </div>
+            ) : (
+              <div className="login-actions">
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={startLogin}
+                  // A1: disabled while a CLI login is in flight (spawning a
+                  // second CLI would double the flow) — but ALWAYS re-enabled
+                  // on idle/failed so the button can never get stuck.
+                  disabled={
+                    checking ||
+                    cliLogin.phase === 'starting' ||
+                    cliLogin.phase === 'awaitingBrowser' ||
+                    cliLogin.phase === 'urlReady'
+                  }
+                >
+                  <LogIn size={18} />
+                  {t('login.cliLogin')}
+                </button>
+              </div>
+            )}
 
             {/* A1: in-flight progress — shimmer text (transitions-dev #15),
                 a live "still working" signal without a spinner. The URL
@@ -720,7 +772,12 @@ export function LoginScreen({
             </label>
 
             <div className="login-secondary-row">
-              <button className="login-text-button" type="button" onClick={checkExistingAuth} disabled={checking}>
+              <button
+                className="login-text-button"
+                type="button"
+                onClick={checkExistingAuth}
+                disabled={checking || cliBootstrap.phase !== 'ready'}
+              >
                 {t('login.alreadyAuthenticated')}
               </button>
               <span className="login-sep" aria-hidden="true">·</span>
