@@ -648,6 +648,8 @@ export type CustomSlashCommand = {
   createdAt: number
 }
 
+export type AndroidStreamFps = 30 | 60
+
 export type UserSettings = {
   language: LanguageCode
   theme: ThemeMode
@@ -658,6 +660,7 @@ export type UserSettings = {
   showMenuBarText: boolean
   staySignedIn: boolean
   preventSleepWhileRunning: boolean
+  androidStreamFps?: AndroidStreamFps
   completionNotifications: CompletionNotificationMode
   permissionNotifications: boolean
   questionNotifications: boolean

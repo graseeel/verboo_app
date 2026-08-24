@@ -126,6 +126,10 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       openRequestedHandler = handler
       return Promise.resolve(() => {})
     })
+    ;(window as unknown as { verboo: unknown }).verboo = {
+      getUserSettings: vi.fn().mockResolvedValue({}),
+      updateUserSettings: vi.fn().mockResolvedValue(undefined),
+    }
   })
 
   it('resumes preview before refreshing and hides without detaching the session', async () => {
@@ -262,14 +266,15 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     expect(view.result.current.session?.streamFps).toBe(2)
   })
 
-  it('normalizes the applied setStreamRate value into the state (F5, line 309)', async () => {
+  it('normalizes setStreamRate before the native boundary while preserving the attach wire echo', async () => {
     const view = renderHook(() => useAndroidEmulatorPanel())
     await act(async () => { await view.result.current.attach(device.avdName) })
 
     await act(async () => { await view.result.current.setStreamRate(5) })
 
+    expect(api.setStreamRate).toHaveBeenCalledWith(60)
     expect(view.result.current.streamFps).toBe(60)
-    expect(view.result.current.session?.streamFps).toBe(5)
+    expect(view.result.current.session?.streamFps).toBe(2)
   })
 
   it('setStreamRate(30) is identity under normalize (F5, identidade pin)', async () => {
@@ -287,6 +292,81 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     await act(async () => { await view.result.current.setStreamRate(5) })
 
     expect(view.result.current.streamFps).toBe(60)
+  })
+
+  describe('Task 11 — persisted stream settings', () => {
+    it('loads the persisted rate before the first attach', async () => {
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockResolvedValue({ androidStreamFps: 30 }),
+        updateUserSettings: vi.fn().mockResolvedValue(undefined),
+      }
+      api.attach.mockResolvedValueOnce({ ...session, streamFps: 30 })
+      const view = renderHook(() => useAndroidEmulatorPanel())
+
+      await act(async () => { await view.result.current.attach(device.avdName) })
+
+      expect(api.attach).toHaveBeenCalledWith(device.avdName, 30, 1, 'vaf1')
+      expect(view.result.current.streamFps).toBe(30)
+    })
+
+    it('restores persisted authority and exposes persistFailed when saving rejects', async () => {
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockResolvedValue({ androidStreamFps: 60 }),
+        updateUserSettings: vi.fn().mockRejectedValue(new Error('write failed')),
+      }
+      const view = renderHook(() => useAndroidEmulatorPanel())
+
+      await act(async () => { await view.result.current.setStreamRate(30) })
+
+      expect(view.result.current.streamFps).toBe(60)
+      expect(view.result.current.fpsSyncError).toBe('persistFailed')
+      expect(api.setStreamRate).not.toHaveBeenCalled()
+    })
+
+    it('rolls persistence and UI back when native apply rejects', async () => {
+      const updateUserSettings = vi.fn().mockResolvedValue(undefined)
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockResolvedValue({ androidStreamFps: 60 }),
+        updateUserSettings,
+      }
+      api.setStreamRate.mockRejectedValue(new Error('native apply failed'))
+      const view = renderHook(() => useAndroidEmulatorPanel())
+
+      await act(async () => { await view.result.current.setStreamRate(30) })
+
+      expect(updateUserSettings).toHaveBeenNthCalledWith(1, { androidStreamFps: 30 })
+      expect(updateUserSettings).toHaveBeenNthCalledWith(2, { androidStreamFps: 60 })
+      expect(view.result.current.streamFps).toBe(60)
+      expect(view.result.current.fpsSyncError).toBe('applyFailed')
+    })
+
+    it('duplo-fail do rollback: persist + load falham → state cai no default 60 + rollbackFailed (pin Task 11)', async () => {
+      // updateUserSettings: 1ª chamada SUCEDE (persist inicial passa), 2ª FALHA
+      // (rollback persist rejeita). getUserSettings: SEMPRE rejeita →
+      // loadPersistedStreamFps cai no catch e retorna o default 60.
+      let updateCall = 0
+      const updateUserSettings = vi.fn().mockImplementation(async () => {
+        updateCall += 1
+        if (updateCall === 1) return undefined
+        throw new Error('write failed (rollback)')
+      })
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockRejectedValue(new Error('read failed')),
+        updateUserSettings,
+      }
+      api.setStreamRate.mockRejectedValue(new Error('native apply failed'))
+      const view = renderHook(() => useAndroidEmulatorPanel())
+
+      await act(async () => { await view.result.current.setStreamRate(30) })
+
+      // Caminho do rollback fail: state caiu no default via loadPersistedStreamFps
+      // (que capturou o reject e retornou 60), error='rollbackFailed' (selector
+      // disabled, conforme recomendação do Lacre).
+      expect(updateUserSettings).toHaveBeenNthCalledWith(1, { androidStreamFps: 30 })
+      expect(updateUserSettings).toHaveBeenNthCalledWith(2, { androidStreamFps: 60 })
+      expect(view.result.current.streamFps).toBe(60)
+      expect(view.result.current.fpsSyncError).toBe('rollbackFailed')
+    })
   })
 
   describe('useAndroidEmulatorPanel — VAF1 pipeline', () => {
@@ -388,14 +468,18 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
         new Promise<AndroidEmulatorSession>(resolve => { resolveReattach = resolve }))
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })
-      const reattachScope = act(async () => { await view.result.current.attach(device.avdName) }) // reattach em voo
+      let reattachPromise!: Promise<void>
+      act(() => { reattachPromise = view.result.current.attach(device.avdName) }) // reattach em voo
+      await act(async () => { await Promise.resolve() })
       act(() => readyHandlers.forEach(h => h({ generation: 7, seq: 5 })))            // bufferizado
       act(() => readyHandlers.forEach(h => h({ generation: 7, seq: 6 })))            // latest vence
       api.readFrame.mockResolvedValue(vaf1Buffer(7, 6))  // slot real: latest seq 6
       const push = vi.fn()
       act(() => view.result.current.bindPreviewCanvas(push))
-      await act(async () => { resolveReattach({ ...session, generation: 7 }) })
-      await reattachScope   // fecha o escopo act do reattach (vazado, corrompe o próximo teste)
+      await act(async () => {
+        resolveReattach({ ...session, generation: 7 })
+        await reattachPromise
+      })
       await waitFor(() => expect(api.readFrame).toHaveBeenCalledWith(7))
       await waitFor(() => expect(push).toHaveBeenCalledWith(expect.objectContaining({ seq: 6 })))
       expect(api.readFrame).toHaveBeenCalledTimes(1)   // dreno ÚNICO pós-resposta
@@ -425,7 +509,9 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       await act(async () => { view.result.current.onWebglTerminalFailure() })     // era velha em voo
       act(() => view.result.current.close())                                     // epoch++
       await act(async () => { await view.result.current.open() })
-      const newEraScope = act(async () => { await view.result.current.attach(device.avdName) }) // NOVA era em voo
+      let newEraPromise!: Promise<void>
+      act(() => { newEraPromise = view.result.current.attach(device.avdName) }) // NOVA era em voo
+      await act(async () => { await Promise.resolve() })
       act(() => readyHandlers.forEach(h => h({ generation: 7, seq: 9 })))         // bufferizado pela nova era
 
       // Era VELHA resolve DEPOIS do close/open/new-start: ÓRFÃO.
@@ -437,8 +523,10 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
 
       // Nova era finaliza: drena o wakeup bufferizado exatamente uma vez.
       api.readFrame.mockResolvedValue(vaf1Buffer(7, 9))   // slot real: seq 9
-      await act(async () => { releaseNew({ ...session, generation: 7 }) })
-      await newEraScope   // fecha o escopo act da nova era (vazado, corrompe o próximo teste)
+      await act(async () => {
+        releaseNew({ ...session, generation: 7 })
+        await newEraPromise
+      })
       await waitFor(() => expect(api.readFrame).toHaveBeenCalledWith(7))
       await waitFor(() => expect(push).toHaveBeenCalledWith(expect.objectContaining({ seq: 9 })))
       expect(api.readFrame).toHaveBeenCalledTimes(1)
@@ -508,7 +596,9 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       }))
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })
-      const reattachScope = act(async () => { await view.result.current.attach(device.avdName) }) // reattach em voo
+      let reattachPromise!: Promise<void>
+      act(() => { reattachPromise = view.result.current.attach(device.avdName) }) // reattach em voo
+      await act(async () => { await Promise.resolve() })
 
       act(() => readyHandlers.forEach(h => h({ generation: 9, seq: 5 })))          // N (alvo)
       act(() => readyHandlers.forEach(h => h({ generation: 7, seq: 9 })))          // velho: rejeitado
@@ -529,8 +619,10 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       // O plano literal omite o bindPreviewCanvas — sem paint target registrado o
       // dreno jamais pintaria (guard pushFrameRef). Mesma posição do teste-irmão.
       act(() => view.result.current.bindPreviewCanvas(push))
-      await act(async () => { releaseReattach(nextSession) })
-      await reattachScope   // fecha o escopo act do reattach (vazado, corrompe o próximo teste)
+      await act(async () => {
+        releaseReattach(nextSession)
+        await reattachPromise
+      })
       await waitFor(() => expect(api.readFrame).toHaveBeenCalledWith(9))
       await waitFor(() => expect(push).toHaveBeenCalledWith(expect.objectContaining({ seq: 6 })))
       expect(push).toHaveBeenCalledTimes(1)                                        // sem congelar, sem duplicar
@@ -630,12 +722,16 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
         new Promise<AndroidEmulatorSession>(resolve => { resolveReattach = resolve }))
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })   // sessão velha gen 7
-      const reattachScope = act(async () => { await view.result.current.attach(device.avdName) }) // reattach em voo
+      let reattachPromise!: Promise<void>
+      act(() => { reattachPromise = view.result.current.attach(device.avdName) }) // reattach em voo
+      await act(async () => { await Promise.resolve() })
       act(() => stateHandlers.forEach(h => h({
         generation: 8, source: 'grpc', requestedFps: 30, degraded: true, reason: 'gpuSoftware',
       })))                                                                          // chega ANTES da resposta
-      await act(async () => { resolveReattach(nextSession) })
-      await reattachScope   // fecha o escopo act do reattach (vazado, corrompe o próximo teste)
+      await act(async () => {
+        resolveReattach(nextSession)
+        await reattachPromise
+      })
       await waitFor(() => {
         expect(view.result.current.previewState).toMatchObject({
           generation: 8, degraded: true, reason: 'gpuSoftware',
@@ -661,13 +757,17 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       let resolveAttach!: (value: AndroidEmulatorSession) => void
       api.attach.mockImplementation(() => new Promise<AndroidEmulatorSession>(resolve => { resolveAttach = resolve }))
       const view = renderHook(() => useAndroidEmulatorPanel())
-      const attachScope = act(async () => { await view.result.current.attach(device.avdName) }) // attach em voo
+      let attachPromise!: Promise<void>
+      act(() => { attachPromise = view.result.current.attach(device.avdName) }) // attach em voo
       act(() => stateHandlers.forEach(h => h({
         generation: session.generation, source: 'grpc',
         requestedFps: 30, degraded: true, reason: 'gpuSoftware',
       })))
-      await act(async () => { resolveAttach(session) })
-      await attachScope   // fecha o escopo act do attach (vazado, corrompe o próximo teste)
+      await act(async () => { await Promise.resolve() })
+      await act(async () => {
+        resolveAttach(session)
+        await attachPromise
+      })
       await waitFor(() => {
         expect(view.result.current.previewState).toMatchObject({
           source: 'grpc', degraded: true, reason: 'gpuSoftware',

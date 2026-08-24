@@ -434,10 +434,10 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     vi.mocked(invoke).mockReset()
     vi.mocked(invoke).mockResolvedValue({ ready: true, devices: [androidDevice] })
     listenMock.mockClear()
-    // F5 (Lacre): higiene — o mock de window.verboo.inspectFiles é setado por
-    // testes pontuais; sem reset no beforeEach, uma falha no meio vaza o stub
-    // para o teste seguinte (captureAnnotation honesta do hook faria sucesso).
-    delete (window as unknown as { verboo?: unknown }).verboo
+    ;(window as unknown as { verboo: unknown }).verboo = {
+      getUserSettings: vi.fn().mockResolvedValue({}),
+      updateUserSettings: vi.fn().mockResolvedValue(undefined),
+    }
   })
 
   afterEach(() => {
@@ -671,6 +671,8 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     // Resposta coerente com o capture_screen mockado abaixo (mesmo path +
     // dims alinhadas ao frame publicado em width:1080/height:2400).
     ;(window as unknown as { verboo: unknown }).verboo = {
+      getUserSettings: vi.fn().mockResolvedValue({}),
+      updateUserSettings: vi.fn().mockResolvedValue(undefined),
       inspectFiles: vi.fn().mockResolvedValue([
         { path: '/captures/android-screen.png', size: 1000, width: 1080, height: 2400 },
       ]),
@@ -799,6 +801,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
       act(() => stateHandler!({ payload: {
         generation: 7, source: 'grpc', requestedFps: 60, degraded: false,
       } }))
+      await waitFor(() => expect(gate.resolveAttach).toBeTypeOf('function'))
       await act(async () => { gate.resolveAttach?.(androidSession) })
       try {
         await waitFor(() => {
@@ -821,6 +824,119 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
       const rateSelect = selects.at(-1)! as HTMLSelectElement
       expect([...rateSelect.options].map(option => option.value)).toEqual(['60', '30'])
       expect(screen.queryByText('Taxa do fallback econômico')).not.toBeInTheDocument()
+    })
+
+    it('disables the rate selector and localizes the alert when persistence fails', async () => {
+      const fake = installFakeWebGL()
+      const updateUserSettings = vi.fn().mockRejectedValue(new Error('write failed'))
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockResolvedValue({ androidStreamFps: 60 }),
+        updateUserSettings,
+      }
+      mockAndroidBackend()
+      try {
+        renderPanel({ platform: 'linux' })
+        fireEvent.click(await openAndroidDevice())
+        fireEvent.click(await screen.findByRole('button', { name: /Desempenho/ }))
+        const rateSelect = screen.getByLabelText('Fluidez') as HTMLSelectElement
+
+        fireEvent.change(rateSelect, { target: { value: '30' } })
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+          'Não foi possível salvar a preferência de fluidez. Seletor pausado.',
+        )
+        expect(rateSelect).toBeDisabled()
+        expect(rateSelect).toHaveValue('60')
+        expect(updateUserSettings).toHaveBeenCalledWith({ androidStreamFps: 30 })
+        expect(vi.mocked(invoke).mock.calls.some(
+          ([command]) => command === 'android_emulator_set_stream_rate',
+        )).toBe(false)
+      } finally {
+        fake.restore()
+      }
+    })
+
+    it('keeps the selector enabled and localizes the alert after an honest native rollback', async () => {
+      const fake = installFakeWebGL()
+      const updateUserSettings = vi.fn().mockResolvedValue(undefined)
+      ;(window as unknown as { verboo: unknown }).verboo = {
+        getUserSettings: vi.fn().mockResolvedValue({ androidStreamFps: 60 }),
+        updateUserSettings,
+      }
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === 'android_emulator_requirements') return {
+          ready: true,
+          issue: null,
+          devices: [{
+            avdName: 'Pixel_8_API_35', displayName: 'Pixel 8',
+            apiLevel: 35, family: 'phone', running: false,
+          }],
+        }
+        if (command === 'android_emulator_attach') return androidSession
+        if (command === 'android_emulator_set_stream_rate') {
+          throw new Error('native apply failed')
+        }
+        return undefined
+      })
+      try {
+        renderPanel({ platform: 'linux' })
+        fireEvent.click(await openAndroidDevice())
+        fireEvent.click(await screen.findByRole('button', { name: /Desempenho/ }))
+        const rateSelect = screen.getByLabelText('Fluidez') as HTMLSelectElement
+
+        fireEvent.change(rateSelect, { target: { value: '30' } })
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+          'Não foi possível aplicar a nova fluidez — a anterior foi mantida.',
+        )
+        expect(rateSelect).toBeEnabled()
+        expect(rateSelect).toHaveValue('60')
+        expect(updateUserSettings).toHaveBeenNthCalledWith(1, { androidStreamFps: 30 })
+        expect(updateUserSettings).toHaveBeenNthCalledWith(2, { androidStreamFps: 60 })
+      } finally {
+        fake.restore()
+      }
+    })
+
+    it('shows definitive requested/degraded status and announces only source transitions', async () => {
+      const fake = installFakeWebGL()
+      let now = 3_000
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+      mockAndroidBackend()
+      try {
+        renderPanel({ platform: 'linux' })
+        fireEvent.click(await openAndroidDevice())
+        await waitFor(() => expect(screen.getByText('GPU direta', {
+          selector: 'span[role="status"]',
+        })).toBeInTheDocument())
+
+        now = 6_001
+        const stateHandler = listenMock.mock.calls
+          .find(([name]) => name === 'android-emulator:preview-state')?.[1] as
+            ((event: { payload: unknown }) => void) | undefined
+        expect(stateHandler).toBeDefined()
+        act(() => stateHandler!({ payload: {
+          generation: 7,
+          source: 'adbFallback',
+          requestedFps: 60,
+          degraded: true,
+          reason: 'unavailable',
+        } }))
+
+        await waitFor(() => expect(screen.getByText('Renderização por software · degradado', {
+          selector: 'span[role="status"]',
+        })).toBeInTheDocument())
+        const visualStatus = document.querySelector('.ios-simulator-stream-status') as HTMLElement
+        expect(visualStatus).not.toHaveAttribute('role')
+        expect(visualStatus).not.toHaveAttribute('aria-live')
+        expect(visualStatus).toHaveTextContent('PNG via ADB')
+        expect(visualStatus).toHaveTextContent('60 fps')
+        expect(visualStatus).toHaveTextContent('Transporte de streaming indisponível')
+        expect(screen.getByTestId('actual-paint-fps')).toHaveAttribute('aria-hidden', 'true')
+      } finally {
+        nowSpy.mockRestore()
+        fake.restore()
+      }
     })
 
     it('production path: warm-up→baseline→5 extra cycles keep RENDER COUNTS invariant while drawArrays grows; burst coalesces ≤2 reads', async () => {
@@ -892,6 +1008,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         act(() => stateHandler!({ payload: {
           generation: 7, source: 'grpc', requestedFps: 60, degraded: false,
         } }))
+        await waitFor(() => expect(resolveAttach).toBeTypeOf('function'))
         await act(async () => { resolveAttach(androidSession) })
         await waitFor(() => {
           expect(screen.getByRole('application').querySelector('canvas[role="img"]')).not.toBeNull()

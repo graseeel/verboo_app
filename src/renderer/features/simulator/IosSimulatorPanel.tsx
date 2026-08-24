@@ -598,6 +598,27 @@ function AndroidEmulatorTabContent({
   const { t } = useI18n()
   const [interactionMode, setInteractionMode] = useState<SimulatorInteractionMode>('interact')
   const [performanceOpen, setPerformanceOpen] = useState(false)
+  const announceSource = android.previewState?.source ?? ''
+  const announceDegraded = android.previewState?.degraded === true
+  const [announcement, setAnnouncement] = useState('')
+  const announceKeyRef = useRef('')
+  const lastAnnouncedAtRef = useRef(0)
+  useEffect(() => {
+    if (!android.previewState) return
+    const key = `${announceSource}:${announceDegraded ? 'd' : 'ok'}`
+    if (announceKeyRef.current === key) return
+    const now = Date.now()
+    if (now - lastAnnouncedAtRef.current < 2000) return
+    announceKeyRef.current = key
+    lastAnnouncedAtRef.current = now
+    setAnnouncement(
+      announceDegraded
+        ? t('androidEmulator.stream.degraded')
+        : announceSource === 'grpc'
+          ? t('androidEmulator.stream.grpc')
+          : t('androidEmulator.stream.adb'),
+    )
+  }, [android.previewState, announceDegraded, announceSource, t])
   const { requirements } = android
   if (android.legacyBackend) {
     return (
@@ -691,6 +712,8 @@ function AndroidEmulatorTabContent({
           <span>{android.error}</span>
         </div>
       )}
+
+      {announcement !== '' && (<span role="status">{announcement}</span>)}
 
       {!device && (
         <div className="ios-simulator-empty">
@@ -811,14 +834,29 @@ function AndroidEmulatorTabContent({
             onShutdownExternal={android.endSimulation}
           />
           <div className="ios-simulator-stream-bar">
-            <div className="ios-simulator-stream-status" role="status" aria-live="polite">
+            <div className="ios-simulator-stream-status">
               <span className="ios-simulator-stream-source">
-                {android.previewMode === 'vaf1'
-                  ? `${normalizeAndroidStreamFps(android.streamFps)} fps · gRPC`
+                {android.previewState?.source === 'grpc'
+                  ? t('androidEmulator.stream.grpc')
                   : t('androidEmulator.stream.adb')}
               </span>
-              <span>{android.streamFps} fps</span>
+              <span>{normalizeAndroidStreamFps(android.streamFps)} fps</span>
+              {(() => {
+                const state = android.previewState
+                if (!state) return null
+                const showReason = state.degraded || state.source === 'adbFallback'
+                return showReason && state.reason ? (
+                  <span className="ios-simulator-origin is-external">
+                    {t(`androidEmulator.stream.fallbackReason.${state.reason}`)}
+                  </span>
+                ) : null
+              })()}
             </div>
+            <span
+              data-testid="actual-paint-fps"
+              aria-hidden="true"
+              ref={android.bindActualFpsNode}
+            />
             <button
               type="button"
               className="ios-simulator-performance-toggle"
@@ -829,6 +867,16 @@ function AndroidEmulatorTabContent({
               {t('simulator.performance')}
             </button>
           </div>
+          {android.captureFailure === 'pngMetaUnavailable' && (
+            <div className="ios-simulator-error" role="alert">
+              <span>{t('androidEmulator.annotation.captureUnavailable')}</span>
+            </div>
+          )}
+          {android.fpsSyncError !== undefined && (
+            <div className="ios-simulator-error" role="alert">
+              <span>{t(`androidEmulator.stream.fpsSync.${android.fpsSyncError}`)}</span>
+            </div>
+          )}
           {performanceOpen && (
             <div className="ios-simulator-performance-settings">
               <label className="ios-simulator-rate">
@@ -836,6 +884,8 @@ function AndroidEmulatorTabContent({
                 <select
                   value={normalizeAndroidStreamFps(android.streamFps)}
                   onChange={event => { void android.setStreamRate(Number(event.target.value)) }}
+                  disabled={android.fpsSyncError === 'persistFailed'
+                    || android.fpsSyncError === 'rollbackFailed'}
                 >
                   {ANDROID_EMULATOR_STREAM_RATES.map(rate => (
                     <option key={rate} value={rate}>{rate} fps</option>

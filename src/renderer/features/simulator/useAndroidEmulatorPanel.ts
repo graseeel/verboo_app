@@ -21,6 +21,7 @@ import {
 import { parseVaf1 } from './vaf1'
 import type { PaintReceipt, RgbPaintPush } from './androidWebglPreview'
 import { FrameStats } from './frameStats'
+import { loadPersistedStreamFps, persistStreamFps } from './androidStreamSettings'
 import type { IosSimulatorAnnotationCapture, IosSimulatorRect } from './iosSimulatorApi'
 import {
   DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
@@ -61,8 +62,21 @@ export function useAndroidEmulatorPanel() {
   const [recording, setRecording] = useState<AndroidRecordingState>({ state: 'idle' })
   const [lastMediaFile, setLastMediaFile] = useState<AndroidMediaFile>()
   const sessionRef = useRef<AndroidEmulatorSession | undefined>(undefined)
-  const streamFpsRef = useRef(streamFps)
-  streamFpsRef.current = streamFps
+  const streamTouchedRef = useRef(false)
+  const streamFpsRef = useRef(DEFAULT_ANDROID_EMULATOR_STREAM_FPS)
+  const persistedLoadedRef = useRef(false)
+  const [fpsSyncError, setFpsSyncError] = useState<'persistFailed' | 'rollbackFailed' | 'applyFailed'>()
+  const applyStreamFps = useCallback((value: number) => {
+    streamFpsRef.current = normalizeAndroidStreamFps(value)
+    setStreamFps(streamFpsRef.current)
+  }, [])
+  const ensurePersistedFps = useCallback(async (): Promise<number> => {
+    if (persistedLoadedRef.current) return streamFpsRef.current
+    persistedLoadedRef.current = true
+    const fps = await loadPersistedStreamFps(window.verboo)
+    if (!streamTouchedRef.current) applyStreamFps(fps)
+    return streamFpsRef.current
+  }, [applyStreamFps])
   const recordingRef = useRef<AndroidRecordingState>({ state: 'idle' })
   const latestFrameRef = useRef<AndroidEmulatorFrame | undefined>(undefined)
   const attachingRef = useRef(false)
@@ -305,7 +319,7 @@ export function useAndroidEmulatorPanel() {
       attachingRef.current = false
       sessionRef.current = next
       setSession(next)
-      setStreamFps(normalizeAndroidStreamFps(next.streamFps))
+      applyStreamFps(next.streamFps)
       setFallbackFps(next.fallbackFps)
       setLifecycle(next.lifecycle)
       lastPaintedRef.current = undefined
@@ -335,7 +349,7 @@ export function useAndroidEmulatorPanel() {
       // destrava o guard de uma nova era.
       if (epoch === operationEpochRef.current) attachingRef.current = false
     })
-  }, [applyPreviewState, stopPreviewLoop])
+  }, [applyPreviewState, applyStreamFps, stopPreviewLoop])
   const bindActualFpsNode = useCallback((node: HTMLSpanElement | null) => {
     actualFpsNodeRef.current = node
     if (!node) return
@@ -434,16 +448,17 @@ export function useAndroidEmulatorPanel() {
     stopPreviewLoop()
     attachingRef.current = true
     pendingFrameRef.current = undefined
+    const requestedFps = await ensurePersistedFps()
     try {
       const next = await androidEmulatorApi.attach(
         avdName,
-        streamFps,
+        requestedFps,
         DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
         'vaf1',
       )
       sessionRef.current = next
       setSession(next)
-      setStreamFps(normalizeAndroidStreamFps(next.streamFps))
+      applyStreamFps(next.streamFps)
       setFallbackFps(next.fallbackFps)
       setLifecycle(next.lifecycle)
       attachingRef.current = false   // resposta RECEBIDA: o attach não está
@@ -496,7 +511,7 @@ export function useAndroidEmulatorPanel() {
       pendingFrameRef.current = undefined
       setBusyAvd(undefined)
     }
-  }, [applyPreviewState, clearSession, publishFrame, readPendingFrame, scheduleVaf1Read, stopPreviewLoop, streamFps])
+  }, [applyPreviewState, applyStreamFps, clearSession, ensurePersistedFps, publishFrame, readPendingFrame, scheduleVaf1Read, stopPreviewLoop])
 
   const detach = useCallback(async () => {
     setError(undefined)
@@ -655,22 +670,37 @@ export function useAndroidEmulatorPanel() {
     }
   }, [])
 
-  const setStreamRate = useCallback(async (nextFps: number) => {
+  const setStreamRate = useCallback(async (nextRaw: number) => {
     setError(undefined)
-    if (!sessionRef.current) {
-      setStreamFps(normalizeAndroidStreamFps(nextFps))
+    setFpsSyncError(undefined)
+    const next = normalizeAndroidStreamFps(nextRaw)
+    const previous = streamFpsRef.current
+    streamTouchedRef.current = true
+    if (previous !== next) applyStreamFps(next)
+    if (!(await persistStreamFps(window.verboo, next))) {
+      applyStreamFps(await loadPersistedStreamFps(window.verboo))
+      setFpsSyncError('persistFailed')
       return
     }
     try {
-      const applied = await androidEmulatorApi.setStreamRate(nextFps)
-      const value = applied ?? nextFps
-      setStreamFps(normalizeAndroidStreamFps(value))
-      setSession(current => current ? { ...current, streamFps: value } : current)
-      if (sessionRef.current) sessionRef.current = { ...sessionRef.current, streamFps: value }
-    } catch (reason) {
-      setError(errorText(reason))
+      const applied = await androidEmulatorApi.setStreamRate(next)
+      applyStreamFps(applied ?? next)
+      if (sessionRef.current) {
+        sessionRef.current = {
+          ...sessionRef.current,
+          streamFps: normalizeAndroidStreamFps(applied ?? next),
+        }
+      }
+    } catch {
+      if (!(await persistStreamFps(window.verboo, previous))) {
+        applyStreamFps(await loadPersistedStreamFps(window.verboo))
+        setFpsSyncError('rollbackFailed')
+        return
+      }
+      applyStreamFps(previous)
+      setFpsSyncError('applyFailed')
     }
-  }, [])
+  }, [applyStreamFps])
 
   useEffect(() => {
     let disposed = false
@@ -777,6 +807,7 @@ export function useAndroidEmulatorPanel() {
     previewState,
     canvasSize,
     captureFailure,
+    fpsSyncError,
     bindPreviewCanvas,
     onWebglTerminalFailure: requestLegacyPngAttach,
     previewSnapshot,
