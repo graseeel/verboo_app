@@ -591,3 +591,65 @@ describe('SimulatorSurface — canvas mode selection (F1, amendment)', () => {
     expect(rect.height).toBeCloseTo(0.2778, 3)
   })
 })
+
+// Task 9 F3 — pin do containment do canvas (amendment SimulatorSurface.tsx:466 +
+// AndroidPreviewCanvas.tsx merge). Garante que o canvas (i) recebe o MESMO
+// frameStyle do contain-rect que o <img> receberia, e (ii) que o tap no canvas
+// é normalizado pelo MESMO rect visualizado (containment + tap alinhados).
+//
+// O mock de getBoundingClientRect PRECISA estar setado ANTES do render — o
+// useEffect de updatePaintedRect (SimulatorSurface.tsx:179-190) roda durante o
+// commit, antes do helper renderCanvasSurface conseguir mockar a surface.
+describe('SimulatorSurface — canvas containment + tap aligned (Task 9 F3)', () => {
+  function mockSurfaceGBCR() {
+    const original = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function(this: HTMLElement) {
+      if (this.getAttribute('role') === 'application') {
+        return { left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900, x: 0, y: 0, toJSON: () => ({}) }
+      }
+      return original.call(this)
+    }
+    return () => { HTMLElement.prototype.getBoundingClientRect = original }
+  }
+
+  it('canvas recebe o frameStyle do contain-rect (F3 containment pin)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      renderCanvasSurface('interact')
+      // mediaSize 720x1600 em surface 600x900:
+      //   scale = min(600/720, 900/1600) = 0.5625
+      //   painted = { x: 97.5, y: 0, width: 405, height: 900 }
+      const canvas = screen.getByRole('img', { name: /Live Pixel 8 preview/i })
+      expect(canvas.tagName).toBe('CANVAS')                 // canvas, não <img>
+      // FrameStyle do contain-rect aplicado:
+      expect(Number.parseFloat(canvas.style.left)).toBeCloseTo(97.5, 3)
+      expect(Number.parseFloat(canvas.style.top)).toBeCloseTo(0, 3)
+      expect(Number.parseFloat(canvas.style.width)).toBeCloseTo(405, 3)
+      expect(Number.parseFloat(canvas.style.height)).toBeCloseTo(900, 3)
+      // (F3 leaf merge): AndroidPreviewCanvas preserva position:absolute após o spread.
+      expect(canvas.style.position).toBe('absolute')
+    } finally {
+      restore()
+    }
+  })
+
+  it('tap no canvas usa o MESMO contain-rect para normalização (F3 tap aligned)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      const { surface, callbacks } = renderCanvasSurface('interact')
+      // Mesmo painted rect (97.5, 0, 405, 900). Click em (300, 450) → (0.5, 0.5).
+      // O pin prova que canvas (visual) e tap (lógica) usam a MESMA geometria —
+      // i.e., o rect que o usuário VÊ é o rect pelo qual o click é normalizado.
+      fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+      fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+      fireEvent.click(surface, { button: 0, clientX: 300, clientY: 450 })
+
+      expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+      const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+      expect(point.x).toBeCloseTo(0.5, 5)
+      expect(point.y).toBeCloseTo(0.5, 5)
+    } finally {
+      restore()
+    }
+  })
+})

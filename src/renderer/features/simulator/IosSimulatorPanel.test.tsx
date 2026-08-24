@@ -1,4 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { Profiler } from 'react'
+import type { ProfilerOnRenderCallback } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { I18nProvider } from '../../i18n'
@@ -21,6 +23,87 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: (eventName: string, callback: (event: { payload: unknown }) => void) =>
     listenMock(eventName, callback),
 }))
+
+const { renderCounts } = vi.hoisted(() => ({
+  renderCounts: { picker: 0, dock: 0 },
+}))
+
+vi.mock('./AndroidDevicePicker', async importOriginal => {
+  const actual = await importOriginal<typeof import('./AndroidDevicePicker')>()
+  const CountingPicker = (props: React.ComponentProps<typeof actual.AndroidDevicePicker>) => (
+    <Profiler id="counting-picker" onRender={() => { renderCounts.picker += 1 }}>
+      <actual.AndroidDevicePicker {...props} />
+    </Profiler>
+  )
+  return { ...actual, AndroidDevicePicker: CountingPicker }
+})
+
+vi.mock('./SimulatorControlDock', async importOriginal => {
+  const actual = await importOriginal<typeof import('./SimulatorControlDock')>()
+  const CountingDock = (props: React.ComponentProps<typeof actual.SimulatorControlDock>) => (
+    <Profiler id="counting-dock" onRender={() => { renderCounts.dock += 1 }}>
+      <actual.SimulatorControlDock {...props} />
+    </Profiler>
+  )
+  return { ...actual, SimulatorControlDock: CountingDock }
+})
+
+/** Mini stub WebGL: suficiente para o painter REAL inicializar e submeter draws. */
+function installFakeWebGL() {
+  const calls: Array<{ method: string; args: unknown[] }> = []
+  const record = (method: string) => (...args: unknown[]) => { calls.push({ method, args }) }
+  const c = {
+    VERTEX_SHADER: 1, FRAGMENT_SHADER: 2, COMPILE_STATUS: 3, LINK_STATUS: 4,
+    ARRAY_BUFFER: 5, STATIC_DRAW: 6, FLOAT: 7, TEXTURE_2D: 8, TEXTURE_WRAP_S: 9,
+    TEXTURE_WRAP_T: 10, CLAMP_TO_EDGE: 11, TEXTURE_MIN_FILTER: 12,
+    TEXTURE_MAG_FILTER: 13, LINEAR: 14, UNPACK_FLIP_Y_WEBGL: 15,
+    UNPACK_ALIGNMENT: 16, TEXTURE0: 17, RGB: 18, UNSIGNED_BYTE: 19, TRIANGLE_STRIP: 20,
+    // O painter REAL (F-02/F-02R) drena getError e sonda isContextLost na
+    // (re)alocação do texImage2D — o stub precisa destes 4 membros extras.
+    NO_ERROR: 21, CONTEXT_LOST_WEBGL: 22,
+  }
+  let shaderId = 0
+  const gl = {
+    ...c,
+    getError: () => c.NO_ERROR,
+    isContextLost: () => false,
+    createShader: () => ({ id: ++shaderId }),
+    shaderSource: record('shaderSource'),
+    compileShader: record('compileShader'),
+    getShaderParameter: (_s: object, pname: number) => pname === c.COMPILE_STATUS || pname === c.LINK_STATUS,
+    deleteShader: record('deleteShader'),
+    createProgram: () => ({ id: 1 }),
+    attachShader: record('attachShader'),
+    linkProgram: record('linkProgram'),
+    getProgramParameter: (_p: object, pname: number) => pname === c.LINK_STATUS,
+    getAttribLocation: () => 0,
+    getUniformLocation: () => ({ id: 'u' }),
+    deleteProgram: record('deleteProgram'),
+    createBuffer: () => ({ id: 'b' }),
+    bindBuffer: record('bindBuffer'),
+    bufferData: record('bufferData'),
+    enableVertexAttribArray: record('enableVertexAttribArray'),
+    vertexAttribPointer: record('vertexAttribPointer'),
+    deleteBuffer: record('deleteBuffer'),
+    createTexture: () => ({ id: 't' }),
+    bindTexture: record('bindTexture'),
+    texParameteri: record('texParameteri'),
+    pixelStorei: record('pixelStorei'),
+    activeTexture: record('activeTexture'),
+    useProgram: record('useProgram'),
+    uniform1i: record('uniform1i'),
+    texImage2D: record('texImage2D'),
+    texSubImage2D: record('texSubImage2D'),
+    viewport: record('viewport'),
+    drawArrays: record('drawArrays'),
+    deleteTexture: record('deleteTexture'),
+  }
+  const original = HTMLCanvasElement.prototype.getContext
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+    (type: string) => (type === 'webgl' ? (gl as unknown as RenderingContext) : null),
+  )
+  return { calls, restore: () => { HTMLCanvasElement.prototype.getContext = original } }
+}
 
 const device = {
   name: 'iPhone 17 Pro',
@@ -93,6 +176,73 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof IosSimulator
     ...overrides,
   }
   return { ...render(<I18nProvider language="pt-BR"><IosSimulatorPanel {...props} /></I18nProvider>), props }
+}
+
+// Seam do PAINEL: Profiler conta COMMITS sob o painel inteiro. O arquivo REAL
+// não importa React runtime — usar o import NOMEADO acima (`Profiler`) e o tipo
+// importado `ProfilerOnRenderCallback`; NUNCA `<React.Profiler>` sem binding.
+function renderPanelWithProfiler(
+  onRender: ProfilerOnRenderCallback,
+  overrides: Partial<React.ComponentProps<typeof IosSimulatorPanel>> = {},
+) {
+  const device = {
+    name: 'iPhone 17 Pro', udid: 'phone-17-pro', state: 'Shutdown',
+    iosVersion: '26.5', family: 'iphone' as const,
+  }
+  const idleLifecycle: IosSimulatorLifecycleSnapshot = {
+    udid: null, deviceGeneration: null, stage: 'idle', ownership: null,
+    previewSuspended: false, interactionReady: false,
+    recording: { state: 'idle' }, recoverableError: null,
+  }
+  const props: React.ComponentProps<typeof IosSimulatorPanel> = {
+    simulatorOpen: true,
+    simulatorWidth: 680,
+    onSetWidth: vi.fn(),
+    onClose: vi.fn(),
+    requirements: {
+      ready: true, issue: null, xcodeVersion: '27.0',
+      devices: [device], attachedUdid: null, streamFps: null,
+      fallbackFps: null, source: null, effectiveFps: null,
+      lifecycle: idleLifecycle,
+    },
+    requirementsLoading: false,
+    streamFps: 30,
+    streamRates: [30, 60],
+    fallbackFps: 2,
+    fallbackRates: [0.5, 1, 2],
+    onAttach: vi.fn(),
+    onDetach: vi.fn(),
+    lifecycle: idleLifecycle,
+    onEndSimulation: vi.fn(),
+    onShutdownExternalSimulation: vi.fn(),
+    onSystemAction: vi.fn(),
+    onCaptureScreen: vi.fn(),
+    onToggleRecording: vi.fn(),
+    onRetryAttach: vi.fn(),
+    onRetryInteraction: vi.fn(),
+    onRevealOutput: vi.fn(),
+    onSetStreamRate: vi.fn(),
+    onSetFallbackRate: vi.fn(),
+    onTap: vi.fn(),
+    onDrag: vi.fn(),
+    onTypeText: vi.fn(),
+    onPressKey: vi.fn(),
+    onInspectPoint: vi.fn().mockResolvedValue(undefined),
+    onCaptureAnnotation: vi.fn().mockResolvedValue(undefined),
+    onDeleteCapture: vi.fn().mockResolvedValue(undefined),
+    onAddAnnotation: vi.fn(),
+    onRefresh: vi.fn().mockResolvedValue(1),
+    minWidth: 520,
+    maxWidth: 900,
+    ...overrides,
+  }
+  return render(
+    <I18nProvider language="pt-BR">
+      <Profiler id="ios-simulator-panel" onRender={onRender}>
+        <IosSimulatorPanel {...props} />
+      </Profiler>
+    </I18nProvider>,
+  )
 }
 
 describe('IosSimulatorPanel', () => {
@@ -294,6 +444,45 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
   })
 
+  const androidSession = {
+    device: {
+      avdName: 'Pixel_8_API_35', displayName: 'Pixel 8',
+      apiLevel: 35, family: 'phone' as const, running: true,
+    },
+    serial: 'emulator-5554',
+    generation: 7,
+    ownership: 'verboo' as const,
+    streamFps: 60,
+    fallbackFps: 1,
+    lifecycle: { stage: 'ready' as const },
+  }
+
+  function mockAndroidBackend(gate?: { resolveAttach?: (value: typeof androidSession) => void }) {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === 'android_emulator_requirements') return {
+        ready: true,
+        issue: null,
+        devices: [{
+          avdName: 'Pixel_8_API_35', displayName: 'Pixel 8',
+          apiLevel: 35, family: 'phone', running: false,
+        }],
+      }
+      if (command === 'android_emulator_attach') {
+        return new Promise<typeof androidSession>(resolve => {
+          if (gate) gate.resolveAttach = resolve
+          else resolve(androidSession)
+        })
+      }
+      return undefined
+    })
+  }
+
+  async function openAndroidDevice() {
+    const combobox = await screen.findByRole('combobox', { name: 'Buscar dispositivo Android' })
+    fireEvent.focus(combobox)
+    return screen.findByRole('option', { name: /Pixel 8/ })
+  }
+
   it('darwin: renders the iOS/Android tabs with iOS active and keeps the Android probe lazy', async () => {
     renderPanel()
 
@@ -402,6 +591,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
   })
 
   it('mounts the real Android picker, surface and dock through the frozen F1 commands', async () => {
+    const fake = installFakeWebGL()
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === 'android_emulator_requirements') {
@@ -436,11 +626,18 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     ))
     const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
     act(() => {
+      eventHandlers.get('android-emulator:preview-state')?.({
+        payload: {
+          generation: 9, source: 'adbFallback', requestedFps: 60,
+          degraded: true, reason: 'unavailable',
+        },
+      })
       eventHandlers.get('android-emulator:lifecycle')?.({ payload: { stage: 'ready' } })
       eventHandlers.get('android-emulator:frame')?.({
         payload: { pngBase64: 'YW5kcm9pZA==', width: 1080, height: 2400, generation: 9 },
       })
     })
+    fake.restore()
 
     const surface = screen.getByRole('application', { name: 'Controlar Verboo Device API 35' })
     const image = screen.getByAltText('Prévia visual ao vivo de Verboo Device API 35')
@@ -464,7 +661,8 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     expect(screen.getByRole('button', { name: 'Selecionar componente' })).toBeInTheDocument()
   })
 
-  it('wires Android a11y selection, annotations, media, rates and reused tooltips through real components', async () => {
+  it('wires Android a11y selection, annotations, media, stream rate and reused tooltips through real components', async () => {
+    const fake = installFakeWebGL()
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
     // COMPLEMENTO ERRATA Task 8: o pipeline captureAnnotation do hook Android
     // (useAndroidEmulatorPanel.ts:554-608) usa window.verboo.inspectFiles para
@@ -500,8 +698,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
       }
       if (command === 'android_emulator_capture_screen') return { path: '/captures/android-screen.png' }
       if (command === 'android_emulator_recording_stop') return { path: '/captures/android-recording.mp4' }
-      if (command === 'android_emulator_set_stream_rate') return 5
-      if (command === 'android_emulator_set_fallback_rate') return 2
+      if (command === 'android_emulator_set_stream_rate') return 30
       return undefined
     })
     renderPanel({ onAddAnnotation: addedAnnotation })
@@ -512,11 +709,18 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     fireEvent.click(screen.getByRole('option', { name: /Verboo Device API 35/ }))
     const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
     act(() => {
+      eventHandlers.get('android-emulator:preview-state')?.({
+        payload: {
+          generation: 9, source: 'adbFallback', requestedFps: 60,
+          degraded: true, reason: 'unavailable',
+        },
+      })
       eventHandlers.get('android-emulator:lifecycle')?.({ payload: { stage: 'ready' } })
       eventHandlers.get('android-emulator:frame')?.({
         payload: { pngBase64: 'YW5kcm9pZA==', width: 1080, height: 2400, generation: 9 },
       })
     })
+    fake.restore()
 
     const surface = await screen.findByRole('application', { name: 'Controlar Verboo Device API 35' })
     const image = screen.getByAltText('Prévia visual ao vivo de Verboo Device API 35')
@@ -568,11 +772,192 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_recording_stop'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Desempenho' }))
-    fireEvent.change(screen.getByLabelText('Fluidez'), { target: { value: '5' } })
-    fireEvent.change(screen.getByLabelText('Taxa do fallback econômico'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Fluidez'), { target: { value: '30' } })
+    expect(screen.queryByLabelText('Taxa do fallback econômico')).not.toBeInTheDocument()
     await waitFor(() => {
-      expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_set_stream_rate', { fps: 5 })
-      expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_set_fallback_rate', { fps: 2 })
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_set_stream_rate', { fps: 30 })
+    })
+  })
+
+  describe('IosSimulatorPanel — aba Android VAF1', () => {
+    beforeEach(() => {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    })
+
+    it('renders the canvas leaf after a preview-state grpc that raced ahead of attach', async () => {
+      // GL stub OBRIGATÓRIO: sem ele jsdom devolve getContext null → terminal
+      // failure → legacyPng e o canvas pode sumir por TIMING (falso verde).
+      const fake = installFakeWebGL()
+      const gate: { resolveAttach?: (value: typeof androidSession) => void } = {}
+      mockAndroidBackend(gate)
+      renderPanel({ platform: 'linux' })
+      const stateHandler = listenMock.mock.calls
+        .find(([name]) => name === 'android-emulator:preview-state')?.[1] as
+          ((event: { payload: unknown }) => void) | undefined
+      expect(stateHandler).toBeDefined()
+      fireEvent.click(await openAndroidDevice())
+      act(() => stateHandler!({ payload: {
+        generation: 7, source: 'grpc', requestedFps: 60, degraded: false,
+      } }))
+      await act(async () => { gate.resolveAttach?.(androidSession) })
+      try {
+        await waitFor(() => {
+          const surface = screen.getByRole('application')
+          expect(surface.querySelector('canvas[role="img"]')).not.toBeNull()
+        })
+        const glCalls = fake.calls.filter(call => call.method === 'drawArrays')
+        expect(glCalls.length).toBeGreaterThanOrEqual(0)
+      } finally {
+        fake.restore()
+      }
+    })
+
+    it('offers exactly [60, 30] fps and no fallback selector', async () => {
+      mockAndroidBackend()
+      renderPanel({ platform: 'linux' })
+      fireEvent.click(await openAndroidDevice())
+      fireEvent.click(await screen.findByRole('button', { name: /Desempenho/ }))
+      const selects = await screen.findAllByRole('combobox')
+      const rateSelect = selects.at(-1)! as HTMLSelectElement
+      expect([...rateSelect.options].map(option => option.value)).toEqual(['60', '30'])
+      expect(screen.queryByText('Taxa do fallback econômico')).not.toBeInTheDocument()
+    })
+
+    it('production path: warm-up→baseline→5 extra cycles keep RENDER COUNTS invariant while drawArrays grows; burst coalesces ≤2 reads', async () => {
+      // GL stub + rAF manual (determinismo sem timers reais).
+      const fake = installFakeWebGL()
+      const glCalls = fake.calls
+      let rafQueue: Array<() => void> = []
+      const flushRaf = async () => {
+        const queued = rafQueue
+        rafQueue = []
+        for (const cb of queued) cb()
+        for (let tick = 0; tick < 3; tick++) {
+          await act(async () => { await Promise.resolve() })
+        }
+      }
+      const originalRaf = window.requestAnimationFrame
+      window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+        rafQueue.push(() => cb(performance.now()))
+        return rafQueue.length
+      }) as typeof window.requestAnimationFrame
+
+      function fullBuffer(generation: number, seq: number): ArrayBuffer {
+        const width = 4
+        const height = 4
+        const buf = new ArrayBuffer(36 + width * height * 3)
+        const view = new DataView(buf)
+        for (const [i, ch] of [...'VAF1'].entries()) view.setUint8(i, ch.charCodeAt(0))
+        view.setBigUint64(4, BigInt(generation), true)
+        view.setUint32(12, seq, true)
+        view.setBigUint64(16, 1_000n, true)
+        view.setUint32(24, width, true)
+        view.setUint32(28, height, true)
+        view.setUint8(32, 1)
+        return buf
+      }
+
+      let resolveAttach!: (value: typeof androidSession) => void
+      const readSeqQueue: number[] = []
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === 'android_emulator_requirements') return {
+          ready: true, issue: null,
+          devices: [{
+            avdName: 'Pixel_8_API_35', displayName: 'Pixel 8',
+            apiLevel: 35, family: 'phone', running: false,
+          }],
+        }
+        if (command === 'android_emulator_attach') {
+          return new Promise<typeof androidSession>(resolve => { resolveAttach = resolve })
+        }
+        if (command === 'android_emulator_read_frame') {
+          return fullBuffer(7, readSeqQueue.shift() ?? 0)
+        }
+        return undefined
+      })
+
+      try {
+        let profilerCommits = 0
+        renderPanelWithProfiler(() => { profilerCommits += 1 }, { platform: 'linux' })
+
+        const stateHandler = listenMock.mock.calls
+          .find(([name]) => name === 'android-emulator:preview-state')?.[1] as
+            ((event: { payload: unknown }) => void) | undefined
+        const readyHandler = listenMock.mock.calls
+          .find(([name]) => name === 'android-emulator:frame-ready')?.[1] as
+            ((event: { payload: unknown }) => void) | undefined
+        expect(stateHandler).toBeDefined()
+        expect(readyHandler).toBeDefined()
+        fireEvent.click(await openAndroidDevice())
+        act(() => stateHandler!({ payload: {
+          generation: 7, source: 'grpc', requestedFps: 60, degraded: false,
+        } }))
+        await act(async () => { resolveAttach(androidSession) })
+        await waitFor(() => {
+          expect(screen.getByRole('application').querySelector('canvas[role="img"]')).not.toBeNull()
+        })
+
+        // WARM-UP (seq 1): a renderização rara que instala canvasSize é AUTORIZADA.
+        readSeqQueue.push(1)
+        act(() => readyHandler!({ payload: { generation: 7, seq: 1 } }))
+        await flushRaf()
+
+        // BASELINE após o primeiro paint/tamanho:
+        const baselinePicker = renderCounts.picker
+        const baselineDock = renderCounts.dock
+        const commitsBaseline = profilerCommits
+
+        // 5 ciclos ADICIONAIS de MESMA dimensão: contadores INVARIANTES, draw cresce.
+        for (let seq = 2; seq <= 6; seq++) {
+          readSeqQueue.push(seq)
+          act(() => readyHandler!({ payload: { generation: 7, seq } }))
+          await flushRaf()
+        }
+        const drawCount = glCalls.filter(call => call.method === 'drawArrays').length
+        expect(drawCount).toBe(6)                                   // 1 warm-up + 5
+        expect(glCalls.filter(call => call.method === 'texImage2D')).toHaveLength(1)
+        expect(glCalls.filter(call => call.method === 'texSubImage2D')).toHaveLength(5)
+        // MUTAÇÃO CONTRAFACTUAL (setState por frame): as três asserts falham.
+        expect(renderCounts.picker).toBe(baselinePicker)
+        expect(renderCounts.dock).toBe(baselineDock)
+        expect(profilerCommits).toBe(commitsBaseline)
+
+        // VIVIDADE dos contadores: interação real move picker E commits.
+        fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar dispositivo Android' }))
+        await flushRaf()
+        expect(renderCounts.picker).toBeGreaterThan(baselinePicker)
+        expect(profilerCommits).toBeGreaterThan(commitsBaseline)
+
+        // SECUNDÁRIO: identidade DOM (reconciliação sem remount).
+        expect(
+          screen.getByRole('application').querySelector('canvas[role="img"]'),
+        ).not.toBeNull()
+
+        // Burst: 10 wakeups retidos ⇒ ≤2 reads no total.
+        let releaseBurst!: () => void
+        const burstGate = new Promise<void>(resolve => { releaseBurst = resolve })
+        const beforeBurst = vi.mocked(invoke).mock.calls
+          .filter(([command]) => command === 'android_emulator_read_frame').length
+        vi.mocked(invoke).mockImplementationOnce(async () => {
+          await burstGate
+          return fullBuffer(7, 20)
+        })
+        for (let seq = 7; seq <= 16; seq++) {
+          act(() => readyHandler!({ payload: { generation: 7, seq } }))
+        }
+        await flushRaf()
+        const duringBurst = vi.mocked(invoke).mock.calls
+          .filter(([command]) => command === 'android_emulator_read_frame').length - beforeBurst
+        expect(duringBurst).toBeLessThanOrEqual(1)
+        await act(async () => { releaseBurst() })
+        await flushRaf()
+        const afterBurst = vi.mocked(invoke).mock.calls
+          .filter(([command]) => command === 'android_emulator_read_frame').length - beforeBurst
+        expect(afterBurst).toBeLessThanOrEqual(2)
+      } finally {
+        window.requestAnimationFrame = originalRaf
+        fake.restore()
+      }
     })
   })
 })

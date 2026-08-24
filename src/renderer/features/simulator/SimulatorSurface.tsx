@@ -468,6 +468,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
             ariaLabel={previewAlt}
             onPushReady={canvasMedia.onPushReady}
             onTerminalFailure={canvasMedia.onTerminalFailure}
+            style={frameStyle}
           />
         ) : null}
         <SimulatorPresenceOverlay

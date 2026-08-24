@@ -21,7 +21,11 @@ import { SimulatorControlDock } from './SimulatorControlDock'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import { AndroidEmulatorLegacyCard, AndroidOnboarding } from './AndroidOnboarding'
 import { AndroidDevicePicker } from './AndroidDevicePicker'
-import { androidDeviceDisplayLabel } from './androidEmulatorModel'
+import {
+  ANDROID_EMULATOR_STREAM_RATES,
+  androidDeviceDisplayLabel,
+  normalizeAndroidStreamFps,
+} from './androidEmulatorModel'
 import type { AndroidEmulatorSystemAction } from './androidEmulatorApi'
 import { useAndroidEmulatorPanel } from './useAndroidEmulatorPanel'
 import {
@@ -699,7 +703,52 @@ function AndroidEmulatorTabContent({
       {device && (
         <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: androidDeviceDisplayLabel(device) })}>
           <div className="ios-simulator-frame">
-            {android.frameDataUrl ? (
+            {android.previewMode === 'vaf1' ? (
+              <SimulatorSurface
+                canvasMedia={{
+                  width: android.canvasSize?.width ?? 0,
+                  height: android.canvasSize?.height ?? 0,
+                  onPushReady: android.bindPreviewCanvas,
+                  onTerminalFailure: android.onWebglTerminalFailure,
+                }}
+                deviceName={androidDeviceDisplayLabel(device)}
+                previewAlt={t('simulator.previewAlt', { name: androidDeviceDisplayLabel(device) })}
+                mode={interactionMode}
+                interactive={android.interactionReady}
+                keyMapper={androidEmulatorKeyForKeyboardEvent}
+                labels={{
+                  interact: t('simulator.mode.interact'),
+                  selectElement: t('simulator.mode.selectElement'),
+                  selectArea: t('simulator.mode.selectArea'),
+                  interaction: t('simulator.interactionLabel', { name: androidDeviceDisplayLabel(device) }),
+                  keyboardHint: t('simulator.keyboardHint'),
+                  unavailable: t('simulator.interactionUnavailable'),
+                  note: t('simulator.annotation.note'),
+                  notePlaceholder: t('simulator.annotation.notePlaceholder'),
+                  addToChat: t('simulator.annotation.addToChat'),
+                  cancel: t('common.cancel'),
+                  capturing: t('simulator.annotation.capturing'),
+                  selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
+                  elementUnavailable: t('simulator.annotation.elementUnavailable'),
+                  agentActive: t('simulator.agentActive'),
+                  agentBadge: t('simulator.agentBadge'),
+                }}
+                annotationContext={{
+                  platform: 'Android',
+                  version: `API ${device.apiLevel}`,
+                  selectionImage: 'viewport',
+                }}
+                onModeChange={setInteractionMode}
+                onTap={android.tap}
+                onDrag={android.drag}
+                onTypeText={android.typeText}
+                onPressKey={android.pressKey}
+                onInspectPoint={android.inspectPoint}
+                onCaptureAnnotation={(_kind, rect, element) => android.captureAnnotation(rect, element)}
+                onAddAnnotation={onAddAnnotation}
+                agentPresence={android.agentPresence}
+              />
+            ) : android.frameDataUrl ? (
               <SimulatorSurface
                 frameDataUrl={android.frameDataUrl}
                 deviceName={androidDeviceDisplayLabel(device)}
@@ -763,7 +812,11 @@ function AndroidEmulatorTabContent({
           />
           <div className="ios-simulator-stream-bar">
             <div className="ios-simulator-stream-status" role="status" aria-live="polite">
-              <span className="ios-simulator-stream-source">{t('androidEmulator.stream.adb')}</span>
+              <span className="ios-simulator-stream-source">
+                {android.previewMode === 'vaf1'
+                  ? `${normalizeAndroidStreamFps(android.streamFps)} fps · gRPC`
+                  : t('androidEmulator.stream.adb')}
+              </span>
               <span>{android.streamFps} fps</span>
             </div>
             <button
@@ -781,19 +834,12 @@ function AndroidEmulatorTabContent({
               <label className="ios-simulator-rate">
                 <span>{t('simulator.streamRate')}</span>
                 <select
-                  value={android.streamFps}
+                  value={normalizeAndroidStreamFps(android.streamFps)}
                   onChange={event => { void android.setStreamRate(Number(event.target.value)) }}
                 >
-                  {[1, 2, 5, 10].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
-                </select>
-              </label>
-              <label className="ios-simulator-rate">
-                <span>{t('simulator.fallbackRate')}</span>
-                <select
-                  value={android.fallbackFps}
-                  onChange={event => { void android.setFallbackRate(Number(event.target.value)) }}
-                >
-                  {[0.5, 1, 2].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
+                  {ANDROID_EMULATOR_STREAM_RATES.map(rate => (
+                    <option key={rate} value={rate}>{rate} fps</option>
+                  ))}
                 </select>
               </label>
               <p className="ios-simulator-disclaimer">{t('simulator.disclaimer')}</p>
