@@ -4,6 +4,7 @@ import {
   normalizedPointToDevice,
   normalizedRectToCss,
   paintedContainRect,
+  pointToNormalizedOnSurface,
 } from './simulatorGeometry'
 
 describe('simulator geometry', () => {
@@ -53,5 +54,47 @@ describe('simulator geometry', () => {
       { x: Number.NaN, y: 0 },
       { x: 0, y: 0, width: 100, height: 100 },
     )).toBeNull()
+  })
+
+  it('pointToNormalizedOnSurface guards against degenerate size dims (F3)', () => {
+    const surface = {
+      getBoundingClientRect: () => ({
+        left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900, x: 0, y: 0, toJSON: () => ({}),
+      }),
+    } as unknown as HTMLElement
+    expect(pointToNormalizedOnSurface(surface, { width: 0, height: 1600 }, 300, 450)).toBeNull()
+    expect(pointToNormalizedOnSurface(surface, { width: 720, height: 0 }, 300, 450)).toBeNull()
+    expect(pointToNormalizedOnSurface(surface, { width: -720, height: 1600 }, 300, 450)).toBeNull()
+    expect(pointToNormalizedOnSurface(surface, { width: 720, height: -1600 }, 300, 450)).toBeNull()
+  })
+
+  it('rotation: portrait vs landscape yield different normalized coords for the same client point (F4)', () => {
+    const surface = {
+      getBoundingClientRect: () => ({
+        left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900, x: 0, y: 0, toJSON: () => ({}),
+      }),
+    } as unknown as HTMLElement
+
+    // Portrait 720x1600 em surface 600x900: scale = min(600/720, 900/1600) = 0.5625
+    // → painted 405x900 a (97.5, 0). Click (400, 500) está dentro dos DOIS painted
+    // rects (portrait [97.5..502.5]x[0..900] e landscape [0..600]x[315..585]).
+    // Portrait normalized: ((400-97.5)/405, 500/900) ≈ (0.7470, 0.5556).
+    const portrait = pointToNormalizedOnSurface(surface, { width: 720, height: 1600 }, 400, 500)
+    expect(portrait).not.toBeNull()
+    expect(portrait!.x).toBeCloseTo(0.7470, 3)
+    expect(portrait!.y).toBeCloseTo(0.5556, 3)
+
+    // Landscape 1600x720 em surface 600x900: scale = min(600/1600, 900/720) = 0.375
+    // → painted 600x270 a (0, 315). MESMO click (400, 500) → (400/600, (500-315)/270)
+    // = (0.6667, 0.6852).
+    const landscape = pointToNormalizedOnSurface(surface, { width: 1600, height: 720 }, 400, 500)
+    expect(landscape).not.toBeNull()
+    expect(landscape!.x).toBeCloseTo(0.6667, 3)
+    expect(landscape!.y).toBeCloseTo(0.6852, 3)
+
+    // O paintedContainRect muda com as dims → coords normalizadas para o
+    // MESMO client point DEVEM diferir entre portrait e landscape.
+    expect(portrait!.x).not.toBe(landscape!.x)
+    expect(portrait!.y).not.toBe(landscape!.y)
   })
 })

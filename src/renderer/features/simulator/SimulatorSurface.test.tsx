@@ -437,3 +437,157 @@ describe('SimulatorSurface android adapter (PA-27)', () => {
     expect(callbacks.onPressKey).toHaveBeenCalledTimes(4)
   })
 })
+
+// SimulatorSurface.test.tsx — slot canvas + img intacta:
+describe('SimulatorSurface — slot canvas Android', () => {
+  it('renders the AndroidPreviewCanvas when canvasMedia is provided', () => {
+    const onPushReady = vi.fn()
+    render(<SimulatorSurface
+      deviceName="AVD" previewAlt="Live Android preview" mode="interact" interactive
+      labels={{ interact: 'Interact', interaction: 'Control', keyboardHint: 'hint',
+        unavailable: 'unavailable', agentActive: 'a', agentBadge: 'b' }}
+      canvasMedia={{ width: 720, height: 1600, onPushReady, onTerminalFailure: vi.fn() }}
+      onModeChange={vi.fn()} onTap={vi.fn()} onDrag={vi.fn()}
+      onTypeText={vi.fn()} onPressKey={vi.fn()}
+    />)
+    expect(screen.getByRole('img', { name: 'Live Android preview' }).tagName).toBe('CANVAS')
+    expect(onPushReady).toHaveBeenCalledWith(expect.any(Function))
+  })
+  it('keeps the iOS <img> path byte-a-byte when canvasMedia is absent', () => {
+    renderSurface('interact')
+    expect(screen.getByAltText('Live iPhone preview').tagName).toBe('IMG')
+  })
+})
+
+// SimulatorSurface.test.tsx — canvas mode selection (Task 7 + amendment, F1):
+// the local `normalizedAt` of SimulatorSurface must resolve `mediaSize` from
+// canvasMedia (no <img>), mirroring the hook. Reverting that precedence re-breaks
+// select-element and select-area in canvas mode (the plan bug the amendment fixed).
+function renderCanvasSurface(
+  mode: 'interact' | 'select-element' | 'select-area',
+) {
+  const callbacks = {
+    onTap: vi.fn(),
+    onDrag: vi.fn(),
+    onTypeText: vi.fn(),
+    onPressKey: vi.fn(),
+    onModeChange: vi.fn(),
+    onInspectPoint: vi.fn().mockResolvedValue({
+      rect: { x: 100 / 720, y: 200 / 1600, width: 80 / 720, height: 100 / 1600 },
+      element: {
+        id: 'btn', role: 'Button', label: 'Btn',
+        frame: { x: 100, y: 200, width: 80, height: 100 },
+        enabled: true, visible: true, actionable: true,
+      },
+    }),
+    onCaptureAnnotation: vi.fn().mockResolvedValue({
+      cropPath: '/tmp/verboo-android-simulator/crop.png',
+      viewportPath: '/tmp/verboo-android-simulator/viewport.png',
+      cropWidth: 80, cropHeight: 100, viewportWidth: 720, viewportHeight: 1600,
+      cropBytes: 100, viewportBytes: 200,
+      device: { name: 'Pixel 8', udid: 'avd', state: 'Booted', iosVersion: '26.5' },
+      orientation: 'portrait', deviceGeneration: 1, frameGeneration: 1,
+      rect: { x: 100 / 720, y: 200 / 1600, width: 80 / 720, height: 100 / 1600 },
+      deviceRect: { x: 100, y: 200, width: 80, height: 100 },
+      element: {
+        id: 'btn', role: 'Button', label: 'Btn',
+        frame: { x: 100, y: 200, width: 80, height: 100 },
+        enabled: true, visible: true, actionable: true,
+      },
+    }),
+    onDeleteCapture: vi.fn().mockResolvedValue(undefined),
+    onAddAnnotation: vi.fn(),
+  }
+  render(
+    <SimulatorSurface
+      deviceName="Pixel 8"
+      previewAlt="Live Pixel 8 preview"
+      mode={mode}
+      interactive
+      selectionEnabled
+      labels={{
+        interact: 'Interact',
+        selectElement: 'Select component',
+        selectArea: 'Select area',
+        interaction: 'Control Pixel 8',
+        keyboardHint: 'Type, paste, or use special keys.',
+        unavailable: 'Interaction unavailable',
+        note: 'Instruction',
+        notePlaceholder: 'Describe the change',
+        addToChat: 'Add to chat',
+        cancel: 'Cancel',
+        capturing: 'Capturing selection…',
+        selectionTooSmall: 'Select a larger area.',
+        elementUnavailable: 'No component found here.',
+        agentActive: 'Verboo is controlling this emulator.',
+        agentBadge: 'Verboo at work',
+      }}
+      canvasMedia={{
+        width: 720, height: 1600,
+        onPushReady: vi.fn(),
+        onTerminalFailure: vi.fn(),
+      }}
+      {...callbacks}
+    />,
+  )
+  const surface = screen.getByRole('application')
+  Object.defineProperty(surface, 'getBoundingClientRect', {
+    value: () => ({ left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900 }),
+  })
+  Object.defineProperty(surface, 'setPointerCapture', { value: vi.fn(), configurable: true })
+  Object.defineProperty(surface, 'releasePointerCapture', { value: vi.fn(), configurable: true })
+  return { surface, callbacks }
+}
+
+describe('SimulatorSurface — canvas mode selection (F1, amendment)', () => {
+  it('select-element inspects via the injected mediaSize (no <img>)', async () => {
+    const { surface, callbacks } = renderCanvasSurface('select-element')
+    callbacks.onInspectPoint.mockReset().mockResolvedValue({
+      rect: { x: 100 / 720, y: 200 / 1600, width: 80 / 720, height: 100 / 1600 },
+      element: {
+        id: 'btn', role: 'Button', label: 'Btn',
+        frame: { x: 100, y: 200, width: 80, height: 100 },
+        enabled: true, visible: true, actionable: true,
+      },
+    })
+
+    // mediaSize 720x1600 em surface 600x900: scale = min(600/720, 900/1600) = 0.5625
+    // → painted 405x900 a (97.5, 0). Click em (300, 450) → ((300-97.5)/405, 450/900) = (0.5, 0.5).
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(1))
+    expect(callbacks.onInspectPoint).toHaveBeenNthCalledWith(
+      1, expect.objectContaining({ x: 0.5, y: 0.5 }), false,
+    )
+
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(2))
+    expect(callbacks.onInspectPoint).toHaveBeenNthCalledWith(
+      2, expect.objectContaining({ x: 0.5, y: 0.5 }), true,
+    )
+    await waitFor(() => expect(callbacks.onCaptureAnnotation).toHaveBeenCalledWith(
+      'element',
+      expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+      expect.objectContaining({ id: 'btn', label: 'Btn' }),
+    ))
+  })
+
+  it('select-area captures a normalized rectangle via the injected mediaSize (F1)', async () => {
+    const { surface, callbacks } = renderCanvasSurface('select-area')
+
+    // Mesmo painted rect (97.5, 0, 405, 900).
+    // Down (300, 450) → (0.5, 0.5); Up (450, 700) → ((450-97.5)/405, 700/900) ≈ (0.8704, 0.7778).
+    // Rect de (0.5, 0.5) a (0.8704, 0.7778): x=0.5, y=0.5, w≈0.3704, h≈0.2778.
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 350, clientY: 500 })
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 450, clientY: 700 })
+    fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 450, clientY: 700 })
+
+    await waitFor(() => expect(callbacks.onCaptureAnnotation).toHaveBeenCalledTimes(1))
+    const [kind, rect] = callbacks.onCaptureAnnotation.mock.calls[0]!
+    expect(kind).toBe('area')
+    expect(rect.x).toBeCloseTo(0.5, 3)
+    expect(rect.y).toBeCloseTo(0.5, 3)
+    expect(rect.width).toBeCloseTo(0.3704, 3)
+    expect(rect.height).toBeCloseTo(0.2778, 3)
+  })
+})

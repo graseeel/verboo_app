@@ -9,10 +9,12 @@ import type {
   IosSimulatorPoint,
   IosSimulatorRect,
 } from './iosSimulatorApi'
+import { AndroidPreviewCanvas } from './AndroidPreviewCanvas'
+import type { RgbPaintPush } from './androidWebglPreview'
 import {
-  clientPointToNormalized,
   normalizedRectToCss,
   paintedContainRect,
+  pointToNormalizedOnSurface,
   type Rect,
 } from './simulatorGeometry'
 import {
@@ -59,6 +61,13 @@ type SimulatorSurfaceProps<K extends string = IosSimulatorKey> = {
   keyMapper?: SimulatorKeyMapper<K>
   /** false renders an interact-only surface without element/area selection. */
   selectionEnabled?: boolean
+  /** Slot canvas Android — dimensões EXPLÍCITAS do header VAF1. Ausente no iOS. */
+  canvasMedia?: {
+    width: number
+    height: number
+    onPushReady: (push: RgbPaintPush | null) => void
+    onTerminalFailure: () => void
+  }
   onModeChange: (mode: SimulatorInteractionMode) => void
   onTap: (point: IosSimulatorPoint) => void
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
@@ -98,6 +107,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   labels,
   keyMapper,
   selectionEnabled = true,
+  canvasMedia,
   onModeChange,
   onTap,
   onDrag,
@@ -132,6 +142,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   const [failedStreamUrl, setFailedStreamUrl] = useState<string | undefined>()
   const paintedRectRef = useRef<Rect>({ x: 0, y: 0, width: 0, height: 0 })
   const [stablePaintedRect, setStablePaintedRect] = useState<Rect>(paintedRectRef.current)
+  const mediaSize = canvasMedia ? { width: canvasMedia.width, height: canvasMedia.height } : undefined
   const interactionHandlers = useSimulatorInteraction<K>({
     surfaceRef,
     imageRef,
@@ -142,6 +153,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
     onTypeText,
     onPressKey,
     keyMapper,
+    mediaSize,
   })
   const previewSource = streamUrl && streamUrl !== failedStreamUrl ? streamUrl : frameDataUrl
 
@@ -150,11 +162,19 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   }, [streamUrl])
 
   const updatePaintedRect = useCallback(() => {
-    const next = paintedSurfaceRect(surfaceRef.current, imageRef.current)
+    const next = canvasMedia
+      ? paintedContainRect(
+          (() => {
+            const bounds = surfaceRef.current?.getBoundingClientRect()
+            return { width: bounds?.width ?? 0, height: bounds?.height ?? 0 }
+          })(),
+          mediaSize ?? { width: 0, height: 0 },
+        )
+      : paintedSurfaceRect(surfaceRef.current, imageRef.current)
     if (next.width <= 0 || next.height <= 0 || sameRect(paintedRectRef.current, next)) return
     paintedRectRef.current = next
     setStablePaintedRect(next)
-  }, [])
+  }, [canvasMedia?.width, canvasMedia?.height])
 
   useEffect(() => {
     updatePaintedRect()
@@ -167,7 +187,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
     }
     window.addEventListener('resize', updatePaintedRect)
     return () => window.removeEventListener('resize', updatePaintedRect)
-  }, [updatePaintedRect])
+  }, [updatePaintedRect, canvasMedia?.width, canvasMedia?.height])
 
   useEffect(() => {
     modeRef.current = mode
@@ -210,17 +230,16 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
 
   function normalizedAt(clientX: number, clientY: number): IosSimulatorPoint | null {
     const surface = surfaceRef.current
-    const image = imageRef.current
-    if (!surface || !image) return null
-    const bounds = surface.getBoundingClientRect()
-    const painted = paintedContainRect(
-      { width: bounds.width, height: bounds.height },
-      { width: image.naturalWidth, height: image.naturalHeight },
-    )
-    return clientPointToNormalized(
-      { x: clientX - bounds.left, y: clientY - bounds.top },
-      painted,
-    )
+    if (!surface) return null
+    const size = mediaSize
+      ?? (imageRef.current
+        ? {
+            width: imageRef.current.naturalWidth,
+            height: imageRef.current.naturalHeight,
+          }
+        : null)
+    if (!size) return null
+    return pointToNormalizedOnSurface(surface, size, clientX, clientY)
   }
 
   async function captureSelection(
@@ -432,17 +451,25 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
         onCompositionStart={interactionHandlers.onCompositionStart}
         onCompositionEnd={interactionHandlers.onCompositionEnd}
       >
-        <img
-          ref={imageRef}
-          src={previewSource}
-          alt={previewAlt}
-          draggable={false}
-          style={frameStyle}
-          onLoad={updatePaintedRect}
-          onError={() => {
-            if (streamUrl && previewSource === streamUrl) setFailedStreamUrl(streamUrl)
-          }}
-        />
+        {previewSource ? (
+          <img
+            ref={imageRef}
+            src={previewSource}
+            alt={previewAlt}
+            draggable={false}
+            style={frameStyle}
+            onLoad={updatePaintedRect}
+            onError={() => {
+              if (streamUrl && previewSource === streamUrl) setFailedStreamUrl(streamUrl)
+            }}
+          />
+        ) : canvasMedia ? (
+          <AndroidPreviewCanvas
+            ariaLabel={previewAlt}
+            onPushReady={canvasMedia.onPushReady}
+            onTerminalFailure={canvasMedia.onTerminalFailure}
+          />
+        ) : null}
         <SimulatorPresenceOverlay
           paintedRect={stablePaintedRect}
           presence={agentPresence}

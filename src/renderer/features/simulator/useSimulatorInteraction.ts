@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import type { AndroidEmulatorKey } from './androidEmulatorApi'
 import type { IosSimulatorKey, IosSimulatorPoint } from './iosSimulatorApi'
-import { clientPointToNormalized, paintedContainRect } from './simulatorGeometry'
+import { pointToNormalizedOnSurface, type Size } from './simulatorGeometry'
 
 export type SimulatorInteractionMode = 'interact' | 'select-element' | 'select-area'
 
@@ -32,6 +32,9 @@ type Options<K extends string> = {
   /** Injectable per-platform key mapper (PA-27 adapter parametrization);
    *  defaults to the iOS mapper. */
   keyMapper?: SimulatorKeyMapper<K>
+  /** Dimensões EXPLÍCITAS do header VAF1 no modo canvas Android — ausente no
+   *  iOS, onde o tamanho vem do naturalWidth/Height do <img>. */
+  mediaSize?: Size
 }
 
 type PointerStart = {
@@ -86,17 +89,16 @@ export function useSimulatorInteraction<K extends string = IosSimulatorKey>(
 
   function normalizedAt(clientX: number, clientY: number) {
     const surface = options.surfaceRef.current
-    const image = options.imageRef.current
-    if (!surface || !image) return null
-    const bounds = surface.getBoundingClientRect()
-    const painted = paintedContainRect(
-      { width: bounds.width, height: bounds.height },
-      { width: image.naturalWidth, height: image.naturalHeight },
-    )
-    return clientPointToNormalized(
-      { x: clientX - bounds.left, y: clientY - bounds.top },
-      painted,
-    )
+    if (!surface) return null
+    const size = options.mediaSize
+      ?? (options.imageRef.current
+        ? {
+            width: options.imageRef.current.naturalWidth,
+            height: options.imageRef.current.naturalHeight,
+          }
+        : null)
+    if (!size) return null
+    return pointToNormalizedOnSurface(surface, size, clientX, clientY)
   }
 
   function clearPointer() {
