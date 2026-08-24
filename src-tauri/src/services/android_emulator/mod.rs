@@ -24,8 +24,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 pub mod a11y;
+pub(crate) mod grpc;
 pub mod input;
 pub mod media;
+pub(crate) mod preview;
 pub mod requirements;
 pub mod sdk;
 pub mod session;
@@ -181,7 +183,7 @@ pub struct AndroidEmulatorService {
     pub(crate) state: Arc<Mutex<session::AndroidServiceState>>,
     pub(crate) ownership: Arc<session::OwnershipLedger>,
     pub(crate) desired_visibility: Arc<AtomicBool>,
-    pub(crate) session_cancel: Arc<AtomicBool>,
+    pub(crate) session_cancel: Arc<session::SessionCancellation>,
     pub(crate) operation_lock: Arc<Mutex<()>>,
     pub(crate) next_generation: Arc<AtomicU64>,
     pub(crate) app: Arc<Mutex<Option<AppHandle>>>,
@@ -209,7 +211,7 @@ impl AndroidEmulatorService {
             state: Arc::new(Mutex::new(session::AndroidServiceState::default())),
             ownership: Arc::new(session::OwnershipLedger::open(app_data_dir)?),
             desired_visibility: Arc::new(AtomicBool::new(true)),
-            session_cancel: Arc::new(AtomicBool::new(false)),
+            session_cancel: Arc::new(session::SessionCancellation::default()),
             operation_lock: Arc::new(Mutex::new(())),
             next_generation: Arc::new(AtomicU64::new(0)),
             app: Arc::new(Mutex::new(None)),
@@ -328,10 +330,11 @@ pub async fn android_emulator_attach(
     avd_name: String,
     stream_fps: u16,
     fallback_fps: f64,
+    preview_transport: Option<preview::PreviewTransport>,
 ) -> Result<AndroidEmulatorSession, String> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.attach_sync(app, avd_name, stream_fps, fallback_fps)
+        service.attach_sync(app, avd_name, stream_fps, fallback_fps, preview_transport)
     })
     .await
     .map_err(|error| format!("failed to attach Android emulator: {error}"))?

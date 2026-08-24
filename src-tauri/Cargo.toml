@@ -54,6 +54,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 quick-xml = "0.41"
+prost = "=0.13.5"
 
 # ── Power management ──────────────────────────────────────────────
 # keepawake: cross-platform (macOS IOKit, Windows SetThreadExecutionState,
@@ -63,6 +64,7 @@ keepawake = "0.6"
 
 # ── Async ────────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }
+tonic = { version = "=0.13.1", default-features = false, features = ["channel", "codegen", "prost"] }
 
 # ── Utilities ────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }

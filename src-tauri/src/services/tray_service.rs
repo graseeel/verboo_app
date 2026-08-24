@@ -376,8 +376,8 @@ fn format_elapsed(total_secs: u64) -> String {
 mod tests {
     use super::*;
     use crate::models::types::{
-        AccessMode, CompletionNotificationMode, GoalModeSettings, LanguageCode, PersonalityMode,
-        UpdateChannel, UpdateSettings,
+        AccessMode, AndroidStreamFps::Fps60, CompletionNotificationMode, GoalModeSettings,
+        LanguageCode, PersonalityMode, UpdateChannel, UpdateSettings,
     };
 
     fn settings(show_in_menu_bar: bool) -> UserSettings {
@@ -390,6 +390,7 @@ mod tests {
             show_menu_bar_text: true,
             stay_signed_in: true,
             prevent_sleep_while_running: false,
+            android_stream_fps: Fps60,
             completion_notifications: CompletionNotificationMode::Always,
             permission_notifications: true,
             question_notifications: true,

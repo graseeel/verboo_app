@@ -138,6 +138,7 @@ impl SettingsStore {
             show_menu_bar_text: s.show_menu_bar_text,
             stay_signed_in: s.stay_signed_in,
             prevent_sleep_while_running: s.prevent_sleep_while_running,
+            android_stream_fps: s.android_stream_fps,
             completion_notifications: s.completion_notifications.clone(),
             permission_notifications: s.permission_notifications,
             question_notifications: s.question_notifications,
@@ -234,6 +235,83 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         SettingsStore::new(dir)
+    }
+
+    #[test]
+    fn android_stream_fps_defaults_to_sixty_when_missing_or_invalid() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(0),
+            serde_json::json!(17),
+            serde_json::json!(61),
+            serde_json::json!("60"),
+            serde_json::json!(true),
+            serde_json::json!({"fps": 30}),
+        ] {
+            let store = temp_store();
+            let mut legacy = serde_json::to_value(UserSettings::default()).unwrap();
+            legacy
+                .as_object_mut()
+                .expect("settings object")
+                .insert("androidStreamFps".to_string(), value);
+            std::fs::write(store.file_path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert_eq!(
+                store.get().unwrap().android_stream_fps,
+                crate::models::types::AndroidStreamFps::Fps60
+            );
+        }
+    }
+
+    #[test]
+    fn android_stream_fps_missing_legacy_key_defaults_without_losing_other_settings() {
+        let store = temp_store();
+        let mut legacy = serde_json::to_value(UserSettings::default()).unwrap();
+        let legacy_settings = legacy.as_object_mut().expect("settings object");
+        legacy_settings.remove("androidStreamFps");
+        legacy_settings.insert("language".to_string(), serde_json::json!("pt-BR"));
+        std::fs::write(store.file_path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let loaded = store.get().unwrap();
+        assert_eq!(loaded.language, LanguageCode::PtBr);
+        assert_eq!(
+            loaded.android_stream_fps,
+            crate::models::types::AndroidStreamFps::Fps60
+        );
+    }
+
+    #[test]
+    fn android_stream_fps_persists_only_numeric_thirty_or_sixty() {
+        for (requested, expected) in [(30, 30), (60, 60), (45, 60)] {
+            let store = temp_store();
+            let updated = store
+                .update(serde_json::json!({"androidStreamFps": requested}))
+                .unwrap();
+            assert_eq!(updated.android_stream_fps.get(), expected);
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(store.file_path()).unwrap()).unwrap();
+            assert_eq!(persisted["androidStreamFps"], serde_json::json!(expected));
+        }
+    }
+
+    #[test]
+    fn android_stream_fps_thirty_survives_an_unrelated_partial_update() {
+        let store = temp_store();
+        store
+            .update(serde_json::json!({"androidStreamFps": 30}))
+            .unwrap();
+
+        let updated = store
+            .update(serde_json::json!({"showInMenuBar": false}))
+            .unwrap();
+        assert!(!updated.show_in_menu_bar);
+        assert_eq!(
+            updated.android_stream_fps,
+            crate::models::types::AndroidStreamFps::Fps30
+        );
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.file_path()).unwrap()).unwrap();
+        assert_eq!(persisted["androidStreamFps"], serde_json::json!(30));
     }
 
     #[test]

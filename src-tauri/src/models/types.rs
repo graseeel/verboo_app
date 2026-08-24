@@ -783,6 +783,62 @@ pub struct GoalModeSettings {
     pub allow_auto_access: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidStreamFps {
+    Fps30,
+    Fps60,
+}
+
+impl AndroidStreamFps {
+    pub const fn get(self) -> u16 {
+        match self {
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+        }
+    }
+}
+
+impl Default for AndroidStreamFps {
+    fn default() -> Self {
+        Self::Fps60
+    }
+}
+
+impl TryFrom<u16> for AndroidStreamFps {
+    type Error = String;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            30 => Ok(Self::Fps30),
+            60 => Ok(Self::Fps60),
+            _ => Err("Android VAF1 stream rate must be 30 or 60 fps".to_string()),
+        }
+    }
+}
+
+impl serde::Serialize for AndroidStreamFps {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u16(self.get())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AndroidStreamFps {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_u64() {
+            Some(30) => Self::Fps30,
+            Some(60) => Self::Fps60,
+            _ => Self::Fps60,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserSettings {
@@ -794,6 +850,8 @@ pub struct UserSettings {
     pub show_menu_bar_text: bool,
     pub stay_signed_in: bool,
     pub prevent_sleep_while_running: bool,
+    #[serde(default)]
+    pub android_stream_fps: AndroidStreamFps,
     pub completion_notifications: CompletionNotificationMode,
     pub permission_notifications: bool,
     pub question_notifications: bool,
@@ -1627,6 +1685,7 @@ impl Default for UserSettings {
             show_menu_bar_text: true,
             stay_signed_in: true,
             prevent_sleep_while_running: true,
+            android_stream_fps: AndroidStreamFps::Fps60,
             completion_notifications: CompletionNotificationMode::Background,
             permission_notifications: true,
             question_notifications: true,

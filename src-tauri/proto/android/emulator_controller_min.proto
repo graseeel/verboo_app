@@ -1,0 +1,27 @@
+// Recorte mínimo de android/emulator_controller.proto
+// Fonte: AOSP platform/external/qemu — SDK emulator 36.6.11 (Apache-2.0)
+// Field numbers preservados verbatim contra $SDK/emulator/lib/emulator_controller.proto
+syntax = "proto3";
+package android.emulation.control;
+
+message ImageFormat {
+    enum ImgFormat {
+        PNG = 0;
+        RGBA8888 = 1;
+        RGB888 = 2;
+    }
+    ImgFormat format = 1;
+    uint32 width = 3;
+    uint32 height = 4;
+}
+
+message Image {
+    ImageFormat format = 1;
+    bytes image = 4;
+    uint32 seq = 5;
+    uint64 timestampUs = 6;
+}
+
+service EmulatorController {
+    rpc streamScreenshot(ImageFormat) returns (stream Image) {}
+}

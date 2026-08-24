@@ -565,9 +565,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
+    use crate::services::android_emulator::preview::{FirstPreviewGate, PreviewMode};
     use crate::services::android_emulator::requirements::AndroidDeviceFamily;
     use crate::services::android_emulator::session::{
-        AndroidEmulatorOwnership, AndroidSession, PreviewGate,
+        AndroidEmulatorOwnership, AndroidSession, PreviewGate, PreviewRuntime,
     };
     use crate::services::android_emulator::AndroidDevice;
 
@@ -938,6 +939,10 @@ mod tests {
             emulator_process: Arc::new(Mutex::new(None)),
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
+            emulator_pid: None,
+            gpu_software: false,
+            preview: Arc::new(PreviewRuntime::new(PreviewMode::LegacyPrimary, 1)),
+            first_preview: Arc::new(FirstPreviewGate::new()),
         })
     }
 

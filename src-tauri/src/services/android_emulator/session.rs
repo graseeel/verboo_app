@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -14,10 +14,42 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use super::preview::{
+    next_preview_generation, FirstPreviewError, FirstPreviewGate, FirstPreviewState, FrameReady,
+    LatestSlot, PreviewControl, PreviewEventSink, PreviewHealth, PreviewMode, PreviewReason,
+    PreviewSource, PreviewState, PreviewTransport, WorkerOutcome,
+};
 use super::requirements::{self, AndroidDevice};
-use super::{sdk, AndroidEmulatorService, CommandOutput, CommandRunner, ANDROID_CLEANUP_BUDGET};
+use super::{
+    grpc, sdk, AndroidEmulatorService, CommandOutput, CommandRunner, ANDROID_CLEANUP_BUDGET,
+};
+use crate::models::types::AndroidStreamFps;
+
+#[path = "session/boot.rs"]
+mod boot;
+#[path = "session/preview.rs"]
+mod preview_runtime;
+pub(crate) use boot::emit_error;
+use boot::{
+    apply_postboot_gpu_probe, attach_ownership, boot_owned_with_attempts, command_error,
+    emit_lifecycle, emulator_launch_args, emulator_path, find_running_serial, is_boot_completed,
+    ownership_for_running_avd, parse_png_dimensions, probe_owned_surface_flinger, should_shutdown,
+    shutdown_owned_emulator, surface_flinger_uses_software_gpu, validate_fallback_fps,
+    validate_stream_fps, wait_for_boot, EmulatorLauncher, GpuMode, OwnedBootAttemptError,
+    OwnedBootAttempts, OwnedBootError, OwnedBootResult, SystemEmulatorLauncher,
+    SystemOwnedBootAttempts,
+};
+pub(crate) use preview_runtime::PreviewRuntime;
+use preview_runtime::{
+    capture_and_emit, coordinate_fallback, finish_started_preview, run_android_frame_loop,
+    run_preview_coordinator, start_preview_for_session, CoordinatorOutcome, LegacyPreviewBackend,
+    LegacyPreviewBackendFactory, PreviewFactoryProvider, PreviewStart,
+    SystemLegacyPreviewBackendFactory, SystemPreviewFactoryProvider,
+};
 
 pub(crate) const FRAME_EVENT: &str = "android-emulator:frame";
+pub(crate) const FRAME_READY_EVENT: &str = "android-emulator:frame-ready";
+pub(crate) const PREVIEW_STATE_EVENT: &str = "android-emulator:preview-state";
 pub(crate) const LIFECYCLE_EVENT: &str = "android-emulator:lifecycle";
 pub(crate) const ERROR_EVENT: &str = "android-emulator:error";
 pub(crate) const PRESENCE_EVENT: &str = "android-emulator:presence";
@@ -28,6 +60,163 @@ const MAX_STREAM_FPS: u16 = 60;
 const MIN_FALLBACK_FPS: f64 = 0.5;
 const MAX_FALLBACK_FPS: f64 = 2.0;
 const ADB_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+struct TestPause {
+    reached: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn arm_test_pause(
+    slot: &Mutex<Option<TestPause>>,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached_sender, reached_receiver) = std::sync::mpsc::channel();
+    let (release_sender, release_receiver) = std::sync::mpsc::channel();
+    *slot.lock().expect("Android test pause poisoned") = Some(TestPause {
+        reached: reached_sender,
+        release: release_receiver,
+    });
+    (reached_receiver, release_sender)
+}
+
+#[cfg(test)]
+fn wait_test_pause(slot: &Mutex<Option<TestPause>>) {
+    let Some(pause) = slot.lock().expect("Android test pause poisoned").take() else {
+        return;
+    };
+    let _ = pause.reached.send(());
+    let _ = pause.release.recv();
+}
+
+pub(crate) struct SessionCancellation {
+    cancelled: AtomicBool,
+    revision: AtomicU64,
+    transition: Mutex<()>,
+    #[cfg(test)]
+    ticket_observed: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    #[cfg(test)]
+    after_reset: Mutex<Option<TestPause>>,
+    #[cfg(test)]
+    before_publish: Mutex<Option<TestPause>>,
+}
+
+impl SessionCancellation {
+    pub(crate) fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+            transition: Mutex::new(()),
+            #[cfg(test)]
+            ticket_observed: Mutex::new(None),
+            #[cfg(test)]
+            after_reset: Mutex::new(None),
+            #[cfg(test)]
+            before_publish: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        let _transition = self
+            .transition
+            .lock()
+            .expect("Android session cancellation poisoned");
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn ticket(&self) -> u64 {
+        let _transition = self
+            .transition
+            .lock()
+            .expect("Android session cancellation poisoned");
+        let ticket = self.revision.load(Ordering::Relaxed);
+        #[cfg(test)]
+        if let Some(sender) = self
+            .ticket_observed
+            .lock()
+            .expect("Android session cancellation test hook poisoned")
+            .take()
+        {
+            let _ = sender.send(());
+        }
+        ticket
+    }
+
+    pub(crate) fn reset_if_unchanged(&self, ticket: u64) -> bool {
+        let _transition = self
+            .transition
+            .lock()
+            .expect("Android session cancellation poisoned");
+        if self.revision.load(Ordering::Relaxed) != ticket {
+            return false;
+        }
+        self.cancelled.store(false, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn flag(&self) -> &AtomicBool {
+        &self.cancelled
+    }
+
+    pub(crate) fn run_if_active<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let _transition = self
+            .transition
+            .lock()
+            .expect("Android session cancellation poisoned");
+        if self.is_cancelled() {
+            return None;
+        }
+        Some(action())
+    }
+
+    #[cfg(test)]
+    fn transition_is_held(&self) -> bool {
+        self.transition.try_lock().is_err()
+    }
+
+    #[cfg(test)]
+    fn observe_next_ticket(&self, sender: std::sync::mpsc::Sender<()>) {
+        *self
+            .ticket_observed
+            .lock()
+            .expect("Android session cancellation test hook poisoned") = Some(sender);
+    }
+
+    #[cfg(test)]
+    fn pause_after_reset_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        arm_test_pause(&self.after_reset)
+    }
+
+    #[cfg(test)]
+    fn pause_before_publish_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        arm_test_pause(&self.before_publish)
+    }
+
+    #[cfg(test)]
+    fn pause_after_reset(&self) {
+        wait_test_pause(&self.after_reset);
+    }
+
+    #[cfg(test)]
+    fn pause_before_publish(&self) {
+        wait_test_pause(&self.before_publish);
+    }
+}
+
+impl Default for SessionCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +377,26 @@ impl OwnershipLedger {
     }
 }
 
+trait BootLedger: Send + Sync {
+    fn mark_boot_requested(&self, avd_name: &str) -> Result<(), String>;
+    fn mark_booted(&self, avd_name: &str) -> Result<(), String>;
+    fn remove(&self, avd_name: &str) -> Result<(), String>;
+}
+
+impl BootLedger for OwnershipLedger {
+    fn mark_boot_requested(&self, avd_name: &str) -> Result<(), String> {
+        OwnershipLedger::mark_boot_requested(self, avd_name)
+    }
+
+    fn mark_booted(&self, avd_name: &str) -> Result<(), String> {
+        OwnershipLedger::mark_booted(self, avd_name)
+    }
+
+    fn remove(&self, avd_name: &str) -> Result<(), String> {
+        OwnershipLedger::remove(self, avd_name)
+    }
+}
+
 fn persist_ledger(path: &Path, devices: &BTreeMap<String, OwnershipPhase>) -> Result<(), String> {
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(&LedgerFile {
@@ -200,16 +409,26 @@ fn persist_ledger(path: &Path, devices: &BTreeMap<String, OwnershipPhase>) -> Re
 }
 
 pub(crate) struct PreviewGate {
-    visible: Mutex<bool>,
+    state: Mutex<PreviewGateState>,
     changed: Condvar,
     #[cfg(test)]
     parked_workers: AtomicUsize,
 }
 
+struct PreviewGateState {
+    visible: bool,
+    stop: bool,
+    control: Option<tokio::sync::watch::Sender<PreviewControl>>,
+}
+
 impl PreviewGate {
     pub(crate) fn new(visible: bool) -> Self {
         Self {
-            visible: Mutex::new(visible),
+            state: Mutex::new(PreviewGateState {
+                visible,
+                stop: false,
+                control: None,
+            }),
             changed: Condvar::new(),
             #[cfg(test)]
             parked_workers: AtomicUsize::new(0),
@@ -217,29 +436,70 @@ impl PreviewGate {
     }
 
     pub(crate) fn set_visible(&self, visible: bool) {
-        *self.visible.lock().expect("Android preview gate poisoned") = visible;
+        let mut state = self.state.lock().expect("Android preview gate poisoned");
+        state.visible = visible;
+        if let Some(sender) = state.control.as_ref() {
+            sender.send_replace(PreviewControl {
+                visible: state.visible,
+                stop: state.stop,
+            });
+        }
         self.changed.notify_all();
     }
 
     pub(crate) fn stop_and_wake(&self, stop: &AtomicBool) {
-        let _visible = self.visible.lock().expect("Android preview gate poisoned");
+        let mut state = self.state.lock().expect("Android preview gate poisoned");
         stop.store(true, Ordering::Release);
+        state.stop = true;
+        state.visible = false;
+        if let Some(sender) = state.control.as_ref() {
+            sender.send_replace(PreviewControl {
+                visible: false,
+                stop: true,
+            });
+        }
         self.changed.notify_all();
     }
 
+    pub(crate) fn install_control(
+        &self,
+        sender: tokio::sync::watch::Sender<PreviewControl>,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().expect("Android preview gate poisoned");
+        if state.control.is_some() {
+            return Err("Android preview control already installed".to_string());
+        }
+        sender.send_replace(PreviewControl {
+            visible: state.visible,
+            stop: state.stop,
+        });
+        state.control = Some(sender);
+        Ok(())
+    }
+
+    pub(crate) fn refresh_control(&self) {
+        let state = self.state.lock().expect("Android preview gate poisoned");
+        if let Some(sender) = state.control.as_ref() {
+            sender.send_replace(PreviewControl {
+                visible: state.visible,
+                stop: state.stop,
+            });
+        }
+    }
+
     pub(crate) fn wait_until_visible(&self, stop: &AtomicBool) -> bool {
-        let mut visible = self.visible.lock().expect("Android preview gate poisoned");
-        while !*visible && !stop.load(Ordering::Acquire) {
+        let mut state = self.state.lock().expect("Android preview gate poisoned");
+        while !state.visible && !stop.load(Ordering::Acquire) {
             #[cfg(test)]
             self.parked_workers.fetch_add(1, Ordering::AcqRel);
-            visible = self
+            state = self
                 .changed
-                .wait(visible)
+                .wait(state)
                 .expect("Android preview gate poisoned");
             #[cfg(test)]
             self.parked_workers.fetch_sub(1, Ordering::AcqRel);
         }
-        !stop.load(Ordering::Acquire) && *visible
+        !stop.load(Ordering::Acquire) && state.visible
     }
 
     #[cfg(test)]
@@ -247,14 +507,16 @@ impl PreviewGate {
         self.parked_workers.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
     pub(crate) fn is_visible(&self) -> bool {
-        *self.visible.lock().expect("Android preview gate poisoned")
+        self.state
+            .lock()
+            .expect("Android preview gate poisoned")
+            .visible
     }
 
     fn emit_if_visible(&self, stop: &AtomicBool, emit: impl FnOnce()) -> bool {
-        let visible = self.visible.lock().expect("Android preview gate poisoned");
-        if !*visible || stop.load(Ordering::Acquire) {
+        let state = self.state.lock().expect("Android preview gate poisoned");
+        if !state.visible || stop.load(Ordering::Acquire) {
             return false;
         }
         emit();
@@ -262,17 +524,17 @@ impl PreviewGate {
     }
 
     pub(crate) fn wait_for_visible_interval(&self, stop: &AtomicBool, duration: Duration) -> bool {
-        let visible = self.visible.lock().expect("Android preview gate poisoned");
-        if !*visible || stop.load(Ordering::Acquire) {
+        let state = self.state.lock().expect("Android preview gate poisoned");
+        if !state.visible || stop.load(Ordering::Acquire) {
             return false;
         }
-        let (visible, _) = self
+        let (state, _) = self
             .changed
-            .wait_timeout_while(visible, duration, |visible| {
-                *visible && !stop.load(Ordering::Acquire)
+            .wait_timeout_while(state, duration, |state| {
+                state.visible && !stop.load(Ordering::Acquire)
             })
             .expect("Android preview gate poisoned");
-        !stop.load(Ordering::Acquire) && *visible
+        !stop.load(Ordering::Acquire) && state.visible
     }
 
     pub(crate) fn notify(&self) {
@@ -280,19 +542,35 @@ impl PreviewGate {
     }
 }
 
-trait AndroidFrameSink: Send + Sync {
-    fn frame(&self, frame: AndroidEmulatorFrame);
+trait AndroidFrameSink: PreviewEventSink + Send + Sync {
+    fn frame(&self, frame: AndroidEmulatorFrame) -> Result<(), String>;
     fn error(&self, message: String);
-    fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
+    fn lifecycle(&self, stage: AndroidEmulatorStartupStage);
 }
 
 struct TauriFrameSink {
     app: AppHandle,
 }
 
+impl PreviewEventSink for TauriFrameSink {
+    fn frame_ready(&self, event: FrameReady) -> Result<(), String> {
+        self.app
+            .emit(FRAME_READY_EVENT, event)
+            .map_err(|error| error.to_string())
+    }
+
+    fn preview_state(&self, state: PreviewState) -> Result<(), String> {
+        self.app
+            .emit(PREVIEW_STATE_EVENT, state)
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl AndroidFrameSink for TauriFrameSink {
-    fn frame(&self, frame: AndroidEmulatorFrame) {
-        let _ = self.app.emit(FRAME_EVENT, frame);
+    fn frame(&self, frame: AndroidEmulatorFrame) -> Result<(), String> {
+        self.app
+            .emit(FRAME_EVENT, frame)
+            .map_err(|error| error.to_string())
     }
 
     fn error(&self, message: String) {
@@ -320,6 +598,10 @@ pub(crate) struct AndroidSession {
     pub(crate) emulator_process: Arc<Mutex<Option<Child>>>,
     pub(crate) recording: Arc<Mutex<Option<super::media::ActiveRecording>>>,
     pub(crate) workers: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) emulator_pid: Option<u32>,
+    pub(crate) gpu_software: bool,
+    pub(crate) preview: Arc<PreviewRuntime>,
+    pub(crate) first_preview: Arc<FirstPreviewGate>,
 }
 
 impl AndroidSession {
@@ -360,697 +642,9 @@ pub(crate) fn adb_path(sdk_path: &Path) -> PathBuf {
         .join(if cfg!(windows) { "adb.exe" } else { "adb" })
 }
 
-fn emulator_path(sdk_path: &Path) -> PathBuf {
-    sdk_path.join("emulator").join(if cfg!(windows) {
-        "emulator.exe"
-    } else {
-        "emulator"
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn boot_completion_requires_property_one() {
-        assert!(is_boot_completed("1\n"));
-        assert!(!is_boot_completed("0\n"));
-        assert!(!is_boot_completed("1\n0\n"));
-    }
-
-    #[test]
-    fn emulator_launches_verboo_avds_headless_without_audio_or_boot_animation() {
-        assert_eq!(
-            emulator_launch_args("Pixel 8;safe"),
-            vec![
-                "-avd",
-                "Pixel 8;safe",
-                "-no-window",
-                "-no-boot-anim",
-                "-no-audio",
-                "-no-snapshot-save",
-            ]
-        );
-    }
-
-    #[test]
-    fn external_running_avd_is_reused_without_a_verboo_boot_request() {
-        let root = tempfile::tempdir().unwrap();
-        let ledger = OwnershipLedger::open(root.path().to_path_buf()).unwrap();
-
-        assert_eq!(
-            attach_ownership(&ledger, "Pixel 8;safe", Some("emulator-5554")),
-            (AndroidEmulatorOwnership::External, false),
-        );
-    }
-
-    #[test]
-    fn external_attach_reuses_existing_serial_without_spawning_or_claiming_avd() {
-        let root = tempfile::tempdir().unwrap();
-        let runner = Arc::new(ExternalAttachRunner::default());
-        let launcher = RecordingEmulatorLauncher::default();
-        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
-        service.runner = runner.clone();
-
-        let session = service
-            .attach_sync_with_sink(
-                None,
-                Arc::new(RecordingAttachSink),
-                &launcher,
-                "Pixel_8_API_35".to_string(),
-                2,
-                1.0,
-            )
-            .unwrap();
-        service.detach_sync().unwrap();
-
-        assert_eq!(session.serial, "emulator-5554");
-        assert_eq!(session.ownership, AndroidEmulatorOwnership::External);
-        assert_eq!(
-            service.ownership.phase("Pixel_8_API_35"),
-            None,
-            "attaching an external AVD must not mark a Verboo boot request"
-        );
-        assert!(
-            launcher.calls.lock().unwrap().is_empty(),
-            "an already-running external AVD must never be spawned by Verboo"
-        );
-
-        let commands = runner.commands.lock().unwrap();
-        assert!(!commands.iter().any(|(_, args)| {
-            args.iter().any(|arg| {
-                matches!(
-                    arg.as_str(),
-                    "-no-window" | "-no-boot-anim" | "-no-audio" | "-avd"
-                )
-            })
-        }));
-    }
-
-    #[test]
-    fn absent_running_avd_requests_a_verboo_headless_boot() {
-        let root = tempfile::tempdir().unwrap();
-        let ledger = OwnershipLedger::open(root.path().to_path_buf()).unwrap();
-
-        assert_eq!(
-            attach_ownership(&ledger, "Pixel 8;safe", None),
-            (AndroidEmulatorOwnership::Verboo, true),
-        );
-        assert!(emulator_launch_args("Pixel 8;safe").contains(&"-no-window".to_string()));
-    }
-
-    #[test]
-    fn png_dimensions_read_the_real_ihdr() {
-        let mut png = vec![0; 24];
-        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        png[12..16].copy_from_slice(b"IHDR");
-        png[16..20].copy_from_slice(&1080u32.to_be_bytes());
-        png[20..24].copy_from_slice(&2400u32.to_be_bytes());
-        assert_eq!(parse_png_dimensions(&png).unwrap(), (1080, 2400));
-    }
-
-    #[test]
-    fn lifecycle_stages_serialize_with_the_frozen_ios_literals() {
-        assert_eq!(
-            serde_json::to_string(&AndroidEmulatorStartupStage::WaitingForDisplay).unwrap(),
-            "\"waitingForDisplay\""
-        );
-        assert_eq!(
-            serde_json::to_string(&AndroidEmulatorStartupStage::GeneratingFirstPreview).unwrap(),
-            "\"generatingFirstPreview\""
-        );
-    }
-
-    #[test]
-    fn only_verboo_ownership_is_shutdown_eligible() {
-        assert!(should_shutdown(AndroidEmulatorOwnership::Verboo));
-        assert!(!should_shutdown(AndroidEmulatorOwnership::External));
-    }
-
-    #[test]
-    fn end_does_not_wait_past_the_deadline_for_the_operation_lock() {
-        let root = tempfile::tempdir().unwrap();
-        let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
-        let _operation = service.operation_lock.lock().unwrap();
-        let started = Instant::now();
-
-        let result = service.end_sync_until(started + Duration::from_millis(100));
-
-        assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn ownership_ledger_round_trips_boot_requested_then_booted() {
-        let root = tempfile::tempdir().unwrap();
-        let ledger = OwnershipLedger::open(root.path().to_path_buf()).unwrap();
-        ledger.mark_boot_requested("Pixel_8_API_35").unwrap();
-        assert_eq!(
-            OwnershipLedger::open(root.path().to_path_buf())
-                .unwrap()
-                .phase("Pixel_8_API_35"),
-            Some(OwnershipPhase::BootRequested)
-        );
-        ledger.mark_booted("Pixel_8_API_35").unwrap();
-        assert_eq!(
-            OwnershipLedger::open(root.path().to_path_buf())
-                .unwrap()
-                .phase("Pixel_8_API_35"),
-            Some(OwnershipPhase::BootedByVerboo)
-        );
-    }
-
-    #[test]
-    fn hidden_preview_gate_stops_waiting_without_capturing() {
-        let gate = std::sync::Arc::new(PreviewGate::new(false));
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let waiting_gate = gate.clone();
-        let waiting_stop = stop.clone();
-        let worker = std::thread::spawn(move || {
-            started_sender.send(()).unwrap();
-            waiting_gate.wait_until_visible(&waiting_stop)
-        });
-        started_receiver
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
-        while gate.parked_workers() == 0 && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(gate.parked_workers(), 1);
-        gate.stop_and_wake(&stop);
-        assert!(!worker.join().unwrap());
-    }
-
-    #[test]
-    fn hidden_preview_gate_parks_then_resumes_when_visible() {
-        let gate = std::sync::Arc::new(PreviewGate::new(false));
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
-        let waiting_gate = gate.clone();
-        let waiting_stop = stop.clone();
-        let worker = std::thread::spawn(move || {
-            started_sender.send(()).unwrap();
-            ready_sender
-                .send(waiting_gate.wait_until_visible(&waiting_stop))
-                .unwrap();
-        });
-        started_receiver
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
-        while gate.parked_workers() == 0 && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(gate.parked_workers(), 1);
-        assert!(ready_receiver.try_recv().is_err());
-        gate.set_visible(true);
-        assert_eq!(
-            ready_receiver
-                .recv_timeout(std::time::Duration::from_millis(100))
-                .unwrap(),
-            true
-        );
-        worker.join().unwrap();
-        gate.set_visible(false);
-        assert!(!gate.wait_for_visible_interval(&stop, std::time::Duration::from_millis(1)));
-    }
-
-    #[derive(Default)]
-    struct RecordingRunner {
-        commands: std::sync::Mutex<Vec<(String, Vec<String>)>>,
-    }
-
-    impl CommandRunner for RecordingRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
-            self.commands
-                .lock()
-                .unwrap()
-                .push((program.to_string(), args.to_vec()));
-            Ok(CommandOutput {
-                success: true,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct ExternalAttachRunner {
-        commands: std::sync::Mutex<Vec<(String, Vec<String>)>>,
-    }
-
-    impl ExternalAttachRunner {
-        fn run_recorded(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
-            self.commands
-                .lock()
-                .unwrap()
-                .push((program.to_string(), args.to_vec()));
-
-            if args_match(args, &["-list-avds"]) {
-                return Ok(CommandOutput {
-                    success: true,
-                    stdout: b"Pixel_8_API_35\n".to_vec(),
-                    stderr: Vec::new(),
-                });
-            }
-            if args_match(args, &["devices"]) {
-                return Ok(CommandOutput {
-                    success: true,
-                    stdout: b"List of devices attached\nemulator-5554\tdevice\n".to_vec(),
-                    stderr: Vec::new(),
-                });
-            }
-            if args_match(args, &["-s", "emulator-5554", "emu", "avd", "name"]) {
-                return Ok(CommandOutput {
-                    success: true,
-                    stdout: b"Pixel_8_API_35\n".to_vec(),
-                    stderr: Vec::new(),
-                });
-            }
-            if args_match(
-                args,
-                &[
-                    "-s",
-                    "emulator-5554",
-                    "shell",
-                    "getprop",
-                    "sys.boot_completed",
-                ],
-            ) {
-                return Ok(CommandOutput {
-                    success: true,
-                    stdout: b"1\n".to_vec(),
-                    stderr: Vec::new(),
-                });
-            }
-            if args_match(
-                args,
-                &["-s", "emulator-5554", "exec-out", "screencap", "-p"],
-            ) {
-                return Ok(png_output());
-            }
-
-            Err(format!(
-                "unexpected Android attach command: {program} {args:?}"
-            ))
-        }
-    }
-
-    impl CommandRunner for ExternalAttachRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
-            self.run_recorded(program, args)
-        }
-
-        fn run_interruptible(
-            &self,
-            program: &str,
-            args: &[String],
-            _cancel: &AtomicBool,
-            _deadline: Instant,
-        ) -> Result<CommandOutput, String> {
-            self.run_recorded(program, args)
-        }
-    }
-
-    fn args_match(args: &[String], expected: &[&str]) -> bool {
-        args.len() == expected.len()
-            && args
-                .iter()
-                .zip(expected.iter())
-                .all(|(actual, expected)| actual == expected)
-    }
-
-    struct RecordingAttachSink;
-
-    impl AndroidFrameSink for RecordingAttachSink {
-        fn frame(&self, _frame: AndroidEmulatorFrame) {}
-
-        fn error(&self, _message: String) {}
-    }
-
-    #[derive(Default)]
-    struct RecordingEmulatorLauncher {
-        calls: std::sync::Mutex<Vec<(PathBuf, Vec<String>)>>,
-    }
-
-    impl EmulatorLauncher for RecordingEmulatorLauncher {
-        fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((path.to_path_buf(), emulator_launch_args(avd_name)));
-            Err("test emulator launcher must not be called for an external AVD".to_string())
-        }
-    }
-
-    fn png_output() -> CommandOutput {
-        let mut stdout = vec![0; 24];
-        stdout[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        stdout[12..16].copy_from_slice(b"IHDR");
-        stdout[16..20].copy_from_slice(&1080u32.to_be_bytes());
-        stdout[20..24].copy_from_slice(&1920u32.to_be_bytes());
-        CommandOutput {
-            success: true,
-            stdout,
-            stderr: Vec::new(),
-        }
-    }
-
-    #[derive(Default)]
-    struct PngRunner;
-
-    impl CommandRunner for PngRunner {
-        fn run(&self, _program: &str, _args: &[String]) -> Result<CommandOutput, String> {
-            Ok(png_output())
-        }
-
-        fn run_interruptible(
-            &self,
-            _program: &str,
-            _args: &[String],
-            cancel: &AtomicBool,
-            deadline: Instant,
-        ) -> Result<CommandOutput, String> {
-            if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
-                return Err("cancelled".to_string());
-            }
-            Ok(png_output())
-        }
-    }
-
-    struct CountingFrameSink {
-        frames: AtomicUsize,
-        errors: AtomicUsize,
-    }
-
-    impl CountingFrameSink {
-        fn new() -> Self {
-            Self {
-                frames: AtomicUsize::new(0),
-                errors: AtomicUsize::new(0),
-            }
-        }
-    }
-
-    impl AndroidFrameSink for CountingFrameSink {
-        fn frame(&self, _frame: AndroidEmulatorFrame) {
-            self.frames.fetch_add(1, Ordering::AcqRel);
-        }
-
-        fn error(&self, _message: String) {
-            self.errors.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    struct BlockingCaptureRunner {
-        block_first_capture: AtomicBool,
-        capture_started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-        release_capture: Mutex<std::sync::mpsc::Receiver<()>>,
-        capture_returned: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    }
-
-    impl CommandRunner for BlockingCaptureRunner {
-        fn run(&self, _program: &str, _args: &[String]) -> Result<CommandOutput, String> {
-            Ok(png_output())
-        }
-
-        fn run_interruptible(
-            &self,
-            _program: &str,
-            _args: &[String],
-            cancel: &AtomicBool,
-            deadline: Instant,
-        ) -> Result<CommandOutput, String> {
-            if self.block_first_capture.swap(false, Ordering::AcqRel) {
-                if let Some(sender) = self.capture_started.lock().unwrap().take() {
-                    sender.send(()).unwrap();
-                }
-                loop {
-                    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
-                        return Err("capture cancelled".to_string());
-                    }
-                    if self
-                        .release_capture
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(Duration::from_millis(5))
-                        .is_ok()
-                    {
-                        break;
-                    }
-                }
-                if let Some(sender) = self.capture_returned.lock().unwrap().take() {
-                    sender.send(()).unwrap();
-                }
-            }
-            Ok(png_output())
-        }
-    }
-
-    struct BootCancellationRunner {
-        started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    }
-
-    impl CommandRunner for BootCancellationRunner {
-        fn run(&self, _program: &str, _args: &[String]) -> Result<CommandOutput, String> {
-            if let Some(sender) = self.started.lock().unwrap().take() {
-                sender.send(()).unwrap();
-            }
-            thread::sleep(Duration::from_millis(800));
-            Ok(CommandOutput {
-                success: true,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            })
-        }
-
-        fn run_interruptible(
-            &self,
-            _program: &str,
-            _args: &[String],
-            cancel: &AtomicBool,
-            deadline: Instant,
-        ) -> Result<CommandOutput, String> {
-            if let Some(sender) = self.started.lock().unwrap().take() {
-                sender.send(()).unwrap();
-            }
-            while !cancel.load(Ordering::Acquire) && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(1));
-            }
-            Err("boot command cancelled".to_string())
-        }
-    }
-
-    fn test_android_session(ownership: AndroidEmulatorOwnership) -> Arc<AndroidSession> {
-        Arc::new(AndroidSession {
-            avd_name: "Pixel_8_API_35".to_string(),
-            device: AndroidDevice {
-                avd_name: "Pixel_8_API_35".to_string(),
-                display_name: "Pixel 8".to_string(),
-                api_level: 35,
-                family: requirements::AndroidDeviceFamily::Phone,
-                running: true,
-            },
-            serial: "emulator-5554".to_string(),
-            adb_path: PathBuf::from("adb"),
-            ownership,
-            generation: 1,
-            stream_fps: Arc::new(Mutex::new(30)),
-            fallback_fps: Arc::new(Mutex::new(2.0)),
-            gate: Arc::new(PreviewGate::new(true)),
-            stop: Arc::new(AtomicBool::new(false)),
-            input_lock: Arc::new(Mutex::new(())),
-            dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
-            emulator_process: Arc::new(Mutex::new(None)),
-            recording: Arc::new(Mutex::new(None)),
-            workers: Mutex::new(Vec::new()),
-        })
-    }
-
-    #[test]
-    fn first_preview_emits_zero_frames_when_hidden() {
-        let runner: Arc<dyn CommandRunner> = Arc::new(PngRunner);
-        let sink = CountingFrameSink::new();
-        let session = test_android_session(AndroidEmulatorOwnership::External);
-        *session.dimensions.lock().unwrap() = None;
-        session.gate.set_visible(false);
-        let cancel = AtomicBool::new(false);
-
-        assert!(!capture_and_emit(runner, &sink, &session, &cancel).unwrap());
-        assert_eq!(sink.frames.load(Ordering::Acquire), 0);
-        assert!(session.gate.is_visible() == false);
-        assert_eq!(*session.dimensions.lock().unwrap(), None);
-    }
-
-    #[test]
-    fn real_frame_loop_suppresses_an_in_flight_capture_while_hidden() {
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let (release_sender, release_receiver) = std::sync::mpsc::channel();
-        let (returned_sender, returned_receiver) = std::sync::mpsc::channel();
-        let runner: Arc<dyn CommandRunner> = Arc::new(BlockingCaptureRunner {
-            block_first_capture: AtomicBool::new(true),
-            capture_started: Mutex::new(Some(started_sender)),
-            release_capture: Mutex::new(release_receiver),
-            capture_returned: Mutex::new(Some(returned_sender)),
-        });
-        let sink = Arc::new(CountingFrameSink::new());
-        let session = test_android_session(AndroidEmulatorOwnership::External);
-        let root = tempfile::tempdir().unwrap();
-        let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
-        service.state.lock().unwrap().session = Some(session.clone());
-        let worker = spawn_frame_loop(runner, sink.clone(), session.clone());
-
-        started_receiver
-            .recv_timeout(Duration::from_millis(100))
-            .unwrap();
-        service.set_visible_sync(false).unwrap();
-        release_sender.send(()).unwrap();
-        returned_receiver
-            .recv_timeout(Duration::from_millis(100))
-            .unwrap();
-        assert_eq!(sink.frames.load(Ordering::Acquire), 0);
-
-        let parked_deadline = Instant::now() + Duration::from_millis(100);
-        while session.gate.parked_workers() == 0 && Instant::now() < parked_deadline {
-            thread::yield_now();
-        }
-        assert_eq!(session.gate.parked_workers(), 1);
-
-        service.set_visible_sync(true).unwrap();
-        let frame_deadline = Instant::now() + Duration::from_millis(500);
-        while sink.frames.load(Ordering::Acquire) == 0 && Instant::now() < frame_deadline {
-            thread::yield_now();
-        }
-        assert!(sink.frames.load(Ordering::Acquire) >= 1);
-        assert_eq!(sink.errors.load(Ordering::Acquire), 0);
-
-        session.gate.stop_and_wake(&session.stop);
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn detach_cancels_boot_polling_without_waiting_for_command_deadline() {
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let runner = Arc::new(BootCancellationRunner {
-            started: Mutex::new(Some(started_sender)),
-        });
-        let root = tempfile::tempdir().unwrap();
-        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
-        service.runner = runner.clone();
-        let stop = service.session_cancel.clone();
-        let process = Arc::new(Mutex::new(None));
-        let runner_for_thread = runner.clone();
-        let stop_for_thread = stop.clone();
-        let result = thread::spawn(move || {
-            wait_for_boot(
-                runner_for_thread.as_ref(),
-                "adb",
-                "Pixel_8_API_35",
-                &process,
-                stop_for_thread.as_ref(),
-                Instant::now() + Duration::from_secs(2),
-            )
-        });
-        started_receiver
-            .recv_timeout(Duration::from_millis(100))
-            .unwrap();
-        let cancelled_at = Instant::now();
-        assert_eq!(
-            service.detach_sync().unwrap_err(),
-            "No Android emulator is attached."
-        );
-        assert_eq!(
-            result.join().unwrap().unwrap_err(),
-            "Android emulator boot cancelled"
-        );
-        assert!(
-            cancelled_at.elapsed() < Duration::from_millis(700),
-            "boot cancellation exceeded its interruptibility budget"
-        );
-    }
-
-    #[test]
-    fn switching_owned_avd_removes_ledger_before_external_reentry() {
-        let root = tempfile::tempdir().unwrap();
-        let runner = Arc::new(RecordingRunner::default());
-        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
-        service.runner = runner.clone();
-        service.ownership.mark_booted("Pixel_8_API_35").unwrap();
-        service.state.lock().unwrap().session =
-            Some(test_android_session(AndroidEmulatorOwnership::Verboo));
-
-        service.stop_current_locked(true).unwrap();
-
-        assert_eq!(
-            service.ownership.phase("Pixel_8_API_35"),
-            None,
-            "switch cleanup must remove the old owned AVD from the ledger"
-        );
-        assert_eq!(
-            ownership_for_running_avd(&service.ownership, "Pixel_8_API_35"),
-            AndroidEmulatorOwnership::External,
-            "a reappearing external AVD must not inherit stale Verboo ownership"
-        );
-        let kill_count_after_switch = runner
-            .commands
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, args)| args.ends_with(&["emu".to_string(), "kill".to_string()]))
-            .count();
-        assert_eq!(kill_count_after_switch, 1);
-
-        service.state.lock().unwrap().session = Some(test_android_session(
-            ownership_for_running_avd(&service.ownership, "Pixel_8_API_35"),
-        ));
-        service.end_sync().unwrap();
-        let kill_count_after_external_end = runner
-            .commands
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, args)| args.ends_with(&["emu".to_string(), "kill".to_string()]))
-            .count();
-        assert_eq!(kill_count_after_external_end, 1);
-    }
-}
-
-pub(crate) fn is_boot_completed(output: &str) -> bool {
-    output.trim() == "1"
-}
-
-pub(crate) fn emulator_launch_args(avd_name: &str) -> Vec<String> {
-    vec![
-        "-avd".to_string(),
-        avd_name.to_string(),
-        "-no-window".to_string(),
-        "-no-boot-anim".to_string(),
-        "-no-audio".to_string(),
-        "-no-snapshot-save".to_string(),
-    ]
-}
-
-pub(crate) fn parse_png_dimensions(png: &[u8]) -> Result<(u32, u32), String> {
-    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if png.len() < 24 || &png[..8] != PNG_SIGNATURE || &png[12..16] != b"IHDR" {
-        return Err("adb returned an invalid PNG frame".to_string());
-    }
-    let width = u32::from_be_bytes(png[16..20].try_into().expect("PNG width bytes"));
-    let height = u32::from_be_bytes(png[20..24].try_into().expect("PNG height bytes"));
-    if width == 0 || height == 0 {
-        return Err("adb returned an empty PNG frame".to_string());
-    }
-    Ok((width, height))
-}
-
-pub(crate) fn should_shutdown(ownership: AndroidEmulatorOwnership) -> bool {
-    matches!(ownership, AndroidEmulatorOwnership::Verboo)
-}
-
+#[path = "session/tests.rs"]
+mod tests;
 impl AndroidEmulatorService {
     pub(crate) fn bind_app(&self, app: AppHandle) {
         *self
@@ -1117,12 +711,46 @@ impl AndroidEmulatorService {
             .clone()
     }
 
+    fn replacement_session(
+        &self,
+        current: &Arc<AndroidSession>,
+        generation: u64,
+        mode: PreviewMode,
+        stream_fps: u16,
+        fallback_fps: f64,
+    ) -> Arc<AndroidSession> {
+        Arc::new(AndroidSession {
+            avd_name: current.avd_name.clone(),
+            device: current.device.clone(),
+            serial: current.serial.clone(),
+            adb_path: current.adb_path.clone(),
+            ownership: current.ownership,
+            generation,
+            stream_fps: Arc::new(Mutex::new(stream_fps)),
+            fallback_fps: Arc::new(Mutex::new(fallback_fps)),
+            gate: Arc::new(PreviewGate::new(
+                self.desired_visibility.load(Ordering::Acquire),
+            )),
+            stop: Arc::new(AtomicBool::new(false)),
+            input_lock: current.input_lock.clone(),
+            dimensions: Arc::new(Mutex::new(None)),
+            emulator_process: current.emulator_process.clone(),
+            recording: current.recording.clone(),
+            workers: Mutex::new(Vec::new()),
+            emulator_pid: current.emulator_pid,
+            gpu_software: current.gpu_software,
+            preview: Arc::new(PreviewRuntime::new(mode, generation)),
+            first_preview: Arc::new(FirstPreviewGate::new()),
+        })
+    }
+
     pub(crate) fn attach_sync(
         &self,
         app: AppHandle,
         avd_name: String,
         stream_fps: u16,
         fallback_fps: f64,
+        preview_transport: Option<PreviewTransport>,
     ) -> Result<AndroidEmulatorSession, String> {
         let sink: Arc<dyn AndroidFrameSink> = Arc::new(TauriFrameSink { app: app.clone() });
         let launcher = SystemEmulatorLauncher;
@@ -1130,10 +758,22 @@ impl AndroidEmulatorService {
             Some(app),
             sink,
             &launcher,
+            Arc::new(SystemPreviewFactoryProvider),
+            Arc::new(SystemLegacyPreviewBackendFactory),
             avd_name,
             stream_fps,
             fallback_fps,
+            preview_transport,
         )
+    }
+
+    fn validate_stream_fps_for_mode(mode: PreviewMode, fps: u16) -> Result<u16, String> {
+        match mode {
+            PreviewMode::LegacyPrimary => validate_stream_fps(fps),
+            PreviewMode::Vaf1 | PreviewMode::LegacyFallback => {
+                AndroidStreamFps::try_from(fps).map(AndroidStreamFps::get)
+            }
+        }
     }
 
     fn attach_sync_with_sink(
@@ -1141,25 +781,46 @@ impl AndroidEmulatorService {
         app: Option<AppHandle>,
         sink: Arc<dyn AndroidFrameSink>,
         launcher: &dyn EmulatorLauncher,
+        preview_provider: Arc<dyn PreviewFactoryProvider>,
+        legacy_factory: Arc<dyn LegacyPreviewBackendFactory>,
         avd_name: String,
         stream_fps: u16,
         fallback_fps: f64,
+        preview_transport: Option<PreviewTransport>,
     ) -> Result<AndroidEmulatorSession, String> {
+        let session_ticket = self.session_cancel.ticket();
         self.reject_if_exiting()?;
-        let stream_fps = validate_stream_fps(stream_fps)?;
+        let mode = PreviewMode::from_wire(preview_transport);
+        let stream_fps = Self::validate_stream_fps_for_mode(mode, stream_fps)?;
         let fallback_fps = validate_fallback_fps(fallback_fps)?;
         let _operation = self
             .operation_lock
             .lock()
             .expect("Android emulator operation lock poisoned");
         self.reject_if_exiting()?;
-        self.session_cancel.store(false, Ordering::Release);
+        if !self.session_cancel.reset_if_unchanged(session_ticket) {
+            return Err("Android emulator attach was cancelled".to_string());
+        }
+        #[cfg(test)]
+        self.session_cancel.pause_after_reset();
         if let Some(app) = app {
             self.bind_app(app);
         }
 
-        if let Some(current) = self.current_session_option() {
-            if current.avd_name == avd_name {
+        let current = { self.current_session_option() };
+        #[cfg(test)]
+        assert!(
+            self.state.try_lock().is_ok(),
+            "Android state guard crossed the same-AVD replacement boundary"
+        );
+        let mut reserved_generation = None;
+        if let Some(current) = current {
+            if current.avd_name == avd_name
+                && current.preview.mode == mode
+                && current
+                    .preview
+                    .is_operational(current.first_preview.as_ref())
+            {
                 *current
                     .stream_fps
                     .lock()
@@ -1171,7 +832,49 @@ impl AndroidEmulatorService {
                 current.gate.notify();
                 return Ok(current.summary());
             }
+            if current.avd_name == avd_name {
+                let generation = next_preview_generation(self.next_generation.as_ref())
+                    .map_err(|_| "Android preview generation exhausted".to_string())?;
+                let replacement =
+                    self.replacement_session(&current, generation, mode, stream_fps, fallback_fps);
+                if self.session_cancel.is_cancelled() {
+                    return Err("Android emulator attach was cancelled".to_string());
+                }
+                self.stop_preview_workers(&current);
+                if self
+                    .session_cancel
+                    .run_if_active(|| {
+                        self.state
+                            .lock()
+                            .expect("Android emulator state poisoned")
+                            .session = Some(replacement.clone());
+                    })
+                    .is_none()
+                {
+                    return Err("Android emulator attach was cancelled".to_string());
+                }
+                sink.lifecycle(AndroidEmulatorStartupStage::GeneratingFirstPreview);
+                let start = start_preview_for_session(
+                    self.runner.clone(),
+                    replacement.clone(),
+                    sink.clone(),
+                    preview_provider,
+                    legacy_factory,
+                );
+                finish_started_preview(sink.as_ref(), &replacement, start)
+                    .map_err(|error| format!("Android emulator preview failed: {error:?}"))?;
+                return Ok(replacement.summary());
+            }
+            let generation = next_preview_generation(self.next_generation.as_ref())
+                .map_err(|_| "Android preview generation exhausted".to_string())?;
+            if self.session_cancel.is_cancelled() {
+                return Err("Android emulator attach was cancelled".to_string());
+            }
             self.stop_current_locked(true)?;
+            if self.session_cancel.is_cancelled() {
+                return Err("Android emulator attach was cancelled".to_string());
+            }
+            reserved_generation = Some(generation);
         }
 
         let sdk_path = sdk::resolve_sdk_path(&self.app_data_dir);
@@ -1179,63 +882,111 @@ impl AndroidEmulatorService {
         if !available.iter().any(|candidate| candidate == &avd_name) {
             return Err(format!("Android AVD is not available: {avd_name}"));
         }
+        let ledger_avd_name = avd_name.clone();
 
         let adb_path = adb_path(&sdk_path);
         let adb = adb_path.to_string_lossy().into_owned();
-        let generation = self
-            .next_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+        let generation = match reserved_generation {
+            Some(generation) => generation,
+            None => next_preview_generation(self.next_generation.as_ref())
+                .map_err(|_| "Android preview generation exhausted".to_string())?,
+        };
         sink.lifecycle(AndroidEmulatorStartupStage::Booting);
 
         let existing_serial = find_running_serial(
             self.runner.as_ref(),
             &adb,
             &avd_name,
-            self.session_cancel.as_ref(),
+            self.session_cancel.flag(),
             Instant::now() + ADB_COMMAND_TIMEOUT,
         );
-        if self.session_cancel.load(Ordering::Acquire) {
+        if self.session_cancel.is_cancelled() {
             return Err("Android emulator attach was cancelled".to_string());
         }
-        let process = Arc::new(Mutex::new(None));
         let (ownership, boot_requested) =
             attach_ownership(&self.ownership, &avd_name, existing_serial.as_deref());
-        if boot_requested {
-            self.ownership.mark_boot_requested(&avd_name)?;
+        sink.lifecycle(AndroidEmulatorStartupStage::WaitingForDisplay);
+        let (serial, process, emulator_pid, gpu_software) = if boot_requested {
             let emulator = emulator_path(&sdk_path);
-            let child = match launcher.spawn(&emulator, &avd_name) {
-                Ok(child) => child,
-                Err(error) => {
-                    let _ = self.ownership.remove(&avd_name);
+            let attempts =
+                SystemOwnedBootAttempts::new(self.runner.clone(), launcher, emulator, adb.clone());
+            let mut result = match boot_owned_with_attempts(
+                self.ownership.as_ref(),
+                &attempts,
+                &avd_name,
+                self.session_cancel.as_ref(),
+            ) {
+                Ok(result) => result,
+                Err(OwnedBootError::Cancelled) => {
+                    let error = "Android emulator boot cancelled".to_string();
+                    sink.error(error.clone());
+                    return Err(error);
+                }
+                Err(OwnedBootError::Failed(error)) => {
+                    sink.error(error.clone());
                     return Err(error);
                 }
             };
-            *process.lock().expect("Android emulator process poisoned") = Some(child);
-        }
-
-        sink.lifecycle(AndroidEmulatorStartupStage::WaitingForDisplay);
-        let serial = match wait_for_boot(
-            self.runner.as_ref(),
-            &adb,
-            &avd_name,
-            &process,
-            self.session_cancel.as_ref(),
-            Instant::now() + BOOT_TIMEOUT,
-        ) {
-            Ok(serial) => serial,
-            Err(error) => {
-                if boot_requested {
-                    let _ = terminate_process(&process);
-                    let _ = self.ownership.remove(&avd_name);
+            result = match probe_owned_surface_flinger(
+                self.runner.as_ref(),
+                &attempts,
+                self.ownership.as_ref(),
+                &avd_name,
+                &adb,
+                result,
+                self.session_cancel.flag(),
+            ) {
+                Ok(result) => result,
+                Err(OwnedBootError::Cancelled) => {
+                    let error = "Android emulator attach was cancelled".to_string();
+                    sink.error(error.clone());
+                    return Err(error);
                 }
+                Err(OwnedBootError::Failed(error)) => {
+                    sink.error(error.clone());
+                    return Err(error);
+                }
+            };
+            if self.session_cancel.is_cancelled() {
+                let _ = attempts.terminate(&result);
+                let _ = self.ownership.remove(&avd_name);
+                let error = "Android emulator attach was cancelled".to_string();
                 sink.error(error.clone());
                 return Err(error);
             }
+            (
+                result.serial,
+                result.process,
+                Some(result.pid),
+                result.gpu_software,
+            )
+        } else {
+            let process = Arc::new(Mutex::new(None));
+            let serial = match wait_for_boot(
+                self.runner.as_ref(),
+                &adb,
+                &avd_name,
+                &process,
+                self.session_cancel.flag(),
+                Instant::now() + BOOT_TIMEOUT,
+            ) {
+                Ok(serial) => serial,
+                Err(error) => {
+                    sink.error(error.clone());
+                    return Err(error);
+                }
+            };
+            (serial, process, None, false)
         };
 
-        if ownership == AndroidEmulatorOwnership::Verboo {
-            self.ownership.mark_booted(&avd_name)?;
+        if ownership == AndroidEmulatorOwnership::Verboo && !boot_requested {
+            match self
+                .session_cancel
+                .run_if_active(|| self.ownership.mark_booted(&avd_name))
+            {
+                None => return Err("Android emulator attach was cancelled".to_string()),
+                Some(result) => result?,
+            }
         }
 
         let device = AndroidDevice {
@@ -1265,67 +1016,45 @@ impl AndroidEmulatorService {
             emulator_process: process,
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
+            emulator_pid,
+            gpu_software,
+            preview: Arc::new(PreviewRuntime::new(mode, generation)),
+            first_preview: Arc::new(FirstPreviewGate::new()),
         });
-        self.state
-            .lock()
-            .expect("Android emulator state poisoned")
-            .session = Some(session.clone());
-
-        sink.lifecycle(AndroidEmulatorStartupStage::GeneratingFirstPreview);
-        loop {
-            if self.session_cancel.load(Ordering::Acquire)
-                || !session.gate.wait_until_visible(&session.stop)
-            {
-                let avd_name = session.avd_name.clone();
-                let _ = self.take_session();
-                let _ = self.cleanup_session(session, true);
-                if boot_requested {
-                    let _ = self.ownership.remove(&avd_name);
-                }
-                return Err("Android emulator attach was cancelled".to_string());
+        #[cfg(test)]
+        self.session_cancel.pause_before_publish();
+        if self
+            .session_cancel
+            .run_if_active(|| {
+                self.state
+                    .lock()
+                    .expect("Android emulator state poisoned")
+                    .session = Some(session.clone());
+            })
+            .is_none()
+        {
+            let _ = self.cleanup_session(session.clone(), boot_requested);
+            if boot_requested {
+                let _ = self.ownership.remove(&ledger_avd_name);
             }
-            match capture_and_emit(
-                self.runner.clone(),
-                sink.as_ref(),
-                &session,
-                self.session_cancel.as_ref(),
-            ) {
-                Ok(true) => break,
-                Ok(false) if self.session_cancel.load(Ordering::Acquire) => {
-                    let avd_name = session.avd_name.clone();
-                    let _ = self.take_session();
-                    let _ = self.cleanup_session(session, true);
-                    if boot_requested {
-                        let _ = self.ownership.remove(&avd_name);
-                    }
-                    return Err("Android emulator attach was cancelled".to_string());
-                }
-                Ok(false) => continue,
-                Err(error) => {
-                    let avd_name = session.avd_name.clone();
-                    let _ = self.take_session();
-                    let cleanup_error = self.cleanup_session(session, true).err();
-                    if boot_requested {
-                        let _ = self.ownership.remove(&avd_name);
-                    }
-                    if let Some(cleanup_error) = cleanup_error {
-                        sink.error(format!("{error}; cleanup failed: {cleanup_error}"));
-                    } else {
-                        sink.error(error.clone());
-                    }
-                    return Err(error);
-                }
-            }
+            return Err("Android emulator attach was cancelled".to_string());
         }
-
-        sink.lifecycle(AndroidEmulatorStartupStage::PreparingInteraction);
-        sink.lifecycle(AndroidEmulatorStartupStage::Ready);
-        let worker = spawn_frame_loop(self.runner.clone(), sink, session.clone());
-        session
-            .workers
-            .lock()
-            .expect("Android emulator workers poisoned")
-            .push(worker);
+        sink.lifecycle(AndroidEmulatorStartupStage::GeneratingFirstPreview);
+        let start = start_preview_for_session(
+            self.runner.clone(),
+            session.clone(),
+            sink.clone(),
+            preview_provider,
+            legacy_factory,
+        );
+        if let Err(error) = finish_started_preview(sink.as_ref(), &session, start) {
+            let _ = self.take_session();
+            let _ = self.cleanup_session(session, true);
+            if boot_requested {
+                let _ = self.ownership.remove(&ledger_avd_name);
+            }
+            return Err(format!("Android emulator preview failed: {error:?}"));
+        }
         Ok(session.summary())
     }
 
@@ -1333,18 +1062,30 @@ impl AndroidEmulatorService {
         self.desired_visibility.store(visible, Ordering::Release);
         if let Some(session) = self.current_session_option() {
             session.gate.set_visible(visible);
+            session.preview.send_control(PreviewControl {
+                visible,
+                stop: false,
+            });
+            if !visible {
+                session.preview.slot.clear();
+            }
         }
         Ok(())
     }
 
     pub(crate) fn set_stream_rate_sync(&self, stream_fps: u16) -> Result<u16, String> {
-        let stream_fps = validate_stream_fps(stream_fps)?;
         let session = self.current_session()?;
+        let stream_fps = Self::validate_stream_fps_for_mode(session.preview.mode, stream_fps)?;
         *session
             .stream_fps
             .lock()
             .expect("Android stream rate poisoned") = stream_fps;
         session.gate.notify();
+        session.gate.refresh_control();
+        session.preview.send_control(PreviewControl {
+            visible: session.gate.is_visible(),
+            stop: false,
+        });
         Ok(stream_fps)
     }
 
@@ -1356,13 +1097,18 @@ impl AndroidEmulatorService {
             .lock()
             .expect("Android fallback rate poisoned") = fallback_fps;
         session.gate.notify();
+        session.gate.refresh_control();
+        session.preview.send_control(PreviewControl {
+            visible: session.gate.is_visible(),
+            stop: false,
+        });
         Ok(fallback_fps)
     }
 
     fn request_session_cancel(&self) {
-        self.session_cancel.store(true, Ordering::Release);
+        self.session_cancel.cancel();
         if let Some(session) = self.current_session_option() {
-            session.gate.stop_and_wake(&session.stop);
+            self.stop_preview_workers(&session);
         }
     }
 
@@ -1419,6 +1165,29 @@ impl AndroidEmulatorService {
         Ok(())
     }
 
+    fn stop_preview_workers(&self, session: &Arc<AndroidSession>) {
+        session.gate.stop_and_wake(&session.stop);
+        session.preview.send_control(PreviewControl {
+            visible: false,
+            stop: true,
+        });
+        session.preview.slot.clear();
+        session.first_preview.fail(FirstPreviewError::Cancelled);
+        let workers = std::mem::take(
+            &mut *session
+                .workers
+                .lock()
+                .expect("Android emulator workers poisoned"),
+        );
+        for worker in workers {
+            let _ = worker.join();
+        }
+        session
+            .preview
+            .health
+            .terminal(FirstPreviewError::Cancelled);
+    }
+
     fn cleanup_session(
         &self,
         session: Arc<AndroidSession>,
@@ -1435,24 +1204,8 @@ impl AndroidEmulatorService {
     ) -> Result<(), String> {
         let recording_deadline =
             deadline.unwrap_or_else(|| Instant::now() + ANDROID_CLEANUP_BUDGET);
+        self.stop_preview_workers(&session);
         let _ = self.finalize_recording_for_session(&session, recording_deadline);
-        session.gate.stop_and_wake(&session.stop);
-        let workers = std::mem::take(
-            &mut *session
-                .workers
-                .lock()
-                .expect("Android emulator workers poisoned"),
-        );
-        if let Some(deadline) = deadline {
-            while workers.iter().any(|worker| !worker.is_finished()) && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
-        }
-        for worker in workers {
-            if deadline.is_none() || worker.is_finished() {
-                let _ = worker.join();
-            }
-        }
         if terminate_owned && should_shutdown(session.ownership) {
             shutdown_owned_emulator(self.runner.as_ref(), &session, deadline)?;
         }
@@ -1477,365 +1230,5 @@ impl AndroidEmulatorService {
                 }
             }
         }
-    }
-}
-
-fn validate_stream_fps(fps: u16) -> Result<u16, String> {
-    if (MIN_STREAM_FPS..=MAX_STREAM_FPS).contains(&fps) {
-        Ok(fps)
-    } else {
-        Err(format!(
-            "Android stream rate must be between {MIN_STREAM_FPS} and {MAX_STREAM_FPS} fps"
-        ))
-    }
-}
-
-fn validate_fallback_fps(fps: f64) -> Result<f64, String> {
-    if fps.is_finite() && (MIN_FALLBACK_FPS..=MAX_FALLBACK_FPS).contains(&fps) {
-        Ok(fps)
-    } else {
-        Err(format!(
-            "Android fallback rate must be between {MIN_FALLBACK_FPS} and {MAX_FALLBACK_FPS} fps"
-        ))
-    }
-}
-
-fn ownership_for_running_avd(ledger: &OwnershipLedger, avd_name: &str) -> AndroidEmulatorOwnership {
-    if ledger.phase(avd_name).is_some() {
-        AndroidEmulatorOwnership::Verboo
-    } else {
-        AndroidEmulatorOwnership::External
-    }
-}
-
-fn attach_ownership(
-    ledger: &OwnershipLedger,
-    avd_name: &str,
-    existing_serial: Option<&str>,
-) -> (AndroidEmulatorOwnership, bool) {
-    match existing_serial {
-        Some(_) => (ownership_for_running_avd(ledger, avd_name), false),
-        None => (AndroidEmulatorOwnership::Verboo, true),
-    }
-}
-
-fn emit_lifecycle(app: &AppHandle, stage: AndroidEmulatorStartupStage) {
-    let _ = app.emit(LIFECYCLE_EVENT, AndroidEmulatorLifecycleEvent { stage });
-}
-
-pub(crate) fn emit_error(app: &AppHandle, message: String) {
-    let _ = app.emit(ERROR_EVENT, AndroidEmulatorError { message });
-}
-
-pub(crate) trait EmulatorLauncher: Send + Sync {
-    fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String>;
-}
-
-pub(crate) struct SystemEmulatorLauncher;
-
-impl EmulatorLauncher for SystemEmulatorLauncher {
-    fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String> {
-        spawn_emulator(path, avd_name)
-    }
-}
-
-fn spawn_emulator(path: &Path, avd_name: &str) -> Result<Child, String> {
-    let mut command = Command::new(path);
-    command.args(emulator_launch_args(avd_name));
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
-    crate::services::cli_spawn::apply_creation_flags(&mut command);
-    crate::services::child_signal::configure_process_group(&mut command);
-    command
-        .spawn()
-        .map_err(|error| format!("failed to start Android emulator: {error}"))
-}
-
-fn find_running_serial(
-    runner: &dyn CommandRunner,
-    adb: &str,
-    avd_name: &str,
-    cancel: &AtomicBool,
-    deadline: Instant,
-) -> Option<String> {
-    let output = runner
-        .run_interruptible(adb, &["devices".to_string()], cancel, deadline)
-        .ok()
-        .filter(|output| output.success)?;
-    for serial in requirements::parse_adb_devices(&String::from_utf8_lossy(&output.stdout)) {
-        let Ok(name_output) = runner.run_interruptible(
-            adb,
-            &[
-                "-s".to_string(),
-                serial.clone(),
-                "emu".to_string(),
-                "avd".to_string(),
-                "name".to_string(),
-            ],
-            cancel,
-            deadline,
-        ) else {
-            continue;
-        };
-        if name_output.success
-            && requirements::parse_avd_name_from_emu(&String::from_utf8_lossy(&name_output.stdout))
-                .as_deref()
-                == Some(avd_name)
-        {
-            return Some(serial);
-        }
-    }
-    None
-}
-
-fn wait_for_boot(
-    runner: &dyn CommandRunner,
-    adb: &str,
-    avd_name: &str,
-    process: &Arc<Mutex<Option<Child>>>,
-    stop: &AtomicBool,
-    deadline: Instant,
-) -> Result<String, String> {
-    loop {
-        if stop.load(Ordering::Acquire) {
-            let _ = terminate_process(process);
-            return Err("Android emulator boot cancelled".to_string());
-        }
-        if let Some(serial) = find_running_serial(runner, adb, avd_name, stop, deadline) {
-            let output = runner.run_interruptible(
-                adb,
-                &[
-                    "-s".to_string(),
-                    serial.clone(),
-                    "shell".to_string(),
-                    "getprop".to_string(),
-                    "sys.boot_completed".to_string(),
-                ],
-                stop,
-                deadline,
-            );
-            if let Ok(output) = output {
-                if output.success && is_boot_completed(&String::from_utf8_lossy(&output.stdout)) {
-                    return Ok(serial);
-                }
-            }
-        }
-        if process_exited(process)? {
-            return Err(format!(
-                "Android emulator process exited before {avd_name} booted"
-            ));
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for Android AVD {avd_name} to boot"
-            ));
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-}
-
-fn process_exited(process: &Arc<Mutex<Option<Child>>>) -> Result<bool, String> {
-    let mut process = process
-        .lock()
-        .map_err(|_| "Android emulator process lock poisoned".to_string())?;
-    let Some(process) = process.as_mut() else {
-        return Ok(false);
-    };
-    process
-        .try_wait()
-        .map(|status| status.is_some())
-        .map_err(|error| error.to_string())
-}
-
-fn terminate_process(process: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
-    let mut process = process
-        .lock()
-        .map_err(|_| "Android emulator process lock poisoned".to_string())?;
-    let Some(process) = process.as_mut() else {
-        return Ok(());
-    };
-    if process
-        .try_wait()
-        .map_err(|error| error.to_string())?
-        .is_none()
-    {
-        crate::services::child_signal::terminate_process_group(process)?;
-        let _ = process.wait();
-    }
-    Ok(())
-}
-
-fn shutdown_owned_emulator(
-    runner: &dyn CommandRunner,
-    session: &AndroidSession,
-    deadline: Option<Instant>,
-) -> Result<(), String> {
-    let mut process = session
-        .emulator_process
-        .lock()
-        .map_err(|_| "Android emulator process lock poisoned".to_string())?;
-    if let Some(process) = process.as_mut() {
-        if process
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            crate::services::child_signal::terminate_process_group(process)?;
-            let _ = process.wait();
-        }
-        return Ok(());
-    }
-    drop(process);
-    let args = vec![
-        "-s".to_string(),
-        session.serial.clone(),
-        "emu".to_string(),
-        "kill".to_string(),
-    ];
-    let adb = session.adb_path.to_string_lossy().into_owned();
-    let output = if let Some(deadline) = deadline {
-        let cancel = AtomicBool::new(false);
-        runner.run_interruptible(&adb, &args, &cancel, deadline)?
-    } else {
-        runner.run(&adb, &args)?
-    };
-    if output.success {
-        Ok(())
-    } else {
-        Err(command_error("adb emu kill", &output))
-    }
-}
-
-fn capture_and_emit(
-    runner: Arc<dyn CommandRunner>,
-    sink: &dyn AndroidFrameSink,
-    session: &AndroidSession,
-    cancel: &AtomicBool,
-) -> Result<bool, String> {
-    let bytes = capture_png(
-        runner.as_ref(),
-        session.adb_path.to_string_lossy().as_ref(),
-        &session.serial,
-        cancel,
-        Instant::now() + ADB_COMMAND_TIMEOUT,
-    )?;
-    let (width, height) = parse_png_dimensions(&bytes)?;
-    if cancel.load(Ordering::Acquire) {
-        return Ok(false);
-    }
-    let frame = AndroidEmulatorFrame {
-        png_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        width,
-        height,
-        generation: session.generation,
-    };
-    Ok(session.gate.emit_if_visible(&session.stop, || {
-        *session
-            .dimensions
-            .lock()
-            .expect("Android frame dimensions poisoned") = Some((width, height));
-        sink.frame(frame);
-    }))
-}
-
-fn capture_png(
-    runner: &dyn CommandRunner,
-    adb: &str,
-    serial: &str,
-    cancel: &AtomicBool,
-    deadline: Instant,
-) -> Result<Vec<u8>, String> {
-    let output = runner.run_interruptible(
-        adb,
-        &[
-            "-s".to_string(),
-            serial.to_string(),
-            "exec-out".to_string(),
-            "screencap".to_string(),
-            "-p".to_string(),
-        ],
-        cancel,
-        deadline,
-    )?;
-    if output.success {
-        Ok(output.stdout)
-    } else {
-        Err(command_error("adb screencap", &output))
-    }
-}
-
-fn spawn_frame_loop(
-    runner: Arc<dyn CommandRunner>,
-    sink: Arc<dyn AndroidFrameSink>,
-    session: Arc<AndroidSession>,
-) -> JoinHandle<()> {
-    thread::Builder::new()
-        .name(format!("verboo-android-frame-{}", session.generation))
-        .spawn(move || loop {
-            if !session.gate.wait_until_visible(&session.stop) {
-                break;
-            }
-            let started = Instant::now();
-            let capture = capture_png(
-                runner.as_ref(),
-                session.adb_path.to_string_lossy().as_ref(),
-                &session.serial,
-                &session.stop,
-                Instant::now() + ADB_COMMAND_TIMEOUT,
-            )
-            .and_then(|bytes| {
-                let dimensions = parse_png_dimensions(&bytes)?;
-                Ok((bytes, dimensions))
-            });
-            let rate = match capture {
-                Ok((bytes, (width, height))) => {
-                    session.gate.emit_if_visible(&session.stop, || {
-                        *session
-                            .dimensions
-                            .lock()
-                            .expect("Android frame dimensions poisoned") = Some((width, height));
-                        sink.frame(AndroidEmulatorFrame {
-                            png_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                            width,
-                            height,
-                            generation: session.generation,
-                        });
-                    });
-                    f64::from(
-                        *session
-                            .stream_fps
-                            .lock()
-                            .expect("Android stream rate poisoned"),
-                    )
-                }
-                Err(_) if session.stop.load(Ordering::Acquire) => break,
-                Err(error) => {
-                    sink.error(error);
-                    *session
-                        .fallback_fps
-                        .lock()
-                        .expect("Android fallback rate poisoned")
-                }
-            };
-            let interval = Duration::from_secs_f64(1.0 / rate.max(0.1));
-            let remaining = interval.saturating_sub(started.elapsed());
-            if !session
-                .gate
-                .wait_for_visible_interval(&session.stop, remaining)
-                && session.stop.load(Ordering::Acquire)
-            {
-                break;
-            }
-        })
-        .expect("Android frame worker thread must start")
-}
-
-fn command_error(command: &str, output: &CommandOutput) -> String {
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if detail.is_empty() {
-        format!("{command} failed")
-    } else {
-        format!("{command} failed: {detail}")
     }
 }
