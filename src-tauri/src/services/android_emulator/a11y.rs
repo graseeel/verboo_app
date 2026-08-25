@@ -8,7 +8,7 @@ use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use serde::{Deserialize, Serialize};
 
-use super::input::{emit_presence, PresenceTarget};
+use super::input::{emit_presence, InputOrigin, PresenceTarget};
 use super::session::AndroidSession;
 use super::AndroidEmulatorService;
 
@@ -297,6 +297,7 @@ impl AndroidEmulatorService {
     pub(crate) fn system_action_sync(
         &self,
         action: AndroidEmulatorSystemAction,
+        origin: InputOrigin,
     ) -> Result<(), String> {
         let session = self.current_session()?;
         let _guard = session
@@ -304,13 +305,16 @@ impl AndroidEmulatorService {
             .lock()
             .expect("Android emulator input queue poisoned");
         let target = PresenceTarget::None;
-        emit_presence(
-            &self.app,
-            session.generation,
-            "systemAction",
-            &target,
-            "start",
-        );
+        let emit_agent_presence = origin == InputOrigin::Agent;
+        if emit_agent_presence {
+            emit_presence(
+                &self.app,
+                session.generation,
+                "systemAction",
+                &target,
+                "start",
+            );
+        }
         let result = run_checked(
             self,
             &session,
@@ -318,13 +322,15 @@ impl AndroidEmulatorService {
             action.presence_name(),
         )
         .map(|_| ());
-        emit_presence(
-            &self.app,
-            session.generation,
-            "systemAction",
-            &target,
-            "clear",
-        );
+        if emit_agent_presence {
+            emit_presence(
+                &self.app,
+                session.generation,
+                "systemAction",
+                &target,
+                "clear",
+            );
+        }
         result
     }
 
@@ -522,6 +528,42 @@ mod tests {
     }
 
     #[test]
+    fn system_action_emits_presence_only_for_agent_origin() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = Arc::new(AccessibilityRunner::default());
+        service.state.lock().unwrap().session = Some(test_session());
+
+        super::super::input::take_presence_log();
+        service
+            .system_action_sync(AndroidEmulatorSystemAction::Back, InputOrigin::Agent)
+            .unwrap();
+        assert_eq!(
+            super::super::input::take_presence_log(),
+            ["start:systemAction", "clear:systemAction"]
+        );
+
+        service
+            .system_action_sync(AndroidEmulatorSystemAction::Home, InputOrigin::Manual)
+            .unwrap();
+        assert!(
+            super::super::input::take_presence_log().is_empty(),
+            "manual systemAction must not emit presence"
+        );
+
+        service
+            .system_action_sync(
+                AndroidEmulatorSystemAction::Recents,
+                InputOrigin::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            super::super::input::take_presence_log(),
+            ["start:systemAction", "clear:systemAction"]
+        );
+    }
+
+    #[test]
     fn service_snapshot_and_system_action_use_the_real_interruptible_adb_path() {
         let root = tempfile::tempdir().unwrap();
         let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
@@ -532,7 +574,7 @@ mod tests {
         let snapshot = service.accessibility_snapshot_sync().unwrap();
         assert_eq!(snapshot.nodes.len(), 2);
         service
-            .system_action_sync(AndroidEmulatorSystemAction::Back)
+            .system_action_sync(AndroidEmulatorSystemAction::Back, InputOrigin::default())
             .unwrap();
 
         let calls = runner.calls.lock().unwrap();

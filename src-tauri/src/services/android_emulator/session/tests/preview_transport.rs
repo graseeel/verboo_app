@@ -413,6 +413,42 @@ fn vaf1_first_slot_and_frame_ready_precede_ready_and_attach_response() {
 }
 
 #[test]
+fn vaf1_published_frame_writes_dimensions_so_tap_can_normalize() {
+    let root = tempfile::tempdir().unwrap();
+    let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    service.runner = Arc::new(RecordingRunner::default());
+    let sink = Arc::new(OrderedAttachSink::default());
+    let provider = Arc::new(OneFramePreviewFactoryProvider::new(rgb_image(2, 3)));
+    let legacy = Arc::new(RecordingLegacyPreviewBackendFactory::new(sink.order_arc()));
+    let session = test_android_session_for_mode(
+        AndroidEmulatorOwnership::Verboo,
+        PreviewMode::Vaf1,
+        7,
+        Some(4242),
+    );
+    *session.dimensions.lock().unwrap() = None;
+    *session.stream_fps.lock().unwrap() = 60;
+    let start = start_preview_for_session(
+        service.runner.clone(),
+        session.clone(),
+        sink.clone(),
+        provider,
+        legacy,
+    );
+    finish_started_preview(sink.as_ref(), &session, start).unwrap();
+    assert_eq!(
+        *session.dimensions.lock().unwrap(),
+        Some((2, 3)),
+        "VAF1 publish must write session.dimensions from the validated frame"
+    );
+    service.state.lock().unwrap().session = Some(session);
+    service
+        .tap_sync(0.5, 0.5, super::super::input::InputOrigin::Agent)
+        .expect("tap after a VAF1 frame must normalize; dimensions were not ready");
+    service.stop_preview_workers(service.state.lock().unwrap().session.as_ref().unwrap());
+}
+
+#[test]
 fn external_vaf1_emits_adb_state_before_png_with_zero_launcher() {
     let root = tempfile::tempdir().unwrap();
     let runner = Arc::new(ExternalAttachRunner::default());

@@ -466,9 +466,12 @@ pub async fn android_emulator_press_key(
 pub async fn android_emulator_system_action(
     service: State<'_, AndroidEmulatorService>,
     action: AndroidEmulatorSystemAction,
+    origin: Option<input::InputOrigin>,
 ) -> Result<(), String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.system_action_sync(action))
+    tauri::async_runtime::spawn_blocking(move || {
+        service.system_action_sync(action, origin.unwrap_or_default())
+    })
         .await
         .map_err(|error| format!("failed to run Android emulator system action: {error}"))?
 }

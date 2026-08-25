@@ -28,7 +28,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn take_presence_log() -> Vec<String> {
+pub(crate) fn take_presence_log() -> Vec<String> {
     PRESENCE_LOG.with(|log| log.replace(Vec::new()))
 }
 

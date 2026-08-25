@@ -428,6 +428,7 @@ pub(super) fn run_preview_coordinator(
                             session.generation,
                             session.stream_fps.clone(),
                             session.preview.slot.clone(),
+                            session.dimensions.clone(),
                             session.first_preview.clone(),
                             session.preview.health.clone(),
                             control,
