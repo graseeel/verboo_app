@@ -126,8 +126,12 @@ pub(super) fn emit_lifecycle(app: &AppHandle, stage: AndroidEmulatorStartupStage
     let _ = app.emit(LIFECYCLE_EVENT, AndroidEmulatorLifecycleEvent { stage });
 }
 
-pub(crate) fn emit_error(app: &AppHandle, message: String) {
-    let _ = app.emit(ERROR_EVENT, AndroidEmulatorError { message });
+pub(crate) fn emit_error(app: &AppHandle, error: AndroidEmulatorError) {
+    let _ = app.emit(ERROR_EVENT, error);
+}
+
+pub(crate) fn emit_session_ended(app: &AppHandle, event: AndroidEmulatorSessionEnded) {
+    let _ = app.emit(SESSION_ENDED_EVENT, event);
 }
 
 pub(super) trait EmulatorLauncher: Send + Sync {

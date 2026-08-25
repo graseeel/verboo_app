@@ -74,11 +74,12 @@ pub(crate) enum PreviewSource {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PreviewReason {
+pub enum PreviewReason {
     GpuSoftware,
     Unavailable,
     Unauthenticated,
     Unsupported,
+    DeviceLost,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -392,6 +393,18 @@ pub(crate) enum FirstPreviewError {
     SequenceExhausted,
     Event(String),
     LegacyPng(String),
+}
+
+impl std::fmt::Display for FirstPreviewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("cancelled"),
+            Self::Unavailable | Self::SequenceExhausted => formatter.write_str("unavailable"),
+            Self::Unauthenticated => formatter.write_str("unauthenticated"),
+            Self::Unsupported => formatter.write_str("unsupported"),
+            Self::Event(message) | Self::LegacyPng(message) => formatter.write_str(message),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2136,7 +2149,8 @@ mod tests {
     impl ScreenshotStreamFactory for FailThenSucceedFactory {
         fn open(&self, _width: u32, _height: u32) -> OpenStreamFuture<'_> {
             self.opens.fetch_add(1, Ordering::AcqRel);
-            if self.remaining_failures
+            if self
+                .remaining_failures
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                     left.checked_sub(1)
                 })
@@ -2218,9 +2232,12 @@ mod tests {
                 backoff_us: 100,
             }),
         ));
-        tokio::time::timeout(std::time::Duration::from_millis(400), sink.wait_for_frames(1))
-            .await
-            .expect("owned open retry must publish a grpc frame inside the fake-clock budget");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(400),
+            sink.wait_for_frames(1),
+        )
+        .await
+        .expect("owned open retry must publish a grpc frame inside the fake-clock budget");
         assert_eq!(factory.opens.load(Ordering::Acquire), 3);
         assert_eq!(first_preview.status(), FirstPreviewState::Ready);
         assert_eq!(
@@ -2258,7 +2275,10 @@ mod tests {
         .await;
         assert_eq!(outcome, WorkerOutcome::Fallback(PreviewReason::Unavailable));
         let opens = factory.opens.load(Ordering::Acquire);
-        assert!(opens > 1, "budget retry must probe more than once, got {opens}");
+        assert!(
+            opens > 1,
+            "budget retry must probe more than once, got {opens}"
+        );
         assert!(opens <= 5, "retry must stay bounded, got {opens}");
     }
 
@@ -2284,7 +2304,9 @@ mod tests {
             first_preview.clone(),
             health.clone(),
             control_rx,
-            Arc::new(FailingStreamFactory(super::super::grpc::GrpcError::Unavailable)),
+            Arc::new(FailingStreamFactory(
+                super::super::grpc::GrpcError::Unavailable,
+            )),
             Arc::new(RecordingPreviewSink::default()),
             clock.clone(),
             false,
@@ -2391,9 +2413,12 @@ mod tests {
                 backoff_us: 100,
             }),
         ));
-        tokio::time::timeout(std::time::Duration::from_millis(400), sink.wait_for_frames(1))
-            .await
-            .expect("boot race retry must publish the first grpc frame");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(400),
+            sink.wait_for_frames(1),
+        )
+        .await
+        .expect("boot race retry must publish the first grpc frame");
         clock.set_monotonic(30_000_000);
         let dropped = factory.dropped.notified();
         control_tx.send_replace(PreviewControl {

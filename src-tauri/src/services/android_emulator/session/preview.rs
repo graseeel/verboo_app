@@ -1,7 +1,6 @@
 //! Preview runtime, coordinator, and legacy backend for an Android session.
 
 use super::*;
-use super::super::preview::ScreenshotStreamFactory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreviewAvailability {
@@ -150,11 +149,7 @@ struct LazyOwnedGrpcFactory {
 }
 
 impl super::super::preview::ScreenshotStreamFactory for LazyOwnedGrpcFactory {
-    fn open(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> super::super::preview::OpenStreamFuture<'_> {
+    fn open(&self, width: u32, height: u32) -> super::super::preview::OpenStreamFuture<'_> {
         let pid = self.pid;
         let avd_name = self.avd_name.clone();
         Box::pin(async move {
@@ -193,7 +188,23 @@ pub(super) trait LegacyPreviewBackendFactory: Send + Sync {
     ) -> Arc<dyn LegacyPreviewBackend>;
 }
 
-pub(super) struct SystemLegacyPreviewBackendFactory;
+pub(super) struct SystemLegacyPreviewBackendFactory {
+    service: Option<AndroidEmulatorService>,
+}
+
+impl SystemLegacyPreviewBackendFactory {
+    pub(super) fn new(service: AndroidEmulatorService) -> Self {
+        Self {
+            service: Some(service),
+        }
+    }
+}
+
+impl Default for SystemLegacyPreviewBackendFactory {
+    fn default() -> Self {
+        Self { service: None }
+    }
+}
 
 impl LegacyPreviewBackendFactory for SystemLegacyPreviewBackendFactory {
     fn build(
@@ -208,6 +219,7 @@ impl LegacyPreviewBackendFactory for SystemLegacyPreviewBackendFactory {
             sink,
             session,
             mode,
+            service: self.service.clone(),
         })
     }
 }
@@ -217,6 +229,7 @@ struct SystemLegacyPreviewBackend {
     sink: Arc<dyn AndroidFrameSink>,
     session: Arc<AndroidSession>,
     mode: PreviewMode,
+    service: Option<AndroidEmulatorService>,
 }
 
 impl LegacyPreviewBackend for SystemLegacyPreviewBackend {
@@ -242,11 +255,23 @@ impl LegacyPreviewBackend for SystemLegacyPreviewBackend {
     }
 
     fn run_loop(&self) {
+        let on_device_lost = self.service.as_ref().map(|service| {
+            let service = service.clone();
+            let sink = self.sink.clone();
+            Arc::new(move |generation| {
+                let service = service.clone();
+                let sink = sink.clone();
+                thread::spawn(move || {
+                    service.teardown_lost_device(generation, sink.as_ref());
+                });
+            }) as Arc<dyn Fn(u64) + Send + Sync>
+        });
         run_android_frame_loop(
             self.runner.clone(),
             self.sink.clone(),
             self.session.clone(),
             self.mode,
+            on_device_lost,
         );
         let terminal = if self.session.stop.load(Ordering::Acquire) {
             FirstPreviewError::Cancelled
@@ -273,9 +298,10 @@ fn availability_for_reason(reason: Option<PreviewReason>) -> PreviewAvailability
     match reason {
         Some(PreviewReason::Unauthenticated) => PreviewAvailability::Unauthenticated,
         Some(PreviewReason::Unsupported) => PreviewAvailability::Unsupported,
-        Some(PreviewReason::Unavailable) | Some(PreviewReason::GpuSoftware) | None => {
-            PreviewAvailability::Unavailable
-        }
+        Some(PreviewReason::Unavailable)
+        | Some(PreviewReason::GpuSoftware)
+        | Some(PreviewReason::DeviceLost)
+        | None => PreviewAvailability::Unavailable,
     }
 }
 
@@ -344,6 +370,13 @@ fn emit_fail_closed_preview_state(
     });
 }
 
+fn preview_failed_error(error: &FirstPreviewError) -> AndroidEmulatorError {
+    AndroidEmulatorError {
+        message: format!("Android emulator preview failed: {error}"),
+        code: fail_closed_reason(error),
+    }
+}
+
 pub(super) fn fail_first_or_emit_terminal(
     sink: &dyn AndroidFrameSink,
     session: &AndroidSession,
@@ -351,7 +384,7 @@ pub(super) fn fail_first_or_emit_terminal(
 ) {
     emit_fail_closed_preview_state(sink, session, &error);
     if !session.first_preview.fail(error.clone()) {
-        sink.error(format!("Android emulator preview failed: {error:?}"));
+        sink.error(preview_failed_error(&error));
     }
 }
 
@@ -423,8 +456,8 @@ pub(super) fn run_preview_coordinator(
                     .build()
                 {
                     Err(_) => WorkerOutcome::Fallback(PreviewReason::Unavailable),
-                    Ok(runtime) => runtime.block_on(
-                        super::super::preview::run_vaf1_worker_with_open_retry(
+                    Ok(runtime) => {
+                        runtime.block_on(super::super::preview::run_vaf1_worker_with_open_retry(
                             session.generation,
                             session.stream_fps.clone(),
                             session.preview.slot.clone(),
@@ -437,8 +470,8 @@ pub(super) fn run_preview_coordinator(
                             super::super::preview::coordinator_clock(),
                             session.gpu_software,
                             Some(super::super::preview::OWNED_OPEN_RETRY),
-                        ),
-                    ),
+                        ))
+                    }
                 },
             },
         },
@@ -474,14 +507,20 @@ pub(super) fn run_preview_coordinator(
             session.preview.slot.clear();
             #[cfg(test)]
             wait_test_pause(&session.preview.failed_availability_pause);
-            if publish_availability_unless_stopped(session.as_ref(), PreviewAvailability::Unavailable) {
+            if publish_availability_unless_stopped(
+                session.as_ref(),
+                PreviewAvailability::Unavailable,
+            ) {
                 fail_first_or_emit_terminal(sink.as_ref(), session.as_ref(), error);
             }
         }
         WorkerOutcome::Stopped => {
             let error = FirstPreviewError::Cancelled;
             session.preview.health.terminal(error.clone());
-            let _ = publish_availability_unless_stopped(session.as_ref(), PreviewAvailability::Unavailable);
+            let _ = publish_availability_unless_stopped(
+                session.as_ref(),
+                PreviewAvailability::Unavailable,
+            );
             session.first_preview.fail(error);
         }
     }
@@ -612,7 +651,7 @@ pub(super) fn finish_started_preview(
         }
         Err(error) => {
             emit_fail_closed_preview_state(sink, session, &error);
-            sink.error(format!("Android emulator preview failed: {error:?}"));
+            sink.error(preview_failed_error(&error));
             Err(error)
         }
     }
@@ -679,12 +718,25 @@ fn capture_png(
     }
 }
 
+/// Consecutive screencap "not found"/"offline" failures required before
+/// the PNG loop tears the session down. 3: one transient adb blip must
+/// not detach; three in a row at fallback 0.5–2 fps is the death signal
+/// (~1.5–6s), inside `ANDROID_CLEANUP_BUDGET`.
+pub(super) const DEVICE_GONE_CONSECUTIVE_FAILURES: u8 = 3;
+
+pub(super) fn is_device_gone_screencap(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("not found") || lower.contains("offline")
+}
+
 pub(super) fn run_android_frame_loop(
     runner: Arc<dyn CommandRunner>,
     sink: Arc<dyn AndroidFrameSink>,
     session: Arc<AndroidSession>,
     mode: PreviewMode,
+    on_device_lost: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 ) {
+    let mut gone_streak = 0u8;
     loop {
         if !session.gate.wait_until_visible(&session.stop) {
             break;
@@ -703,6 +755,7 @@ pub(super) fn run_android_frame_loop(
         });
         let rate = match capture {
             Ok((bytes, (width, height))) => {
+                gone_streak = 0;
                 let frame = AndroidEmulatorFrame {
                     png_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                     width,
@@ -718,7 +771,7 @@ pub(super) fn run_android_frame_loop(
                     emission = sink.frame(frame);
                 });
                 if let Err(error) = emission {
-                    sink.error(error);
+                    sink.error(AndroidEmulatorError::from_message(error));
                     break;
                 }
                 match mode {
@@ -736,9 +789,24 @@ pub(super) fn run_android_frame_loop(
             }
             Err(_) if session.stop.load(Ordering::Acquire) => break,
             Err(error) => {
-                sink.error(error);
-                if mode != PreviewMode::LegacyPrimary {
-                    break;
+                if is_device_gone_screencap(&error) {
+                    gone_streak = gone_streak.saturating_add(1);
+                    if gone_streak >= DEVICE_GONE_CONSECUTIVE_FAILURES {
+                        sink.error(AndroidEmulatorError::with_code(
+                            error,
+                            PreviewReason::DeviceLost,
+                        ));
+                        if let Some(on_lost) = on_device_lost.clone() {
+                            on_lost(session.generation);
+                        }
+                        break;
+                    }
+                } else {
+                    gone_streak = 0;
+                    sink.error(AndroidEmulatorError::from_message(error));
+                    if mode != PreviewMode::LegacyPrimary {
+                        break;
+                    }
                 }
                 *session
                     .fallback_fps

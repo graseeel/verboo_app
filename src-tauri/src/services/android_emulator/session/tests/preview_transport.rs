@@ -565,7 +565,7 @@ fn absent_transport_keeps_first_png_bytes_and_two_fps_without_preview_state() {
             sink.clone(),
             &launcher,
             provider,
-            Arc::new(SystemLegacyPreviewBackendFactory),
+            Arc::new(SystemLegacyPreviewBackendFactory::default()),
             "Pixel_8_API_35".to_string(),
             2,
             1.0,
@@ -927,10 +927,7 @@ fn first_preview_gate_failure_emits_terminal_preview_state_before_attach_error()
         order.iter().any(|entry| entry == terminal),
         "fail-closed preview-state missing: {order:?}"
     );
-    assert!(
-        !sink.errors().is_empty(),
-        "attach error missing: {order:?}"
-    );
+    assert!(!sink.errors().is_empty(), "attach error missing: {order:?}");
     assert_order_before(&order, terminal, "error");
     assert_order_before(&order, "preview-state:7:grpc", terminal);
     assert!(!order.iter().any(|entry| entry == "lifecycle:ready"));
@@ -1022,7 +1019,7 @@ fn real_frame_loop_suppresses_an_in_flight_capture_while_hidden() {
         let runner = runner.clone();
         let sink = sink.clone();
         let session = session.clone();
-        move || run_android_frame_loop(runner, sink, session, PreviewMode::LegacyPrimary)
+        move || run_android_frame_loop(runner, sink, session, PreviewMode::LegacyPrimary, None)
     });
 
     started_receiver

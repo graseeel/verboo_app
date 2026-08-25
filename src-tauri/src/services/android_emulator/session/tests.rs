@@ -17,3 +17,4 @@ include!("tests/lifecycle.rs");
 include!("tests/preview_transport.rs");
 include!("tests/preview_harden.rs");
 include!("tests/read_frame.rs");
+include!("tests/preview_e1_e2.rs");

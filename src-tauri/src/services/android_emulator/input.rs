@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
 use super::session::{
-    emit_error, AndroidEmulatorPoint, AndroidEmulatorPresenceEvent, AndroidSession, PRESENCE_EVENT,
+    emit_error, AndroidEmulatorError, AndroidEmulatorPoint, AndroidEmulatorPresenceEvent,
+    AndroidSession, PRESENCE_EVENT,
 };
 use super::AndroidEmulatorService;
 
@@ -34,12 +35,12 @@ pub(crate) fn take_presence_log() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::preview::{FirstPreviewGate, PreviewMode};
     use super::super::session::{
         AndroidEmulatorOwnership, AndroidSession, PreviewGate, PreviewRuntime,
     };
     use super::super::{CommandOutput, CommandRunner};
+    use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
@@ -102,20 +103,18 @@ mod tests {
         service.state.lock().unwrap().session = Some(test_input_session());
 
         take_presence_log();
-        service
-            .tap_sync(0.5, 0.5, InputOrigin::Agent)
-            .unwrap();
+        service.tap_sync(0.5, 0.5, InputOrigin::Agent).unwrap();
         assert_eq!(take_presence_log(), ["start:tap", "clear:tap"]);
 
-        service
-            .tap_sync(0.5, 0.5, InputOrigin::Manual)
-            .unwrap();
+        service.tap_sync(0.5, 0.5, InputOrigin::Manual).unwrap();
         assert!(
             take_presence_log().is_empty(),
             "manual origin must not emit presence"
         );
 
-        service.type_text_sync("ok", InputOrigin::default()).unwrap();
+        service
+            .type_text_sync("ok", InputOrigin::default())
+            .unwrap();
         assert_eq!(take_presence_log(), ["start:typeText", "clear:typeText"]);
     }
 
@@ -277,7 +276,13 @@ impl AndroidEmulatorService {
         let session = self.current_session()?;
         let (pixel_x, pixel_y) = normalized_pixels(&session, x, y)?;
         let args = build_tap_args(&session.serial, pixel_x, pixel_y);
-        self.run_input(&session, "tap", args, PresenceTarget::Target { x, y }, origin)
+        self.run_input(
+            &session,
+            "tap",
+            args,
+            PresenceTarget::Target { x, y },
+            origin,
+        )
     }
 
     pub(crate) fn drag_sync(
@@ -366,7 +371,7 @@ impl AndroidEmulatorService {
                 .expect("Android emulator app handle poisoned")
                 .clone()
             {
-                emit_error(&app, error.clone());
+                emit_error(&app, AndroidEmulatorError::from_message(error.clone()));
             }
         }
         if emit_agent_presence {

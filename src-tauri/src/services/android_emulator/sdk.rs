@@ -119,27 +119,83 @@ pub fn host_abi() -> &'static str {
     }
 }
 
-/// Pure: picks the SDK root from the candidate env vars, falling back to
-/// the app-managed `<app_data>/android-sdk` directory. `ANDROID_HOME` wins
-/// over `ANDROID_SDK_ROOT` (both are respected; never owner-hardcoded).
-/// Kept free of env access so it is unit-testable on any host.
+/// Pure: the default Android Studio SDK location for a host OS, derived
+/// from injected home / LocalAppData — never a hardcoded owner path.
+///
+/// CFG LIMIT: this is a runtime match on the OS token (same pattern as
+/// `cmdline_tools_url`), so Windows/Linux defaults compile and unit-test
+/// on mac. `resolve_sdk_path` probes only `std::env::consts::OS`. Do not
+/// wrap these branches in `#[cfg(target_os)]` — that would drop the
+/// Windows/Linux paths from the mac compile (repo cfg rule).
+pub fn standard_sdk_dir(
+    os: &str,
+    home: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Option<PathBuf> {
+    match os {
+        "macos" | "mac" => Some(home?.join("Library").join("Android").join("sdk")),
+        "windows" | "win" => Some(local_app_data?.join("Android").join("Sdk")),
+        "linux" => Some(home?.join("Android").join("Sdk")),
+        _ => None,
+    }
+}
+
+/// True when `sdk_path` looks like a real Android SDK: `platform-tools/adb`
+/// (or `adb.exe`) is a file and `emulator/` is a directory. Empty or
+/// partial trees fail closed. Both adb names are accepted so the check
+/// is host-agnostic (Windows layout is not `#[cfg]`-gated).
+pub fn looks_like_complete_sdk(sdk_path: &Path) -> bool {
+    let platform_tools = sdk_path.join("platform-tools");
+    let adb = platform_tools.join("adb").is_file() || platform_tools.join("adb.exe").is_file();
+    adb && sdk_path.join("emulator").is_dir()
+}
+
+/// Pure: picks the SDK root from the candidate env vars, then a validated
+/// platform-default SDK, then the app-managed `<app_data>/android-sdk`
+/// directory. `ANDROID_HOME` wins over `ANDROID_SDK_ROOT` (both are
+/// respected; never owner-hardcoded). Kept free of env access so it is
+/// unit-testable on any host.
 pub fn pick_sdk_root(
     android_home: Option<&str>,
     android_sdk_root: Option<&str>,
+    standard_sdk: Option<&Path>,
     app_data_dir: &Path,
 ) -> PathBuf {
-    android_home
+    if let Some(env) = android_home
         .or(android_sdk_root)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| app_data_dir.join("android-sdk"))
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(env);
+    }
+    if let Some(standard) = standard_sdk.filter(|path| looks_like_complete_sdk(path)) {
+        return standard.to_path_buf();
+    }
+    app_data_dir.join("android-sdk")
 }
 
 /// Resolves the SDK root: `ANDROID_HOME`/`ANDROID_SDK_ROOT` when set, else
-/// the app-managed `<app_data>/android-sdk` directory.
+/// a validated platform-default SDK (Android Studio layout), else the
+/// app-managed `<app_data>/android-sdk` directory.
 pub fn resolve_sdk_path(app_data_dir: &Path) -> PathBuf {
+    let home = dirs::home_dir();
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let standard = standard_sdk_dir(
+        std::env::consts::OS,
+        home.as_deref(),
+        local_app_data.as_deref(),
+    );
     pick_sdk_root(
-        std::env::var("ANDROID_HOME").ok().as_deref(),
-        std::env::var("ANDROID_SDK_ROOT").ok().as_deref(),
+        std::env::var("ANDROID_HOME")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .as_deref(),
+        std::env::var("ANDROID_SDK_ROOT")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .as_deref(),
+        standard.as_deref(),
         app_data_dir,
     )
 }
@@ -769,18 +825,146 @@ platform-tools | 1 | Android SDK Platform-Tools
         let managed = PathBuf::from("/tmp/verboo-app-data");
         // ANDROID_HOME wins over ANDROID_SDK_ROOT.
         assert_eq!(
-            pick_sdk_root(Some("/sdk/home"), Some("/sdk/root"), &managed),
+            pick_sdk_root(Some("/sdk/home"), Some("/sdk/root"), None, &managed),
             PathBuf::from("/sdk/home")
         );
         // ANDROID_SDK_ROOT alone is respected.
         assert_eq!(
-            pick_sdk_root(None, Some("/sdk/root"), &managed),
+            pick_sdk_root(None, Some("/sdk/root"), None, &managed),
             PathBuf::from("/sdk/root")
         );
         // Neither env var → app-managed `<app_data>/android-sdk`.
         assert_eq!(
-            pick_sdk_root(None, None, &managed),
+            pick_sdk_root(None, None, None, &managed),
             managed.join("android-sdk")
+        );
+    }
+
+    /// Fake trees under tempfile — the seam for content validation. A
+    /// complete Android Studio SDK has `platform-tools/adb` (or `adb.exe`)
+    /// and an `emulator/` directory; empty and partial trees must not be
+    /// promoted over the managed fallback.
+    fn write_fake_sdk(root: &Path, adb: bool, emulator_dir: bool) {
+        if adb {
+            let platform_tools = root.join("platform-tools");
+            std::fs::create_dir_all(&platform_tools).unwrap();
+            std::fs::write(platform_tools.join("adb"), b"fake-adb").unwrap();
+            std::fs::write(platform_tools.join("adb.exe"), b"fake-adb").unwrap();
+        }
+        if emulator_dir {
+            std::fs::create_dir_all(root.join("emulator")).unwrap();
+        }
+    }
+
+    #[test]
+    fn standard_sdk_dir_is_the_platform_default_under_injected_home() {
+        let home = Path::new("/injected-home");
+        let local = Path::new("/injected-local");
+        assert_eq!(
+            standard_sdk_dir("macos", Some(home), Some(local)),
+            Some(home.join("Library").join("Android").join("sdk"))
+        );
+        assert_eq!(
+            standard_sdk_dir("mac", Some(home), Some(local)),
+            Some(home.join("Library").join("Android").join("sdk"))
+        );
+        assert_eq!(
+            standard_sdk_dir("windows", Some(home), Some(local)),
+            Some(local.join("Android").join("Sdk"))
+        );
+        assert_eq!(
+            standard_sdk_dir("win", Some(home), Some(local)),
+            Some(local.join("Android").join("Sdk"))
+        );
+        assert_eq!(
+            standard_sdk_dir("linux", Some(home), Some(local)),
+            Some(home.join("Android").join("Sdk"))
+        );
+        assert_eq!(standard_sdk_dir("macos", None, Some(local)), None);
+        assert_eq!(standard_sdk_dir("windows", Some(home), None), None);
+        assert_eq!(standard_sdk_dir("linux", None, Some(local)), None);
+        assert_eq!(standard_sdk_dir("ios", Some(home), Some(local)), None);
+    }
+
+    #[test]
+    fn standard_sdk_dir_never_embeds_an_owner_home() {
+        let src = include_str!("sdk.rs");
+        let owner_home = ["/Users", "/", "grasel"].concat();
+        assert!(
+            !src.contains(&owner_home),
+            "SDK discovery must derive home from system dirs, never a maintainer path"
+        );
+        let home = Path::new("/injected-home");
+        let macos = standard_sdk_dir("macos", Some(home), None).unwrap();
+        assert!(macos.starts_with(home));
+        assert!(!macos.to_string_lossy().contains("grasel"));
+    }
+
+    #[test]
+    fn looks_like_complete_sdk_requires_adb_and_emulator_dir() {
+        let complete = tempfile::tempdir().unwrap();
+        write_fake_sdk(complete.path(), true, true);
+        assert!(
+            looks_like_complete_sdk(complete.path()),
+            "platform-tools/adb + emulator/ is a real SDK"
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(
+            !looks_like_complete_sdk(empty.path()),
+            "empty directory must fail closed"
+        );
+
+        let adb_only = tempfile::tempdir().unwrap();
+        write_fake_sdk(adb_only.path(), true, false);
+        assert!(
+            !looks_like_complete_sdk(adb_only.path()),
+            "adb without emulator/ is partial"
+        );
+
+        let emulator_only = tempfile::tempdir().unwrap();
+        write_fake_sdk(emulator_only.path(), false, true);
+        assert!(
+            !looks_like_complete_sdk(emulator_only.path()),
+            "emulator/ without adb is partial"
+        );
+
+        let missing = empty.path().join("does-not-exist");
+        assert!(!looks_like_complete_sdk(&missing));
+    }
+
+    #[test]
+    fn pick_sdk_root_uses_validated_standard_between_env_and_managed() {
+        let managed = PathBuf::from("/tmp/verboo-app-data");
+        let complete = tempfile::tempdir().unwrap();
+        write_fake_sdk(complete.path(), true, true);
+        let partial = tempfile::tempdir().unwrap();
+        write_fake_sdk(partial.path(), true, false);
+
+        // Env still wins over a validated standard path (Finder-less
+        // terminals with ANDROID_HOME keep working).
+        assert_eq!(
+            pick_sdk_root(Some("/sdk/home"), None, Some(complete.path()), &managed),
+            PathBuf::from("/sdk/home")
+        );
+
+        // No env + complete standard SDK → use it (the Finder/GUI case).
+        assert_eq!(
+            pick_sdk_root(None, None, Some(complete.path()), &managed),
+            complete.path()
+        );
+
+        // No env + empty/partial standard → fail closed to managed.
+        assert_eq!(
+            pick_sdk_root(None, None, Some(partial.path()), &managed),
+            managed.join("android-sdk"),
+            "partial standard SDK must not beat the managed fallback"
+        );
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            pick_sdk_root(None, None, Some(empty.path()), &managed),
+            managed.join("android-sdk"),
+            "empty standard SDK must not beat the managed fallback"
         );
     }
 }

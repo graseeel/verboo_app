@@ -551,7 +551,10 @@ impl AndroidEmulatorService {
                 .expect("Android emulator app handle poisoned")
                 .clone()
             {
-                super::session::emit_error(&app, error.clone());
+                super::session::emit_error(
+                    &app,
+                    super::session::AndroidEmulatorError::from_message(error.clone()),
+                );
             }
             return Err(error);
         }

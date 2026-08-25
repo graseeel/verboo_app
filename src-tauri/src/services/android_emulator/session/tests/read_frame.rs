@@ -15,9 +15,11 @@ impl AndroidFrameSink for FailingPreviewStateSink {
         Ok(())
     }
 
-    fn error(&self, _message: String) {}
+    fn error(&self, _error: AndroidEmulatorError) {}
 
     fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
+
+    fn session_ended(&self, _event: AndroidEmulatorSessionEnded) {}
 }
 
 struct FailingFrameReadySink;
@@ -37,9 +39,11 @@ impl AndroidFrameSink for FailingFrameReadySink {
         Ok(())
     }
 
-    fn error(&self, _message: String) {}
+    fn error(&self, _error: AndroidEmulatorError) {}
 
     fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
+
+    fn session_ended(&self, _event: AndroidEmulatorSessionEnded) {}
 }
 
 fn owned_vaf1_session(generation: u64) -> Arc<AndroidSession> {
@@ -197,9 +201,7 @@ fn read_frame_sees_no_frame_during_real_failed_overlap_then_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
     let session = owned_vaf1_session(7);
-    let (paused, release) = session
-        .preview
-        .pause_before_failed_availability_for_test();
+    let (paused, release) = session.preview.pause_before_failed_availability_for_test();
     let coord_service = service.clone();
     let coord_session = session.clone();
     let coordinator = std::thread::spawn(move || {

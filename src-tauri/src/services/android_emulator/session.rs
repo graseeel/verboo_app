@@ -32,20 +32,22 @@ mod preview_runtime;
 pub(crate) use boot::emit_error;
 use boot::{
     apply_postboot_gpu_probe, attach_ownership, boot_owned_with_attempts, command_error,
-    emit_lifecycle, emulator_launch_args, emulator_path, find_running_serial, is_boot_completed,
-    ownership_for_running_avd, parse_png_dimensions, probe_owned_surface_flinger, should_shutdown,
-    shutdown_owned_emulator, surface_flinger_uses_software_gpu, validate_fallback_fps,
-    validate_stream_fps, wait_for_boot, EmulatorLauncher, GpuMode, OwnedBootAttemptError,
-    OwnedBootAttempts, OwnedBootError, OwnedBootResult, SystemEmulatorLauncher,
-    SystemOwnedBootAttempts,
+    emit_lifecycle, emit_session_ended, emulator_launch_args, emulator_path, find_running_serial,
+    is_boot_completed, ownership_for_running_avd, parse_png_dimensions,
+    probe_owned_surface_flinger, should_shutdown, shutdown_owned_emulator,
+    surface_flinger_uses_software_gpu, validate_fallback_fps, validate_stream_fps, wait_for_boot,
+    EmulatorLauncher, GpuMode, OwnedBootAttemptError, OwnedBootAttempts, OwnedBootError,
+    OwnedBootResult, SystemEmulatorLauncher, SystemOwnedBootAttempts,
 };
-pub(crate) use preview_runtime::{PreviewAvailability, PreviewRuntime};
 use preview_runtime::{
-    capture_and_emit, coordinate_fallback, finish_started_preview, run_android_frame_loop,
-    run_preview_coordinator, start_preview_for_session, CoordinatorOutcome, LegacyPreviewBackend,
+    capture_and_emit, coordinate_fallback, fail_first_or_emit_terminal, finish_started_preview,
+    is_device_gone_screencap, run_android_frame_loop, run_preview_coordinator,
+    start_preview_for_session, CoordinatorOutcome, LegacyPreviewBackend,
     LegacyPreviewBackendFactory, PreviewFactoryProvider, PreviewStart,
     SystemLegacyPreviewBackendFactory, SystemPreviewFactoryProvider,
+    DEVICE_GONE_CONSECUTIVE_FAILURES,
 };
+pub(crate) use preview_runtime::{PreviewAvailability, PreviewRuntime};
 
 pub(crate) const FRAME_EVENT: &str = "android-emulator:frame";
 pub(crate) const FRAME_READY_EVENT: &str = "android-emulator:frame-ready";
@@ -53,6 +55,9 @@ pub(crate) const PREVIEW_STATE_EVENT: &str = "android-emulator:preview-state";
 pub(crate) const LIFECYCLE_EVENT: &str = "android-emulator:lifecycle";
 pub(crate) const ERROR_EVENT: &str = "android-emulator:error";
 pub(crate) const PRESENCE_EVENT: &str = "android-emulator:presence";
+/// Additive session-ended channel (E2 device-death teardown). Frozen
+/// literal — do not rename; renderer subscribes to this exact string.
+pub(crate) const SESSION_ENDED_EVENT: &str = "android-emulator:session-ended";
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MIN_STREAM_FPS: u16 = 1;
@@ -99,6 +104,8 @@ pub(crate) struct SessionCancellation {
     after_reset: Mutex<Option<TestPause>>,
     #[cfg(test)]
     before_publish: Mutex<Option<TestPause>>,
+    #[cfg(test)]
+    after_lost_generation_check: Mutex<Option<TestPause>>,
 }
 
 impl SessionCancellation {
@@ -113,6 +120,8 @@ impl SessionCancellation {
             after_reset: Mutex::new(None),
             #[cfg(test)]
             before_publish: Mutex::new(None),
+            #[cfg(test)]
+            after_lost_generation_check: Mutex::new(None),
         }
     }
 
@@ -210,6 +219,18 @@ impl SessionCancellation {
     fn pause_before_publish(&self) {
         wait_test_pause(&self.before_publish);
     }
+
+    #[cfg(test)]
+    fn pause_after_lost_generation_check_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        arm_test_pause(&self.after_lost_generation_check)
+    }
+
+    #[cfg(test)]
+    fn pause_after_lost_generation_check(&self) {
+        wait_test_pause(&self.after_lost_generation_check);
+    }
 }
 
 impl Default for SessionCancellation {
@@ -254,6 +275,35 @@ pub struct AndroidEmulatorFrame {
 #[serde(rename_all = "camelCase")]
 pub struct AndroidEmulatorError {
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<PreviewReason>,
+}
+
+impl AndroidEmulatorError {
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    pub(crate) fn with_code(message: impl Into<String>, code: PreviewReason) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code),
+        }
+    }
+}
+
+/// Payload of `android-emulator:session-ended`. `generation` is the
+/// session that was cleaned up. `code` uses the E1 PreviewReason wire
+/// vocabulary (`deviceLost`, `unavailable`, …) and is omitted when None.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidEmulatorSessionEnded {
+    pub generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<PreviewReason>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -542,10 +592,11 @@ impl PreviewGate {
     }
 }
 
-trait AndroidFrameSink: PreviewEventSink + Send + Sync {
+pub(crate) trait AndroidFrameSink: PreviewEventSink + Send + Sync {
     fn frame(&self, frame: AndroidEmulatorFrame) -> Result<(), String>;
-    fn error(&self, message: String);
+    fn error(&self, error: AndroidEmulatorError);
     fn lifecycle(&self, stage: AndroidEmulatorStartupStage);
+    fn session_ended(&self, event: AndroidEmulatorSessionEnded);
 }
 
 struct TauriFrameSink {
@@ -573,12 +624,16 @@ impl AndroidFrameSink for TauriFrameSink {
             .map_err(|error| error.to_string())
     }
 
-    fn error(&self, message: String) {
-        emit_error(&self.app, message);
+    fn error(&self, error: AndroidEmulatorError) {
+        emit_error(&self.app, error);
     }
 
     fn lifecycle(&self, stage: AndroidEmulatorStartupStage) {
         emit_lifecycle(&self.app, stage);
+    }
+
+    fn session_ended(&self, event: AndroidEmulatorSessionEnded) {
+        emit_session_ended(&self.app, event);
     }
 }
 
@@ -759,7 +814,7 @@ impl AndroidEmulatorService {
             sink,
             &launcher,
             Arc::new(SystemPreviewFactoryProvider),
-            Arc::new(SystemLegacyPreviewBackendFactory),
+            Arc::new(SystemLegacyPreviewBackendFactory::new(self.clone())),
             avd_name,
             stream_fps,
             fallback_fps,
@@ -862,7 +917,7 @@ impl AndroidEmulatorService {
                     legacy_factory,
                 );
                 finish_started_preview(sink.as_ref(), &replacement, start)
-                    .map_err(|error| format!("Android emulator preview failed: {error:?}"))?;
+                    .map_err(|error| format!("Android emulator preview failed: {error}"))?;
                 return Ok(replacement.summary());
             }
             let generation = next_preview_generation(self.next_generation.as_ref())
@@ -919,11 +974,11 @@ impl AndroidEmulatorService {
                 Ok(result) => result,
                 Err(OwnedBootError::Cancelled) => {
                     let error = "Android emulator boot cancelled".to_string();
-                    sink.error(error.clone());
+                    sink.error(AndroidEmulatorError::from_message(error.clone()));
                     return Err(error);
                 }
                 Err(OwnedBootError::Failed(error)) => {
-                    sink.error(error.clone());
+                    sink.error(AndroidEmulatorError::from_message(error.clone()));
                     return Err(error);
                 }
             };
@@ -939,11 +994,11 @@ impl AndroidEmulatorService {
                 Ok(result) => result,
                 Err(OwnedBootError::Cancelled) => {
                     let error = "Android emulator attach was cancelled".to_string();
-                    sink.error(error.clone());
+                    sink.error(AndroidEmulatorError::from_message(error.clone()));
                     return Err(error);
                 }
                 Err(OwnedBootError::Failed(error)) => {
-                    sink.error(error.clone());
+                    sink.error(AndroidEmulatorError::from_message(error.clone()));
                     return Err(error);
                 }
             };
@@ -951,7 +1006,7 @@ impl AndroidEmulatorService {
                 let _ = attempts.terminate(&result);
                 let _ = self.ownership.remove(&avd_name);
                 let error = "Android emulator attach was cancelled".to_string();
-                sink.error(error.clone());
+                sink.error(AndroidEmulatorError::from_message(error.clone()));
                 return Err(error);
             }
             (
@@ -972,7 +1027,7 @@ impl AndroidEmulatorService {
             ) {
                 Ok(serial) => serial,
                 Err(error) => {
-                    sink.error(error.clone());
+                    sink.error(AndroidEmulatorError::from_message(error.clone()));
                     return Err(error);
                 }
             };
@@ -1053,19 +1108,13 @@ impl AndroidEmulatorService {
             if boot_requested {
                 let _ = self.ownership.remove(&ledger_avd_name);
             }
-            return Err(format!("Android emulator preview failed: {error:?}"));
+            return Err(format!("Android emulator preview failed: {error}"));
         }
         Ok(session.summary())
     }
 
-    pub(crate) fn read_frame_sync(
-        &self,
-        generation: u64,
-    ) -> Result<Vec<u8>, PreviewReadError> {
-        let state = self
-            .state
-            .lock()
-            .expect("Android emulator state poisoned");
+    pub(crate) fn read_frame_sync(&self, generation: u64) -> Result<Vec<u8>, PreviewReadError> {
+        let state = self.state.lock().expect("Android emulator state poisoned");
         let session = state
             .session
             .as_ref()
@@ -1184,6 +1233,49 @@ impl AndroidEmulatorService {
             .take()
     }
 
+    /// Device-death teardown: reuse detach/end cleanup. Revalidates
+    /// generation under `operation_lock` before take so a completed
+    /// re-attach is not torn down. Emits `android-emulator:session-ended`
+    /// AFTER cleanup, only for the generation that actually died.
+    pub(crate) fn teardown_lost_device(&self, generation: u64, sink: &dyn AndroidFrameSink) {
+        let Some(session) = self.current_session_option() else {
+            return;
+        };
+        if session.generation != generation {
+            return;
+        }
+        #[cfg(test)]
+        self.session_cancel.pause_after_lost_generation_check();
+
+        let deadline = Instant::now() + ANDROID_CLEANUP_BUDGET;
+        let Ok(_operation) = self.operation_lock_until(deadline) else {
+            return;
+        };
+        let Some(session) = self.current_session_option() else {
+            return;
+        };
+        if session.generation != generation {
+            return;
+        }
+        let ownership = session.ownership;
+        let avd_name = session.avd_name.clone();
+        self.request_session_cancel();
+        let Some(session) = self.take_session() else {
+            return;
+        };
+        let cleaned =
+            self.cleanup_session_until(session, should_shutdown(ownership), Some(deadline));
+        if cleaned.is_ok() && should_shutdown(ownership) {
+            let _ = self.ownership.remove(&avd_name);
+        }
+        if cleaned.is_ok() {
+            sink.session_ended(AndroidEmulatorSessionEnded {
+                generation,
+                code: Some(PreviewReason::DeviceLost),
+            });
+        }
+    }
+
     fn stop_current_locked(&self, terminate_owned: bool) -> Result<(), String> {
         let Some(session) = self.take_session() else {
             return Ok(());
@@ -1208,8 +1300,7 @@ impl AndroidEmulatorService {
             .preview
             .availability
             .lock()
-            .expect("Android preview availability poisoned") =
-            PreviewAvailability::Unavailable;
+            .expect("Android preview availability poisoned") = PreviewAvailability::Unavailable;
         session.first_preview.fail(FirstPreviewError::Cancelled);
         let workers = std::mem::take(
             &mut *session

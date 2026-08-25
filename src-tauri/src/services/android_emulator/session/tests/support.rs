@@ -120,9 +120,11 @@ impl AndroidFrameSink for RecordingAttachSink {
         Ok(())
     }
 
-    fn error(&self, _message: String) {}
+    fn error(&self, _error: AndroidEmulatorError) {}
 
     fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
+
+    fn session_ended(&self, _event: AndroidEmulatorSessionEnded) {}
 }
 
 #[derive(Default)]
@@ -494,11 +496,13 @@ impl AndroidFrameSink for CountingFrameSink {
         Ok(())
     }
 
-    fn error(&self, _message: String) {
+    fn error(&self, _error: AndroidEmulatorError) {
         self.errors.fetch_add(1, Ordering::AcqRel);
     }
 
     fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
+
+    fn session_ended(&self, _event: AndroidEmulatorSessionEnded) {}
 }
 
 impl PreviewEventSink for CountingFrameSink {
@@ -664,8 +668,9 @@ fn test_android_session(ownership: AndroidEmulatorOwnership) -> Arc<AndroidSessi
 #[derive(Default)]
 struct OrderedAttachSink {
     order: Arc<Mutex<Vec<String>>>,
-    errors: Mutex<Vec<String>>,
+    errors: Mutex<Vec<AndroidEmulatorError>>,
     frames: Mutex<Vec<AndroidEmulatorFrame>>,
+    session_ended: Mutex<Vec<AndroidEmulatorSessionEnded>>,
 }
 
 impl OrderedAttachSink {
@@ -678,7 +683,20 @@ impl OrderedAttachSink {
     }
 
     fn errors(&self) -> Vec<String> {
+        self.errors
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|error| error.message.clone())
+            .collect()
+    }
+
+    fn error_payloads(&self) -> Vec<AndroidEmulatorError> {
         self.errors.lock().unwrap().clone()
+    }
+
+    fn session_ended_events(&self) -> Vec<AndroidEmulatorSessionEnded> {
+        self.session_ended.lock().unwrap().clone()
     }
 
     fn frames(&self) -> Vec<AndroidEmulatorFrame> {
@@ -717,6 +735,7 @@ fn reason_name(reason: Option<PreviewReason>) -> &'static str {
         Some(PreviewReason::Unavailable) => "unavailable",
         Some(PreviewReason::Unauthenticated) => "unauthenticated",
         Some(PreviewReason::Unsupported) => "unsupported",
+        Some(PreviewReason::DeviceLost) => "deviceLost",
     }
 }
 
@@ -752,9 +771,9 @@ impl AndroidFrameSink for OrderedAttachSink {
         Ok(())
     }
 
-    fn error(&self, message: String) {
+    fn error(&self, error: AndroidEmulatorError) {
         self.order.lock().unwrap().push("error".to_string());
-        self.errors.lock().unwrap().push(message);
+        self.errors.lock().unwrap().push(error);
     }
 
     fn lifecycle(&self, stage: AndroidEmulatorStartupStage) {
@@ -762,5 +781,13 @@ impl AndroidFrameSink for OrderedAttachSink {
             .lock()
             .unwrap()
             .push(format!("lifecycle:{}", lifecycle_name(stage)));
+    }
+
+    fn session_ended(&self, event: AndroidEmulatorSessionEnded) {
+        self.order
+            .lock()
+            .unwrap()
+            .push(SESSION_ENDED_EVENT.to_string());
+        self.session_ended.lock().unwrap().push(event);
     }
 }
