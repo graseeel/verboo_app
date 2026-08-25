@@ -360,11 +360,7 @@ impl AndroidEmulatorService {
             UIAUTOMATOR_DUMP_PATH.to_string(),
         ];
         let xml = run_checked(self, &session, &read_args, "read accessibility dump")?;
-        let dimensions = session
-            .dimensions
-            .lock()
-            .expect("Android frame dimensions poisoned")
-            .ok_or_else(|| "Android preview dimensions are not ready".to_string())?;
+        let dimensions = session.adb_input_display_size()?;
         parse_uiautomator_dump(&String::from_utf8_lossy(&xml), dimensions)
     }
 
@@ -395,6 +391,28 @@ mod tests {
     // macOS gate, so the fixture documents the real command/output format
     // rather than pretending to be a live capture.
     const UIAUTOMATOR_DUMP_FIXTURE: &str = r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example" content-desc="" clickable="false" enabled="true" visible-to-user="true" bounds="[0,0][1080,1920]"><node index="1" text="Entrar" resource-id="com.example:id/login" class="android.widget.Button" package="com.example" content-desc="Entrar" clickable="true" enabled="true" visible-to-user="true" long-clickable="false" focusable="true" bounds="[100,200][500,400]" /></node></hierarchy>"#;
+
+    #[test]
+    fn accessibility_snapshot_normalizes_bounds_against_device_display_not_preview_frame() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = Arc::new(AccessibilityRunner::default());
+        let session = test_session();
+        *session.dimensions.lock().unwrap() = Some((720, 1600));
+        service.state.lock().unwrap().session = Some(session);
+
+        let snapshot = service.accessibility_snapshot_sync().unwrap();
+        assert_eq!(
+            snapshot.nodes[1].frame,
+            AndroidEmulatorRect {
+                x: 100.0 / 1080.0,
+                y: 200.0 / 1920.0,
+                width: 400.0 / 1080.0,
+                height: 200.0 / 1920.0,
+            },
+            "uiautomator bounds are device pixels; must not divide by the 720x1600 preview frame"
+        );
+    }
 
     #[test]
     fn uiautomator_dump_nodes_normalize_bounds_and_preserve_semantics() {
@@ -552,10 +570,7 @@ mod tests {
         );
 
         service
-            .system_action_sync(
-                AndroidEmulatorSystemAction::Recents,
-                InputOrigin::default(),
-            )
+            .system_action_sync(AndroidEmulatorSystemAction::Recents, InputOrigin::default())
             .unwrap();
         assert_eq!(
             super::super::input::take_presence_log(),
@@ -627,6 +642,7 @@ mod tests {
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
             dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
+            device_display_size: (1080, 1920),
             emulator_process: Arc::new(Mutex::new(None)),
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),

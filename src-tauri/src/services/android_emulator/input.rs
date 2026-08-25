@@ -81,6 +81,74 @@ mod tests {
         );
     }
 
+    /// Asymmetric mapping (Prumo M2): y=0.9 is not the invariant center.
+    /// Device 1080x2400 → adb y = round(0.9 * 2399) = 2159.
+    /// Preview frame 720x1600 would yield round(0.9 * 1599) = 1439 — the field bug.
+    #[test]
+    fn tap_normalized_y09_uses_device_display_size_not_preview_frame() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        let runner = Arc::new(RecordingInputRunner::default());
+        service.runner = runner.clone();
+        service.state.lock().unwrap().session =
+            Some(session_with_spaces((720, 1600), (1080, 2400)));
+
+        service
+            .tap_sync(0.5, 0.9, InputOrigin::Manual)
+            .expect("tap must convert against device display size");
+
+        assert_eq!(
+            runner.tap_xy(),
+            Some((540, 2159)),
+            "adb tap y must be 0.9 of 2400-1=2399 (2159), not 0.9 of the 720x1600 frame (1439)"
+        );
+    }
+
+    #[test]
+    fn drag_normalized_y09_uses_device_display_size_not_preview_frame() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        let runner = Arc::new(RecordingInputRunner::default());
+        service.runner = runner.clone();
+        service.state.lock().unwrap().session =
+            Some(session_with_spaces((720, 1600), (1080, 2400)));
+
+        service
+            .drag_sync(0.5, 0.1, 0.5, 0.9, 180, InputOrigin::Manual)
+            .expect("drag must convert against device display size");
+
+        assert_eq!(
+            runner.swipe_xy(),
+            Some(((540, 240), (540, 2159))),
+            "adb swipe must use device 1080x2400, not the 720x1600 preview frame"
+        );
+    }
+
+    /// wm size is physical (1080x2400) and does not swap on rotation.
+    /// `adb shell input tap` uses the current display: landscape 2400x1080.
+    /// Frame 1600x720 signals landscape → swap device axes before converting.
+    #[test]
+    fn tap_swaps_device_axes_when_preview_frame_is_landscape() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        let runner = Arc::new(RecordingInputRunner::default());
+        service.runner = runner.clone();
+        service.state.lock().unwrap().session =
+            Some(session_with_spaces((1600, 720), (1080, 2400)));
+
+        service
+            .tap_sync(0.9, 0.9, InputOrigin::Manual)
+            .expect("landscape tap must convert against swapped device display size");
+
+        // x: 0.9 * (2400-1) = 2159.1 → 2159
+        // y: 0.9 * (1080-1) = 971.1 → 971
+        assert_eq!(
+            runner.tap_xy(),
+            Some((2159, 971)),
+            "landscape adb tap must swap 1080x2400 → 2400x1080; y=0.9 of 1079 is 971, not 2159"
+        );
+    }
+
     #[test]
     fn input_origin_wire_defaults_to_agent_and_rejects_unknown() {
         assert_eq!(InputOrigin::default(), InputOrigin::Agent);
@@ -131,7 +199,54 @@ mod tests {
         }
     }
 
-    fn test_input_session() -> Arc<AndroidSession> {
+    #[derive(Default)]
+    struct RecordingInputRunner {
+        commands: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl RecordingInputRunner {
+        fn tap_xy(&self) -> Option<(u32, u32)> {
+            self.commands.lock().unwrap().iter().find_map(|args| {
+                let tap = args.iter().position(|arg| arg == "tap")?;
+                Some((
+                    args.get(tap + 1)?.parse().ok()?,
+                    args.get(tap + 2)?.parse().ok()?,
+                ))
+            })
+        }
+
+        fn swipe_xy(&self) -> Option<((u32, u32), (u32, u32))> {
+            self.commands.lock().unwrap().iter().find_map(|args| {
+                let swipe = args.iter().position(|arg| arg == "swipe")?;
+                Some((
+                    (
+                        args.get(swipe + 1)?.parse().ok()?,
+                        args.get(swipe + 2)?.parse().ok()?,
+                    ),
+                    (
+                        args.get(swipe + 3)?.parse().ok()?,
+                        args.get(swipe + 4)?.parse().ok()?,
+                    ),
+                ))
+            })
+        }
+    }
+
+    impl CommandRunner for RecordingInputRunner {
+        fn run(&self, _program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            self.commands.lock().unwrap().push(args.to_vec());
+            Ok(CommandOutput {
+                success: true,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn session_with_spaces(
+        preview_frame: (u32, u32),
+        device_display_size: (u32, u32),
+    ) -> Arc<AndroidSession> {
         Arc::new(AndroidSession {
             avd_name: "Pixel_8_API_35".to_string(),
             device: super::super::requirements::AndroidDevice {
@@ -150,7 +265,8 @@ mod tests {
             gate: Arc::new(PreviewGate::new(true)),
             stop: Arc::new(AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
-            dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
+            dimensions: Arc::new(Mutex::new(Some(preview_frame))),
+            device_display_size,
             emulator_process: Arc::new(Mutex::new(None)),
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
@@ -159,6 +275,10 @@ mod tests {
             preview: Arc::new(PreviewRuntime::new(PreviewMode::LegacyPrimary, 1)),
             first_preview: Arc::new(FirstPreviewGate::new()),
         })
+    }
+
+    fn test_input_session() -> Arc<AndroidSession> {
+        session_with_spaces((1080, 1920), (1080, 1920))
     }
 
     #[test]
@@ -382,11 +502,7 @@ impl AndroidEmulatorService {
 }
 
 fn normalized_pixels(session: &AndroidSession, x: f64, y: f64) -> Result<(u32, u32), String> {
-    let (width, height) = session
-        .dimensions
-        .lock()
-        .expect("Android frame dimensions poisoned")
-        .ok_or_else(|| "Android preview dimensions are not ready".to_string())?;
+    let (width, height) = session.adb_input_display_size()?;
     Ok((
         normalized_to_pixel(x, width)?,
         normalized_to_pixel(y, height)?,

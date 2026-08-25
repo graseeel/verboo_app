@@ -17,12 +17,28 @@ impl CommandRunner for RecordingRunner {
     }
 }
 
-#[derive(Default)]
 struct ExternalAttachRunner {
     commands: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    wm_size_stdout: std::sync::Mutex<Option<Vec<u8>>>,
+}
+
+impl Default for ExternalAttachRunner {
+    fn default() -> Self {
+        Self {
+            commands: Default::default(),
+            wm_size_stdout: std::sync::Mutex::new(Some(b"Physical size: 1080x2400\n".to_vec())),
+        }
+    }
 }
 
 impl ExternalAttachRunner {
+    fn failing_wm_size() -> Self {
+        Self {
+            commands: Default::default(),
+            wm_size_stdout: std::sync::Mutex::new(None),
+        }
+    }
+
     fn run_recorded(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
         self.commands
             .lock()
@@ -65,6 +81,20 @@ impl ExternalAttachRunner {
                 stdout: b"1\n".to_vec(),
                 stderr: Vec::new(),
             });
+        }
+        if args_match(args, &["-s", "emulator-5554", "shell", "wm", "size"]) {
+            return match self.wm_size_stdout.lock().unwrap().clone() {
+                Some(stdout) => Ok(CommandOutput {
+                    success: true,
+                    stdout,
+                    stderr: Vec::new(),
+                }),
+                None => Ok(CommandOutput {
+                    success: false,
+                    stdout: Vec::new(),
+                    stderr: b"wm: cannot get size\n".to_vec(),
+                }),
+            };
         }
         if args_match(
             args,
@@ -620,6 +650,7 @@ fn test_android_session_for_mode(
         stop: Arc::new(AtomicBool::new(false)),
         input_lock: Arc::new(Mutex::new(())),
         dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
+        device_display_size: (1080, 1920),
         emulator_process: Arc::new(Mutex::new(None)),
         recording: Arc::new(Mutex::new(None)),
         workers: Mutex::new(Vec::new()),
@@ -651,6 +682,7 @@ fn test_android_session_for_avd(
         stop: session.stop.clone(),
         input_lock: session.input_lock.clone(),
         dimensions: session.dimensions.clone(),
+        device_display_size: session.device_display_size,
         emulator_process: session.emulator_process.clone(),
         recording: session.recording.clone(),
         workers: Mutex::new(Vec::new()),

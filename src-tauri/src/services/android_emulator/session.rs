@@ -30,14 +30,17 @@ mod boot;
 #[path = "session/preview.rs"]
 mod preview_runtime;
 pub(crate) use boot::emit_error;
+#[cfg(test)]
+use boot::parse_wm_size;
 use boot::{
     apply_postboot_gpu_probe, attach_ownership, boot_owned_with_attempts, command_error,
     emit_lifecycle, emit_session_ended, emulator_launch_args, emulator_path, find_running_serial,
     is_boot_completed, ownership_for_running_avd, parse_png_dimensions,
-    probe_owned_surface_flinger, should_shutdown, shutdown_owned_emulator,
-    surface_flinger_uses_software_gpu, validate_fallback_fps, validate_stream_fps, wait_for_boot,
-    EmulatorLauncher, GpuMode, OwnedBootAttemptError, OwnedBootAttempts, OwnedBootError,
-    OwnedBootResult, SystemEmulatorLauncher, SystemOwnedBootAttempts,
+    probe_owned_surface_flinger, query_device_display_size, should_shutdown,
+    shutdown_owned_emulator, surface_flinger_uses_software_gpu, terminate_process,
+    validate_fallback_fps, validate_stream_fps, wait_for_boot, EmulatorLauncher, GpuMode,
+    OwnedBootAttemptError, OwnedBootAttempts, OwnedBootError, OwnedBootResult,
+    SystemEmulatorLauncher, SystemOwnedBootAttempts,
 };
 use preview_runtime::{
     capture_and_emit, coordinate_fallback, fail_first_or_emit_terminal, finish_started_preview,
@@ -649,7 +652,12 @@ pub(crate) struct AndroidSession {
     pub(crate) gate: Arc<PreviewGate>,
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) input_lock: Arc<Mutex<()>>,
+    /// Latest preview-frame pixel size (VAF1/PNG). Distinct from adb input space.
     pub(crate) dimensions: Arc<Mutex<Option<(u32, u32)>>>,
+    /// Device display size from `adb shell wm size` (override if present, else
+    /// physical). Natural orientation; `adb shell input tap/swipe` uses this
+    /// space, with axes swapped when the latest preview frame is rotated.
+    pub(crate) device_display_size: (u32, u32),
     pub(crate) emulator_process: Arc<Mutex<Option<Child>>>,
     pub(crate) recording: Arc<Mutex<Option<super::media::ActiveRecording>>>,
     pub(crate) workers: Mutex<Vec<JoinHandle<()>>>,
@@ -678,6 +686,43 @@ impl AndroidSession {
                 stage: AndroidEmulatorStartupStage::Ready,
             },
         }
+    }
+
+    /// Pixel extent for `adb shell input tap/swipe` and uiautomator bounds.
+    /// Uses `device_display_size` (wm size), swapping axes when the latest
+    /// preview frame reports the opposite orientation. Never uses the
+    /// preview-frame pixel size as an adb coordinate space.
+    pub(crate) fn adb_input_display_size(&self) -> Result<(u32, u32), String> {
+        let (width, height) = self.device_display_size;
+        if width == 0 || height == 0 {
+            return Err("Android device display size is unavailable".to_string());
+        }
+        let preview_frame = *self
+            .dimensions
+            .lock()
+            .expect("Android frame dimensions poisoned");
+        Ok(orient_device_display_size((width, height), preview_frame))
+    }
+}
+
+/// `adb wm size` reports the natural/physical (or override) size and does
+/// not swap on rotation. `adb shell input tap` and uiautomator dumps use
+/// the current display, which swaps axes in landscape. The latest preview
+/// frame is only an orientation signal here — never a pixel space.
+pub(crate) fn orient_device_display_size(
+    device: (u32, u32),
+    preview_frame: Option<(u32, u32)>,
+) -> (u32, u32) {
+    let (device_width, device_height) = device;
+    let Some((frame_width, frame_height)) = preview_frame else {
+        return device;
+    };
+    let frame_landscape = frame_width > frame_height;
+    let device_landscape = device_width > device_height;
+    if frame_landscape != device_landscape {
+        (device_height, device_width)
+    } else {
+        device
     }
 }
 
@@ -789,6 +834,7 @@ impl AndroidEmulatorService {
             stop: Arc::new(AtomicBool::new(false)),
             input_lock: current.input_lock.clone(),
             dimensions: Arc::new(Mutex::new(None)),
+            device_display_size: current.device_display_size,
             emulator_process: current.emulator_process.clone(),
             recording: current.recording.clone(),
             workers: Mutex::new(Vec::new()),
@@ -1044,6 +1090,44 @@ impl AndroidEmulatorService {
             }
         }
 
+        if self.session_cancel.is_cancelled() {
+            if boot_requested {
+                let _ = terminate_process(&process);
+                let _ = self.ownership.remove(&ledger_avd_name);
+            }
+            return Err("Android emulator attach was cancelled".to_string());
+        }
+        let device_display_size = match query_device_display_size(
+            self.runner.as_ref(),
+            &adb,
+            &serial,
+            self.session_cancel.flag(),
+            Instant::now() + ADB_COMMAND_TIMEOUT,
+        ) {
+            Ok(size) => size,
+            Err(error) => {
+                if boot_requested {
+                    let _ = terminate_process(&process);
+                    let _ = self.ownership.remove(&ledger_avd_name);
+                }
+                if self.session_cancel.is_cancelled() {
+                    return Err("Android emulator attach was cancelled".to_string());
+                }
+                sink.error(AndroidEmulatorError::with_code(
+                    error.clone(),
+                    PreviewReason::Unavailable,
+                ));
+                return Err(error);
+            }
+        };
+        if self.session_cancel.is_cancelled() {
+            if boot_requested {
+                let _ = terminate_process(&process);
+                let _ = self.ownership.remove(&ledger_avd_name);
+            }
+            return Err("Android emulator attach was cancelled".to_string());
+        }
+
         let device = AndroidDevice {
             avd_name: avd_name.clone(),
             display_name: avd_name.clone(),
@@ -1068,6 +1152,7 @@ impl AndroidEmulatorService {
             stop,
             input_lock: Arc::new(Mutex::new(())),
             dimensions: Arc::new(Mutex::new(None)),
+            device_display_size,
             emulator_process: process,
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),

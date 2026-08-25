@@ -494,6 +494,105 @@ fn png_dimensions_read_the_real_ihdr() {
 }
 
 #[test]
+fn parse_wm_size_reads_physical_and_prefers_override() {
+    assert_eq!(
+        parse_wm_size("Physical size: 1080x2400\n").unwrap(),
+        (1080, 2400)
+    );
+    assert_eq!(
+        parse_wm_size("Physical size: 1080x2400\nOverride size: 1280x720\n").unwrap(),
+        (1280, 720),
+        "Override size is the active display; input tap uses it"
+    );
+    assert_eq!(
+        parse_wm_size("Physical size: 1440x2560\r\nOverride size: 1080x1920\r\n").unwrap(),
+        (1080, 1920)
+    );
+    let error = parse_wm_size("not a size").unwrap_err();
+    assert!(
+        error.contains("unavailable"),
+        "wm size parse must fail-closed, not guess: {error}"
+    );
+}
+
+#[test]
+fn attach_stores_device_display_size_from_wm_size_not_preview_frame() {
+    let root = tempfile::tempdir().unwrap();
+    let runner = Arc::new(ExternalAttachRunner::default());
+    let launcher = RecordingEmulatorLauncher::default();
+    let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    service.runner = runner.clone();
+
+    service
+        .attach_sync_with_sink(
+            None,
+            Arc::new(RecordingAttachSink),
+            &launcher,
+            Arc::new(SystemPreviewFactoryProvider),
+            Arc::new(SystemLegacyPreviewBackendFactory::default()),
+            "Pixel_8_API_35".to_string(),
+            2,
+            1.0,
+            None,
+        )
+        .unwrap();
+    let session = service.current_session_option().expect("attached session");
+    assert_eq!(
+        session.device_display_size,
+        (1080, 2400),
+        "device_display_size must come from adb wm size Physical size"
+    );
+    assert_eq!(
+        *session.dimensions.lock().unwrap(),
+        Some((1080, 1920)),
+        "preview frame dimensions stay on the PNG/VAF1 space (png_output IHDR), not wm size"
+    );
+    let queried_wm_size = runner.commands.lock().unwrap().iter().any(|(_, args)| {
+        args.ends_with(&["shell".to_string(), "wm".to_string(), "size".to_string()])
+    });
+    assert!(queried_wm_size, "attach must query adb shell wm size");
+    service.detach_sync().unwrap();
+}
+
+#[test]
+fn attach_fails_closed_when_wm_size_is_unavailable() {
+    let root = tempfile::tempdir().unwrap();
+    let runner = Arc::new(ExternalAttachRunner::failing_wm_size());
+    let launcher = RecordingEmulatorLauncher::default();
+    let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    service.runner = runner;
+    let sink = Arc::new(OrderedAttachSink::default());
+
+    let error = service
+        .attach_sync_with_sink(
+            None,
+            sink.clone(),
+            &launcher,
+            Arc::new(SystemPreviewFactoryProvider),
+            Arc::new(SystemLegacyPreviewBackendFactory::default()),
+            "Pixel_8_API_35".to_string(),
+            2,
+            1.0,
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("unavailable"),
+        "wm size failure must fail-closed, not fall back to the preview frame: {error}"
+    );
+    assert!(
+        service.current_session_option().is_none(),
+        "fail-closed attach must not publish a session that would tap in the wrong space"
+    );
+    let payload = sink
+        .error_payloads()
+        .last()
+        .cloned()
+        .expect("fail-closed wm size must emit a typed error");
+    assert_eq!(payload.code, Some(PreviewReason::Unavailable));
+}
+
+#[test]
 fn lifecycle_stages_serialize_with_the_frozen_ios_literals() {
     assert_eq!(
         serde_json::to_string(&AndroidEmulatorStartupStage::WaitingForDisplay).unwrap(),

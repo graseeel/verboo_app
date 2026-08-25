@@ -374,7 +374,8 @@ fn vaf1_grpc_failure_fallback_is_ordered_single_owner_and_no_legacy_error() {
 #[test]
 fn vaf1_first_slot_and_frame_ready_precede_ready_and_attach_response() {
     let root = tempfile::tempdir().unwrap();
-    let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+    service.runner = Arc::new(RecordingRunner::default());
     let sink = Arc::new(OrderedAttachSink::default());
     let provider = Arc::new(OneFramePreviewFactoryProvider::new(rgb_image(2, 3)));
     let legacy = Arc::new(RecordingLegacyPreviewBackendFactory::new(sink.order_arc()));

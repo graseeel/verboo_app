@@ -63,6 +63,75 @@ pub(super) fn emulator_launch_args(avd_name: &str, gpu: GpuMode) -> Vec<String> 
     ]
 }
 
+pub(super) fn parse_wm_size(output: &str) -> Result<(u32, u32), String> {
+    let override_size = parse_wm_size_labeled(output, "Override size:");
+    let physical_size = parse_wm_size_labeled(output, "Physical size:");
+    override_size
+        .or(physical_size)
+        .ok_or_else(|| "Android device display size is unavailable".to_string())
+}
+
+fn parse_wm_size_labeled(output: &str, label: &str) -> Option<(u32, u32)> {
+    let label_lower = label.to_ascii_lowercase();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let Some(pos) = lower.find(&label_lower) else {
+            continue;
+        };
+        let rest = trimmed.get(pos + label.len()..)?.trim();
+        let (width, height) = rest.split_once('x')?;
+        let width = width
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)?;
+        let height = height
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)?;
+        return Some((width, height));
+    }
+    None
+}
+
+pub(super) fn query_device_display_size(
+    runner: &dyn CommandRunner,
+    adb: &str,
+    serial: &str,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<(u32, u32), String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("Android emulator attach was cancelled".to_string());
+    }
+    let output = runner.run_interruptible(
+        adb,
+        &[
+            "-s".to_string(),
+            serial.to_string(),
+            "shell".to_string(),
+            "wm".to_string(),
+            "size".to_string(),
+        ],
+        cancel,
+        deadline,
+    )?;
+    if cancel.load(Ordering::Acquire) {
+        return Err("Android emulator attach was cancelled".to_string());
+    }
+    if !output.success {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "Android device display size is unavailable".to_string()
+        } else {
+            format!("Android device display size is unavailable: {detail}")
+        });
+    }
+    parse_wm_size(&String::from_utf8_lossy(&output.stdout))
+}
+
 pub(super) fn parse_png_dimensions(png: &[u8]) -> Result<(u32, u32), String> {
     const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     if png.len() < 24 || &png[..8] != PNG_SIGNATURE || &png[12..16] != b"IHDR" {

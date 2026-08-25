@@ -939,6 +939,7 @@ mod tests {
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
             dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
+            device_display_size: (1080, 1920),
             emulator_process: Arc::new(Mutex::new(None)),
             recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
