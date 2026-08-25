@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::grpc::generated;
 
@@ -151,6 +151,9 @@ impl SessionSeq {
 pub(crate) trait Clock: Send + Sync {
     fn unix_micros(&self) -> u64;
     fn monotonic_micros(&self) -> u64;
+    fn delay_micros(&self, _micros: u64) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
 }
 
 pub(crate) struct SystemClock {
@@ -183,6 +186,51 @@ impl Clock for SystemClock {
             .elapsed()
             .as_micros()
             .min(u128::from(u64::MAX)) as u64
+    }
+
+    fn delay_micros(&self, micros: u64) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(tokio::time::sleep(Duration::from_micros(micros)))
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct InstantRetryClock {
+    monotonic_us: AtomicU64,
+}
+
+#[cfg(test)]
+impl Default for InstantRetryClock {
+    fn default() -> Self {
+        Self {
+            monotonic_us: AtomicU64::new(1),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Clock for InstantRetryClock {
+    fn unix_micros(&self) -> u64 {
+        1
+    }
+
+    fn monotonic_micros(&self) -> u64 {
+        self.monotonic_us.load(Ordering::Acquire)
+    }
+
+    fn delay_micros(&self, micros: u64) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.monotonic_us.fetch_add(micros, Ordering::AcqRel);
+        Box::pin(async {})
+    }
+}
+
+pub(crate) fn coordinator_clock() -> Arc<dyn Clock> {
+    #[cfg(test)]
+    {
+        Arc::new(InstantRetryClock::default())
+    }
+    #[cfg(not(test))]
+    {
+        Arc::new(SystemClock::new())
     }
 }
 
@@ -499,6 +547,20 @@ pub(crate) struct PreviewControl {
     pub(crate) stop: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenRetry {
+    pub budget_us: u64,
+    pub backoff_us: u64,
+}
+
+pub(crate) const OWNED_OPEN_RETRY: OpenRetry = OpenRetry {
+    budget_us: 2_000_000,
+    backoff_us: 100_000,
+};
+
+/// Caps retries when the clock does not advance (default `delay_micros` is a no-op).
+const MAX_OWNED_OPEN_ATTEMPTS: u32 = 24;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkerOutcome {
     Stopped,
@@ -555,16 +617,47 @@ pub(crate) async fn run_vaf1_worker(
     slot: Arc<LatestSlot>,
     first_preview: Arc<FirstPreviewGate>,
     health: Arc<PreviewHealth>,
-    mut control: tokio::sync::watch::Receiver<PreviewControl>,
+    control: tokio::sync::watch::Receiver<PreviewControl>,
     factory: Arc<dyn ScreenshotStreamFactory>,
     sink: Arc<dyn PreviewEventSink>,
     clock: Arc<dyn Clock>,
     gpu_software: bool,
 ) -> WorkerOutcome {
+    run_vaf1_worker_with_open_retry(
+        generation,
+        requested_fps,
+        slot,
+        first_preview,
+        health,
+        control,
+        factory,
+        sink,
+        clock,
+        gpu_software,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_vaf1_worker_with_open_retry(
+    generation: u64,
+    requested_fps: Arc<Mutex<u16>>,
+    slot: Arc<LatestSlot>,
+    first_preview: Arc<FirstPreviewGate>,
+    health: Arc<PreviewHealth>,
+    mut control: tokio::sync::watch::Receiver<PreviewControl>,
+    factory: Arc<dyn ScreenshotStreamFactory>,
+    sink: Arc<dyn PreviewEventSink>,
+    clock: Arc<dyn Clock>,
+    gpu_software: bool,
+    open_retry: Option<OpenRetry>,
+) -> WorkerOutcome {
     let mut seq = SessionSeq::new();
     let mut orientation = Orientation::Portrait;
     let mut last_publish_us = None;
     let mut state_emitted = false;
+    let mut open_fail_started_us = None;
+    let mut open_attempts = 0u32;
 
     loop {
         let initial_control = *control.borrow();
@@ -618,23 +711,63 @@ pub(crate) async fn run_vaf1_worker(
             continue;
         };
         let mut stream = match open_result {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                open_fail_started_us = None;
+                open_attempts = 0;
+                stream
+            }
             Err(error) => {
-                let final_control = control.borrow();
-                if final_control.stop {
-                    slot.clear();
-                    let error = FirstPreviewError::Cancelled;
-                    health.terminal(error.clone());
-                    first_preview.fail(error);
-                    return WorkerOutcome::Stopped;
+                {
+                    let final_control = control.borrow();
+                    if final_control.stop {
+                        slot.clear();
+                        let error = FirstPreviewError::Cancelled;
+                        health.terminal(error.clone());
+                        first_preview.fail(error);
+                        return WorkerOutcome::Stopped;
+                    }
+                    if !final_control.visible {
+                        slot.clear();
+                        continue;
+                    }
                 }
-                if !final_control.visible {
-                    drop(final_control);
-                    slot.clear();
-                    continue;
+                let Some(retry) = open_retry else {
+                    health.recovering();
+                    return WorkerOutcome::Fallback(reason_for_grpc_error(error));
+                };
+                let now_us = clock.monotonic_micros();
+                let started_us = *open_fail_started_us.get_or_insert(now_us);
+                open_attempts = open_attempts.saturating_add(1);
+                if now_us.saturating_sub(started_us) >= retry.budget_us
+                    || open_attempts >= MAX_OWNED_OPEN_ATTEMPTS
+                {
+                    health.recovering();
+                    return WorkerOutcome::Fallback(reason_for_grpc_error(error));
                 }
-                health.recovering();
-                return WorkerOutcome::Fallback(reason_for_grpc_error(error));
+                tokio::select! {
+                    _ = clock.delay_micros(retry.backoff_us) => {}
+                    changed = control.changed() => {
+                        if changed.is_err() {
+                            slot.clear();
+                            let error = FirstPreviewError::Cancelled;
+                            health.terminal(error.clone());
+                            first_preview.fail(error);
+                            return WorkerOutcome::Stopped;
+                        }
+                        let next = *control.borrow_and_update();
+                        if next.stop {
+                            slot.clear();
+                            let error = FirstPreviewError::Cancelled;
+                            health.terminal(error.clone());
+                            first_preview.fail(error);
+                            return WorkerOutcome::Stopped;
+                        }
+                        if !next.visible {
+                            slot.clear();
+                        }
+                    }
+                }
+                continue;
             }
         };
         let open_visible = {
@@ -863,6 +996,11 @@ mod tests {
             self.monotonic_reads.fetch_add(1, Ordering::AcqRel);
             self.monotonic_changed.notify_waiters();
             self.monotonic_us.load(Ordering::Acquire)
+        }
+
+        fn delay_micros(&self, micros: u64) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.monotonic_us.fetch_add(micros, Ordering::AcqRel);
+            Box::pin(async {})
         }
     }
 
@@ -1975,6 +2113,307 @@ mod tests {
         assert_eq!(slot.take(7), Err(PreviewReadError::NoFrame));
         assert!(sink.states().is_empty());
         assert!(sink.frames().is_empty());
+    }
+
+    struct FailThenSucceedFactory {
+        remaining_failures: AtomicUsize,
+        opens: AtomicUsize,
+        frame: Mutex<Option<generated::Image>>,
+    }
+
+    impl ScreenshotStreamFactory for FailThenSucceedFactory {
+        fn open(&self, _width: u32, _height: u32) -> OpenStreamFuture<'_> {
+            self.opens.fetch_add(1, Ordering::AcqRel);
+            if self.remaining_failures
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Box::pin(async { Err(super::super::grpc::GrpcError::Unavailable) });
+            }
+            let frame = self.frame.lock().unwrap().take();
+            Box::pin(async move {
+                Ok(Box::new(OneShotStream { first: frame }) as Box<dyn ScreenshotStream>)
+            })
+        }
+    }
+
+    struct OneShotStream {
+        first: Option<generated::Image>,
+    }
+
+    impl ScreenshotStream for OneShotStream {
+        fn message(&mut self) -> StreamMessageFuture<'_> {
+            match self.first.take() {
+                Some(frame) => Box::pin(async move { Ok(Some(frame)) }),
+                None => Box::pin(std::future::pending()),
+            }
+        }
+    }
+
+    struct HoldDelayClock {
+        monotonic_us: AtomicU64,
+        delay_started: Notify,
+        release: Notify,
+    }
+
+    impl Clock for HoldDelayClock {
+        fn unix_micros(&self) -> u64 {
+            1
+        }
+
+        fn monotonic_micros(&self) -> u64 {
+            self.monotonic_us.load(Ordering::Acquire)
+        }
+
+        fn delay_micros(&self, micros: u64) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.delay_started.notify_waiters();
+                self.release.notified().await;
+                self.monotonic_us.fetch_add(micros, Ordering::AcqRel);
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_open_retries_until_success_within_fake_clock_budget() {
+        let factory = Arc::new(FailThenSucceedFactory {
+            remaining_failures: AtomicUsize::new(2),
+            opens: AtomicUsize::new(0),
+            frame: Mutex::new(Some(worker_image(2, 3, 4_000_000_000))),
+        });
+        let sink = Arc::new(RecordingPreviewSink::default());
+        let first_preview = Arc::new(FirstPreviewGate::new());
+        let (_control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        let task = tokio::spawn(run_vaf1_worker_with_open_retry(
+            8,
+            Arc::new(Mutex::new(60)),
+            Arc::new(LatestSlot::new(8)),
+            first_preview.clone(),
+            Arc::new(PreviewHealth::new()),
+            control_rx,
+            factory.clone(),
+            sink.clone(),
+            Arc::new(FakeClock::new(1, 1)),
+            false,
+            Some(OpenRetry {
+                budget_us: 1_000,
+                backoff_us: 100,
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_millis(400), sink.wait_for_frames(1))
+            .await
+            .expect("owned open retry must publish a grpc frame inside the fake-clock budget");
+        assert_eq!(factory.opens.load(Ordering::Acquire), 3);
+        assert_eq!(first_preview.status(), FirstPreviewState::Ready);
+        assert_eq!(
+            sink.states()[0].source,
+            PreviewSource::Grpc,
+            "retry success must stay on grpc, not PNG fallback"
+        );
+        drop(task);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_open_retry_falls_back_when_fake_clock_budget_expires() {
+        let (_control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        let factory = Arc::new(CountingFailFactory::default());
+        let outcome = run_vaf1_worker_with_open_retry(
+            8,
+            Arc::new(Mutex::new(30)),
+            Arc::new(LatestSlot::new(8)),
+            Arc::new(FirstPreviewGate::new()),
+            Arc::new(PreviewHealth::new()),
+            control_rx,
+            factory.clone(),
+            Arc::new(RecordingPreviewSink::default()),
+            Arc::new(FakeClock::new(1, 1)),
+            false,
+            Some(OpenRetry {
+                budget_us: 250,
+                backoff_us: 100,
+            }),
+        )
+        .await;
+        assert_eq!(outcome, WorkerOutcome::Fallback(PreviewReason::Unavailable));
+        let opens = factory.opens.load(Ordering::Acquire);
+        assert!(opens > 1, "budget retry must probe more than once, got {opens}");
+        assert!(opens <= 5, "retry must stay bounded, got {opens}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_retry_stop_during_backoff_is_absorbing() {
+        let (control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        let clock = Arc::new(HoldDelayClock {
+            monotonic_us: AtomicU64::new(1),
+            delay_started: Notify::new(),
+            release: Notify::new(),
+        });
+        let first_preview = Arc::new(FirstPreviewGate::new());
+        let health = Arc::new(PreviewHealth::new());
+        let started = clock.delay_started.notified();
+        let task = tokio::spawn(run_vaf1_worker_with_open_retry(
+            9,
+            Arc::new(Mutex::new(60)),
+            Arc::new(LatestSlot::new(9)),
+            first_preview.clone(),
+            health.clone(),
+            control_rx,
+            Arc::new(FailingStreamFactory(super::super::grpc::GrpcError::Unavailable)),
+            Arc::new(RecordingPreviewSink::default()),
+            clock.clone(),
+            false,
+            Some(OpenRetry {
+                budget_us: 2_000_000,
+                backoff_us: 100_000,
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_millis(400), started)
+            .await
+            .expect("owned open retry must enter backoff so cancel can interrupt it");
+        control_tx.send_replace(PreviewControl {
+            visible: true,
+            stop: true,
+        });
+        clock.release.notify_waiters();
+        assert_eq!(task.await.unwrap(), WorkerOutcome::Stopped);
+        assert_eq!(
+            first_preview.status(),
+            FirstPreviewState::Failed(FirstPreviewError::Cancelled)
+        );
+        assert_eq!(
+            health.status(),
+            PreviewHealthState::Terminal(FirstPreviewError::Cancelled)
+        );
+    }
+
+    struct LateReopenFactory {
+        opens: AtomicUsize,
+        frames: Mutex<Vec<generated::Image>>,
+        dropped: Arc<Notify>,
+    }
+
+    struct DropOneShotStream {
+        first: Option<generated::Image>,
+        dropped: Arc<Notify>,
+    }
+
+    impl ScreenshotStream for DropOneShotStream {
+        fn message(&mut self) -> StreamMessageFuture<'_> {
+            match self.first.take() {
+                Some(frame) => Box::pin(async move { Ok(Some(frame)) }),
+                None => Box::pin(std::future::pending()),
+            }
+        }
+    }
+
+    impl Drop for DropOneShotStream {
+        fn drop(&mut self) {
+            self.dropped.notify_waiters();
+        }
+    }
+
+    impl ScreenshotStreamFactory for LateReopenFactory {
+        fn open(&self, _width: u32, _height: u32) -> OpenStreamFuture<'_> {
+            let n = self.opens.fetch_add(1, Ordering::AcqRel) + 1;
+            match n {
+                1 | 3 => Box::pin(async { Err(super::super::grpc::GrpcError::Unavailable) }),
+                2 | 4 => {
+                    let frame = self.frames.lock().unwrap().remove(0);
+                    let dropped = self.dropped.clone();
+                    Box::pin(async move {
+                        Ok(Box::new(DropOneShotStream {
+                            first: Some(frame),
+                            dropped,
+                        }) as Box<dyn ScreenshotStream>)
+                    })
+                }
+                _ => Box::pin(async { Err(super::super::grpc::GrpcError::Unavailable) }),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_open_resets_retry_budget_so_late_reopen_can_retry() {
+        let factory = Arc::new(LateReopenFactory {
+            opens: AtomicUsize::new(0),
+            frames: Mutex::new(vec![
+                worker_image(2, 3, 4_000_000_000),
+                worker_image(2, 3, 4_000_000_001),
+            ]),
+            dropped: Arc::new(Notify::new()),
+        });
+        let sink = Arc::new(RecordingPreviewSink::default());
+        let clock = Arc::new(FakeClock::new(1, 1));
+        let (control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        let task = tokio::spawn(run_vaf1_worker_with_open_retry(
+            8,
+            Arc::new(Mutex::new(60)),
+            Arc::new(LatestSlot::new(8)),
+            Arc::new(FirstPreviewGate::new()),
+            Arc::new(PreviewHealth::new()),
+            control_rx,
+            factory.clone(),
+            sink.clone(),
+            clock.clone(),
+            false,
+            Some(OpenRetry {
+                budget_us: 2_000_000,
+                backoff_us: 100,
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_millis(400), sink.wait_for_frames(1))
+            .await
+            .expect("boot race retry must publish the first grpc frame");
+        clock.set_monotonic(30_000_000);
+        let dropped = factory.dropped.notified();
+        control_tx.send_replace(PreviewControl {
+            visible: false,
+            stop: false,
+        });
+        tokio::time::timeout(std::time::Duration::from_millis(400), dropped)
+            .await
+            .expect("hide after 30s must drop the healthy stream so the worker re-opens");
+        control_tx.send_replace(PreviewControl {
+            visible: true,
+            stop: false,
+        });
+        tokio::time::timeout(std::time::Duration::from_millis(400), sink.wait_for_frames(2))
+            .await
+            .expect(
+                "re-open 30s after a successful stream must get a fresh retry budget, not session-global expiry",
+            );
+        assert!(
+            factory.opens.load(Ordering::Acquire) >= 4,
+            "late re-open must fail then retry, got {} opens",
+            factory.opens.load(Ordering::Acquire)
+        );
+        drop(task);
+    }
+
+    #[derive(Default)]
+    struct CountingFailFactory {
+        opens: AtomicUsize,
+    }
+
+    impl ScreenshotStreamFactory for CountingFailFactory {
+        fn open(&self, _width: u32, _height: u32) -> OpenStreamFuture<'_> {
+            self.opens.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async { Err(super::super::grpc::GrpcError::Unavailable) })
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

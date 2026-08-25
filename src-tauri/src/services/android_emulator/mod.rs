@@ -399,9 +399,12 @@ pub async fn android_emulator_tap(
     service: State<'_, AndroidEmulatorService>,
     x: f64,
     y: f64,
+    origin: Option<input::InputOrigin>,
 ) -> Result<(), String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.tap_sync(x, y))
+    tauri::async_runtime::spawn_blocking(move || {
+        service.tap_sync(x, y, origin.unwrap_or_default())
+    })
         .await
         .map_err(|error| format!("failed to tap Android emulator: {error}"))?
 }
@@ -414,10 +417,18 @@ pub async fn android_emulator_drag(
     to_x: f64,
     to_y: f64,
     duration_ms: u64,
+    origin: Option<input::InputOrigin>,
 ) -> Result<(), String> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.drag_sync(from_x, from_y, to_x, to_y, duration_ms)
+        service.drag_sync(
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            duration_ms,
+            origin.unwrap_or_default(),
+        )
     })
     .await
     .map_err(|error| format!("failed to drag Android emulator: {error}"))?
@@ -427,9 +438,12 @@ pub async fn android_emulator_drag(
 pub async fn android_emulator_type_text(
     service: State<'_, AndroidEmulatorService>,
     text: String,
+    origin: Option<input::InputOrigin>,
 ) -> Result<(), String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.type_text_sync(&text))
+    tauri::async_runtime::spawn_blocking(move || {
+        service.type_text_sync(&text, origin.unwrap_or_default())
+    })
         .await
         .map_err(|error| format!("failed to type into Android emulator: {error}"))?
 }
@@ -438,9 +452,12 @@ pub async fn android_emulator_type_text(
 pub async fn android_emulator_press_key(
     service: State<'_, AndroidEmulatorService>,
     key: String,
+    origin: Option<input::InputOrigin>,
 ) -> Result<(), String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.press_key_sync(&key))
+    tauri::async_runtime::spawn_blocking(move || {
+        service.press_key_sync(&key, origin.unwrap_or_default())
+    })
         .await
         .map_err(|error| format!("failed to press Android emulator key: {error}"))?
 }

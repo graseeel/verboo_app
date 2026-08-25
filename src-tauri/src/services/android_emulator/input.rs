@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
 use super::session::{
@@ -13,9 +14,35 @@ use super::AndroidEmulatorService;
 
 const INPUT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum InputOrigin {
+    #[default]
+    Agent,
+    Manual,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PRESENCE_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_presence_log() -> Vec<String> {
+    PRESENCE_LOG.with(|log| log.replace(Vec::new()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::preview::{FirstPreviewGate, PreviewMode};
+    use super::super::session::{
+        AndroidEmulatorOwnership, AndroidSession, PreviewGate, PreviewRuntime,
+    };
+    use super::super::{CommandOutput, CommandRunner};
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Mutex;
 
     #[test]
     fn escape_adb_input_text_maps_spaces_and_shell_metacharacters() {
@@ -51,6 +78,88 @@ mod tests {
                 "180",
             ]
         );
+    }
+
+    #[test]
+    fn input_origin_wire_defaults_to_agent_and_rejects_unknown() {
+        assert_eq!(InputOrigin::default(), InputOrigin::Agent);
+        assert_eq!(
+            serde_json::from_str::<InputOrigin>("\"agent\"").unwrap(),
+            InputOrigin::Agent
+        );
+        assert_eq!(
+            serde_json::from_str::<InputOrigin>("\"manual\"").unwrap(),
+            InputOrigin::Manual
+        );
+        assert!(serde_json::from_str::<InputOrigin>("\"other\"").is_err());
+    }
+
+    #[test]
+    fn run_input_emits_presence_only_for_agent_origin() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = Arc::new(SucceedingInputRunner);
+        service.state.lock().unwrap().session = Some(test_input_session());
+
+        take_presence_log();
+        service
+            .tap_sync(0.5, 0.5, InputOrigin::Agent)
+            .unwrap();
+        assert_eq!(take_presence_log(), ["start:tap", "clear:tap"]);
+
+        service
+            .tap_sync(0.5, 0.5, InputOrigin::Manual)
+            .unwrap();
+        assert!(
+            take_presence_log().is_empty(),
+            "manual origin must not emit presence"
+        );
+
+        service.type_text_sync("ok", InputOrigin::default()).unwrap();
+        assert_eq!(take_presence_log(), ["start:typeText", "clear:typeText"]);
+    }
+
+    #[derive(Default)]
+    struct SucceedingInputRunner;
+
+    impl CommandRunner for SucceedingInputRunner {
+        fn run(&self, _program: &str, _args: &[String]) -> Result<CommandOutput, String> {
+            Ok(CommandOutput {
+                success: true,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn test_input_session() -> Arc<AndroidSession> {
+        Arc::new(AndroidSession {
+            avd_name: "Pixel_8_API_35".to_string(),
+            device: super::super::requirements::AndroidDevice {
+                avd_name: "Pixel_8_API_35".to_string(),
+                display_name: "Pixel 8".to_string(),
+                api_level: 35,
+                family: super::super::requirements::AndroidDeviceFamily::Phone,
+                running: true,
+            },
+            serial: "emulator-5554".to_string(),
+            adb_path: PathBuf::from("adb"),
+            ownership: AndroidEmulatorOwnership::External,
+            generation: 1,
+            stream_fps: Arc::new(Mutex::new(30)),
+            fallback_fps: Arc::new(Mutex::new(1.0)),
+            gate: Arc::new(PreviewGate::new(true)),
+            stop: Arc::new(AtomicBool::new(false)),
+            input_lock: Arc::new(Mutex::new(())),
+            dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
+            emulator_process: Arc::new(Mutex::new(None)),
+            recording: Arc::new(Mutex::new(None)),
+            workers: Mutex::new(Vec::new()),
+            emulator_pid: None,
+            gpu_software: false,
+            preview: Arc::new(PreviewRuntime::new(PreviewMode::LegacyPrimary, 1)),
+            first_preview: Arc::new(FirstPreviewGate::new()),
+        })
     }
 
     #[test]
@@ -164,11 +273,11 @@ pub(crate) fn build_keyevent_args(serial: &str, keycode: u32) -> Vec<String> {
 }
 
 impl AndroidEmulatorService {
-    pub(crate) fn tap_sync(&self, x: f64, y: f64) -> Result<(), String> {
+    pub(crate) fn tap_sync(&self, x: f64, y: f64, origin: InputOrigin) -> Result<(), String> {
         let session = self.current_session()?;
         let (pixel_x, pixel_y) = normalized_pixels(&session, x, y)?;
         let args = build_tap_args(&session.serial, pixel_x, pixel_y);
-        self.run_input(&session, "tap", args, PresenceTarget::Target { x, y })
+        self.run_input(&session, "tap", args, PresenceTarget::Target { x, y }, origin)
     }
 
     pub(crate) fn drag_sync(
@@ -178,6 +287,7 @@ impl AndroidEmulatorService {
         to_x: f64,
         to_y: f64,
         duration_ms: u64,
+        origin: InputOrigin,
     ) -> Result<(), String> {
         let session = self.current_session()?;
         let from = normalized_pixels(&session, from_x, from_y)?;
@@ -194,21 +304,22 @@ impl AndroidEmulatorService {
                 },
                 end: AndroidEmulatorPoint { x: to_x, y: to_y },
             },
+            origin,
         )
     }
 
-    pub(crate) fn type_text_sync(&self, text: &str) -> Result<(), String> {
+    pub(crate) fn type_text_sync(&self, text: &str, origin: InputOrigin) -> Result<(), String> {
         let session = self.current_session()?;
         let args = build_text_args(&session.serial, text)?;
-        self.run_input(&session, "typeText", args, PresenceTarget::None)
+        self.run_input(&session, "typeText", args, PresenceTarget::None, origin)
     }
 
-    pub(crate) fn press_key_sync(&self, key: &str) -> Result<(), String> {
+    pub(crate) fn press_key_sync(&self, key: &str, origin: InputOrigin) -> Result<(), String> {
         let keycode = super::keycode_for_key(key)
             .ok_or_else(|| format!("unsupported Android emulator key: {key}"))?;
         let session = self.current_session()?;
         let args = build_keyevent_args(&session.serial, keycode);
-        self.run_input(&session, "pressKey", args, PresenceTarget::None)
+        self.run_input(&session, "pressKey", args, PresenceTarget::None, origin)
     }
 
     fn run_input(
@@ -217,6 +328,7 @@ impl AndroidEmulatorService {
         action: &str,
         args: Vec<String>,
         target: PresenceTarget,
+        origin: InputOrigin,
     ) -> Result<(), String> {
         let _guard = session
             .input_lock
@@ -225,7 +337,10 @@ impl AndroidEmulatorService {
         if session.stop.load(Ordering::Acquire) {
             return Err("Android emulator session has ended".to_string());
         }
-        emit_presence(&self.app, session.generation, action, &target, "start");
+        let emit_agent_presence = origin == InputOrigin::Agent;
+        if emit_agent_presence {
+            emit_presence(&self.app, session.generation, action, &target, "start");
+        }
         let result = self
             .runner
             .run_interruptible(
@@ -254,7 +369,9 @@ impl AndroidEmulatorService {
                 emit_error(&app, error.clone());
             }
         }
-        emit_presence(&self.app, session.generation, action, &target, "clear");
+        if emit_agent_presence {
+            emit_presence(&self.app, session.generation, action, &target, "clear");
+        }
         result
     }
 }
@@ -295,8 +412,16 @@ pub(crate) fn emit_presence(
         .expect("Android emulator app handle poisoned")
         .clone()
     else {
+        #[cfg(test)]
+        PRESENCE_LOG.with(|log| {
+            log.borrow_mut().push(format!("{phase}:{action}"));
+        });
         return;
     };
+    #[cfg(test)]
+    PRESENCE_LOG.with(|log| {
+        log.borrow_mut().push(format!("{phase}:{action}"));
+    });
     let (target_point, start, end) = match target {
         PresenceTarget::None => (None, None, None),
         PresenceTarget::Target { x, y } => {

@@ -1,6 +1,7 @@
 //! Preview runtime, coordinator, and legacy backend for an Android session.
 
 use super::*;
+use super::super::preview::ScreenshotStreamFactory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreviewAvailability {
@@ -143,14 +144,37 @@ pub(super) trait PreviewFactoryProvider: Send + Sync {
 
 pub(super) struct SystemPreviewFactoryProvider;
 
+struct LazyOwnedGrpcFactory {
+    pid: u32,
+    avd_name: String,
+}
+
+impl super::super::preview::ScreenshotStreamFactory for LazyOwnedGrpcFactory {
+    fn open(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> super::super::preview::OpenStreamFuture<'_> {
+        let pid = self.pid;
+        let avd_name = self.avd_name.clone();
+        Box::pin(async move {
+            let discovery = grpc::locate_owned_grpc(pid, &avd_name)?;
+            let factory = grpc::TonicStreamFactory::new(discovery);
+            factory.open(width, height).await
+        })
+    }
+}
+
 impl PreviewFactoryProvider for SystemPreviewFactoryProvider {
     fn for_owned_pid(
         &self,
         pid: u32,
         avd_name: &str,
     ) -> Result<Arc<dyn super::super::preview::ScreenshotStreamFactory>, grpc::GrpcError> {
-        let discovery = grpc::locate_owned_grpc(pid, avd_name)?;
-        Ok(Arc::new(grpc::TonicStreamFactory::new(discovery)))
+        Ok(Arc::new(LazyOwnedGrpcFactory {
+            pid,
+            avd_name: avd_name.to_string(),
+        }))
     }
 }
 
@@ -399,18 +423,21 @@ pub(super) fn run_preview_coordinator(
                     .build()
                 {
                     Err(_) => WorkerOutcome::Fallback(PreviewReason::Unavailable),
-                    Ok(runtime) => runtime.block_on(super::super::preview::run_vaf1_worker(
-                        session.generation,
-                        session.stream_fps.clone(),
-                        session.preview.slot.clone(),
-                        session.first_preview.clone(),
-                        session.preview.health.clone(),
-                        control,
-                        factory,
-                        sink.clone(),
-                        Arc::new(super::super::preview::SystemClock::new()),
-                        session.gpu_software,
-                    )),
+                    Ok(runtime) => runtime.block_on(
+                        super::super::preview::run_vaf1_worker_with_open_retry(
+                            session.generation,
+                            session.stream_fps.clone(),
+                            session.preview.slot.clone(),
+                            session.first_preview.clone(),
+                            session.preview.health.clone(),
+                            control,
+                            factory,
+                            sink.clone(),
+                            super::super::preview::coordinator_clock(),
+                            session.gpu_software,
+                            Some(super::super::preview::OWNED_OPEN_RETRY),
+                        ),
+                    ),
                 },
             },
         },
