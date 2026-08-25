@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { describe, expect, it, vi } from 'vitest'
 import type { AttachmentMeta } from '../../../shared/types'
 import {
+  cleanupVisualCaptureOwners,
   deleteVisualTempFiles,
   expandVisualAttachmentSnapshots,
   isVisualAttachment,
@@ -32,6 +33,7 @@ describe('visual attachment dispatch', () => {
     await deleteVisualTempFiles([
       '/tmp/verboo-browser/a.png',
       '/tmp/verboo-ios-simulator/b.png',
+      '/tmp/verboo-android-emulator/c.png',
       '/documents/leave-me-alone.png',
     ])
 
@@ -40,6 +42,17 @@ describe('visual attachment dispatch', () => {
     })
     expect(invoke).toHaveBeenCalledWith('ios_simulator_delete_temp_files', {
       paths: ['/tmp/verboo-ios-simulator/b.png'],
+    })
+    expect(invoke).toHaveBeenCalledWith('android_emulator_capture_delete', {
+      paths: ['/tmp/verboo-android-emulator/c.png'],
+    })
+  })
+
+  it('cleans Android capture owners beside the existing browser and iOS stores', async () => {
+    await cleanupVisualCaptureOwners(['conversation-1', 'conversation-2'])
+
+    expect(invoke).toHaveBeenCalledWith('android_emulator_capture_cleanup', {
+      activeOwnerIds: ['conversation-1', 'conversation-2'],
     })
   })
 })

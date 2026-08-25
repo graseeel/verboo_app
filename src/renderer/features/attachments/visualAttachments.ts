@@ -8,9 +8,12 @@ import {
 } from '../browser/browserAnnotations'
 import {
   expandSimulatorAnnotationSnapshots,
+  isAndroidSimulatorTempPath,
+  isIosSimulatorTempPath,
   isSimulatorTempPath,
   promoteSimulatorAttachments,
 } from '../simulator/simulatorAnnotations'
+import { androidEmulatorApi } from '../simulator/androidEmulatorApi'
 
 export function isVisualAttachment(attachment: Pick<AttachmentMeta, 'kind'>): boolean {
   return attachment.kind === 'image'
@@ -49,11 +52,15 @@ export function visualTempPaths(attachments: AttachmentMeta[]): string[] {
 export async function deleteVisualTempFiles(paths: Array<string | undefined>): Promise<void> {
   const unique = [...new Set(paths.filter((path): path is string => Boolean(path)))]
   const browser = unique.filter(isBrowserTempPath)
-  const simulator = unique.filter(isSimulatorTempPath)
+  const iosSimulator = unique.filter(isIosSimulatorTempPath)
+  const androidSimulator = unique.filter(isAndroidSimulatorTempPath)
   await Promise.all([
     deleteBrowserTempFiles(browser),
-    simulator.length
-      ? invoke('ios_simulator_delete_temp_files', { paths: simulator }).then(() => undefined)
+    iosSimulator.length
+      ? invoke('ios_simulator_delete_temp_files', { paths: iosSimulator }).then(() => undefined)
+      : Promise.resolve(),
+    androidSimulator.length
+      ? androidEmulatorApi.captureDelete(androidSimulator)
       : Promise.resolve(),
   ])
 }
@@ -69,6 +76,7 @@ export async function cleanupVisualCaptureOwners(activeOwnerIds: string[]): Prom
   await Promise.all([
     invoke('browser_cleanup_capture_owners', { activeOwnerIds }),
     invoke('ios_simulator_cleanup_capture_owners', { activeOwnerIds }),
+    androidEmulatorApi.captureCleanup(activeOwnerIds),
   ])
 }
 

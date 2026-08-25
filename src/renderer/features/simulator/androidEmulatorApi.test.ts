@@ -169,6 +169,33 @@ describe('androidEmulatorApi — frozen F1/F2 command surface', () => {
       ['android_emulator_recording_stop'],
     ])
   })
+
+  it('maps the Android annotation capture store exactly like the iOS lifecycle', async () => {
+    const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
+    const element = {
+      id: 'save', role: 'Button', label: 'Save',
+      frame: { x: 72, y: 320, width: 216, height: 640 },
+      enabled: true, visible: true, actionable: true,
+    }
+    const paths = [
+      '/tmp/verboo-android-emulator/selection-crop.png',
+      '/tmp/verboo-android-emulator/selection-viewport.png',
+    ]
+
+    await androidEmulatorApi.captureAnnotation(7, rect, element)
+    await androidEmulatorApi.capturePromote('conversation-1', paths)
+    await androidEmulatorApi.captureDelete(paths)
+    await androidEmulatorApi.captureCleanup(['conversation-1', 'conversation-2'])
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['android_emulator_capture_annotation', { deviceGeneration: 7, rect, element }],
+      ['android_emulator_capture_promote', { ownerId: 'conversation-1', paths }],
+      ['android_emulator_capture_delete', { paths }],
+      ['android_emulator_capture_cleanup', {
+        activeOwnerIds: ['conversation-1', 'conversation-2'],
+      }],
+    ])
+  })
 })
 
 describe('androidEmulatorApi — frozen event channels', () => {

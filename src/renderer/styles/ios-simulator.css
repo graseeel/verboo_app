@@ -821,6 +821,18 @@
     0 18px 38px color-mix(in srgb, #000 24%, transparent);
 }
 
+.android-emulator-view > .ios-simulator-frame {
+  margin-inline: -6px;
+}
+
+.android-emulator-view .ios-simulator-surface-shell {
+  gap: 4px;
+}
+
+.android-emulator-view .ios-simulator-mode-toolbar {
+  margin-top: 4px;
+}
+
 .ios-simulator-frame img {
   display: block;
   width: 100%;

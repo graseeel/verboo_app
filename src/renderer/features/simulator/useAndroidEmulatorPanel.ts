@@ -26,6 +26,10 @@ import { FrameStats } from './frameStats'
 import { loadPersistedStreamFps, persistStreamFps } from './androidStreamSettings'
 import type { IosSimulatorAnnotationCapture, IosSimulatorRect } from './iosSimulatorApi'
 import {
+  accessibilityNodeAtPoint,
+  normalizedAccessibilityRect,
+} from './simulatorSelection'
+import {
   DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
   DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
   errorText,
@@ -35,6 +39,8 @@ import {
 
 const INITIAL_LIFECYCLE: AndroidEmulatorLifecycleEvent = { stage: 'booting' }
 const ANDROID_SESSION_EXIT_MS = 220
+const AGENT_PRESENCE_CLEAR_GRACE_MS = 900
+const ANDROID_ACCESSIBILITY_SNAPSHOT_REFRESH_MS = 3_000
 const ANDROID_ERROR_I18N_KEYS = {
   gpuSoftware: 'androidEmulator.error.gpuSoftware',
   unavailable: 'androidEmulator.error.unavailable',
@@ -94,6 +100,8 @@ export function useAndroidEmulatorPanel() {
   const [lastMediaFile, setLastMediaFile] = useState<AndroidMediaFile>()
   const sessionRef = useRef<AndroidEmulatorSession | undefined>(undefined)
   const activeGenerationRef = useRef<number | undefined>(undefined)
+  const activePresenceGenerationRef = useRef<number | undefined>(undefined)
+  const presenceClearTimerRef = useRef<number | undefined>(undefined)
   const busyAvdRef = useRef<string | undefined>(undefined)
   const cancelledBootAvdRef = useRef<string | undefined>(undefined)
   const sessionExitTimerRef = useRef<number | undefined>(undefined)
@@ -117,6 +125,85 @@ export function useAndroidEmulatorPanel() {
   const attachingRef = useRef(false)
   const pendingFrameRef = useRef<AndroidEmulatorFrame | undefined>(undefined)
   const readPendingFrame = useCallback(() => pendingFrameRef.current, [])
+  const elementSelectionActiveRef = useRef(false)
+  const accessibilityNodesRef = useRef<AndroidAccessibilityNode[]>([])
+  const accessibilitySnapshotInFlightRef = useRef(false)
+  const lastAccessibilitySnapshotAtRef = useRef<number | undefined>(undefined)
+
+  const clearLocalPresence = useCallback(() => {
+    if (presenceClearTimerRef.current !== undefined) {
+      window.clearTimeout(presenceClearTimerRef.current)
+      presenceClearTimerRef.current = undefined
+    }
+    activePresenceGenerationRef.current = undefined
+    setAgentPresence(undefined)
+  }, [])
+
+  const showAgentPresence = useCallback((presence: AndroidEmulatorPresenceEvent) => {
+    if (presenceClearTimerRef.current !== undefined) {
+      window.clearTimeout(presenceClearTimerRef.current)
+      presenceClearTimerRef.current = undefined
+    }
+    activePresenceGenerationRef.current = presence.generation
+    setAgentPresence(presence)
+  }, [])
+
+  const scheduleAgentPresenceClear = useCallback((generation?: number) => {
+    const owner = generation ?? activePresenceGenerationRef.current
+    if (owner === undefined || activePresenceGenerationRef.current !== owner) return
+    if (presenceClearTimerRef.current !== undefined) return
+    presenceClearTimerRef.current = window.setTimeout(() => {
+      if (activePresenceGenerationRef.current !== owner) return
+      activePresenceGenerationRef.current = undefined
+      presenceClearTimerRef.current = undefined
+      setAgentPresence(undefined)
+    }, AGENT_PRESENCE_CLEAR_GRACE_MS)
+  }, [])
+
+  const handleAgentPresence = useCallback((presence: AndroidEmulatorPresenceEvent) => {
+    if (presence.phase === 'start') {
+      showAgentPresence(presence)
+      return
+    }
+    scheduleAgentPresenceClear(presence.generation)
+  }, [scheduleAgentPresenceClear, showAgentPresence])
+
+  const refreshAccessibilitySnapshot = useCallback(async (force = false) => {
+    const current = sessionRef.current
+    if (!elementSelectionActiveRef.current || !current) return
+    const now = Date.now()
+    const lastStartedAt = lastAccessibilitySnapshotAtRef.current
+    if (
+      !force
+      && lastStartedAt !== undefined
+      && now - lastStartedAt < ANDROID_ACCESSIBILITY_SNAPSHOT_REFRESH_MS
+    ) return
+    if (accessibilitySnapshotInFlightRef.current) return
+    accessibilitySnapshotInFlightRef.current = true
+    lastAccessibilitySnapshotAtRef.current = now
+    const generation = current.generation
+    try {
+      const snapshot = await androidEmulatorApi.accessibilitySnapshot()
+      if (
+        elementSelectionActiveRef.current
+        && sessionRef.current?.generation === generation
+      ) {
+        accessibilityNodesRef.current = snapshot.nodes
+      }
+    } catch {
+      // Hover remains best-effort; the exact click keeps the remote fallback.
+    } finally {
+      accessibilitySnapshotInFlightRef.current = false
+    }
+  }, [])
+
+  const setElementSelectionActive = useCallback((active: boolean) => {
+    if (elementSelectionActiveRef.current === active) return
+    elementSelectionActiveRef.current = active
+    accessibilityNodesRef.current = []
+    lastAccessibilitySnapshotAtRef.current = undefined
+    if (active) void refreshAccessibilitySnapshot(true)
+  }, [refreshAccessibilitySnapshot])
 
   // ── Pipeline VAF1 (fence RENDERER) — estado em refs; zero state por frame ──
   const frameStatsRef = useRef(new FrameStats())
@@ -440,6 +527,8 @@ export function useAndroidEmulatorPanel() {
     activeGenerationRef.current = undefined
     pendingFrameRef.current = undefined
     latestFrameRef.current = undefined
+    accessibilityNodesRef.current = []
+    lastAccessibilitySnapshotAtRef.current = undefined
     recordingRef.current = { state: 'idle' }
     attachingRef.current = false
     stopPreviewLoop()
@@ -454,10 +543,10 @@ export function useAndroidEmulatorPanel() {
     setSession(undefined)
     setFrameDataUrl(undefined)
     setError(undefined)
-    setAgentPresence(undefined)
+    clearLocalPresence()
     setLifecycle(INITIAL_LIFECYCLE)
     setRecording({ state: 'idle' })
-  }, [stopPreviewLoop])
+  }, [clearLocalPresence, stopPreviewLoop])
 
   const publishFrame = useCallback((frame: AndroidEmulatorFrame) => {
     latestFrameRef.current = frame
@@ -502,11 +591,11 @@ export function useAndroidEmulatorPanel() {
   }, [refresh])
 
   const close = useCallback(() => {
-    setAgentPresence(undefined)
+    clearLocalPresence()
     visibleRef.current = false
     stopPreviewLoop()
     void androidEmulatorApi.setVisible(false).catch(reason => setError(errorText(reason)))
-  }, [stopPreviewLoop])
+  }, [clearLocalPresence, stopPreviewLoop])
 
   const attach = useCallback(async (avdName: string) => {
     cancelSessionExit()
@@ -527,6 +616,8 @@ export function useAndroidEmulatorPanel() {
     stopPreviewLoop()
     attachingRef.current = true
     pendingFrameRef.current = undefined
+    accessibilityNodesRef.current = []
+    lastAccessibilitySnapshotAtRef.current = undefined
     const requestedFps = await ensurePersistedFps()
     try {
       const next = await androidEmulatorApi.attach(
@@ -542,6 +633,7 @@ export function useAndroidEmulatorPanel() {
       applyStreamFps(next.streamFps)
       setFallbackFps(next.fallbackFps)
       setLifecycle(next.lifecycle)
+      if (elementSelectionActiveRef.current) void refreshAccessibilitySnapshot(true)
       attachingRef.current = false   // resposta RECEBIDA: o attach não está
       // mais em voo — o dreno pós-resposta abaixo PRECISA poder agendar (o
       // downgrade legacyPng faz o mesmo no .then). O finally rebaixa de novo
@@ -600,7 +692,7 @@ export function useAndroidEmulatorPanel() {
         cancelledBootAvdRef.current = undefined
       }
     }
-  }, [applyPreviewState, applyStreamFps, cancelSessionExit, clearSession, ensurePersistedFps, publishFrame, readPendingFrame, scheduleVaf1Read, stopPreviewLoop])
+  }, [applyPreviewState, applyStreamFps, cancelSessionExit, clearSession, ensurePersistedFps, publishFrame, readPendingFrame, refreshAccessibilitySnapshot, scheduleVaf1Read, stopPreviewLoop])
 
   const detach = useCallback(async () => {
     const current = sessionRef.current
@@ -665,8 +757,15 @@ export function useAndroidEmulatorPanel() {
 
   const inspectPoint = useCallback(async (
     point: AndroidEmulatorPoint,
-    _exact = false,
+    exact = false,
   ): Promise<AndroidEmulatorElementHit | undefined> => {
+    if (!exact) {
+      const nodes = accessibilityNodesRef.current
+      const element = accessibilityNodeAtPoint(nodes, point)
+      if (!element) return undefined
+      const rect = normalizedAccessibilityRect(nodes, element)
+      return rect ? { element, rect } : undefined
+    }
     const generation = sessionRef.current?.generation
     if (generation == null) return undefined
     try {
@@ -705,51 +804,40 @@ export function useAndroidEmulatorPanel() {
     setError(undefined)
     setCaptureFailure(undefined)
     try {
-      const file = await androidEmulatorApi.captureScreen()
-      // PNG físico: bytes/dims REAIS via inspectFiles — nunca 720p/RGB assumido.
-      const inspected = await window.verboo.inspectFiles([file.path])
-      const png = inspected.find(item => item.path === file.path)
+      const capture = await androidEmulatorApi.captureAnnotation(current.generation, rect, element)
+      if (sessionRef.current?.generation !== current.generation) return undefined
       if (
-        !png
-        || typeof png.size !== 'number' || png.size <= 0
-        || typeof png.width !== 'number' || png.width <= 0
-        || typeof png.height !== 'number' || png.height <= 0
+        capture.deviceGeneration !== current.generation
+        || typeof capture.cropPath !== 'string' || capture.cropPath.length === 0
+        || typeof capture.viewportPath !== 'string' || capture.viewportPath.length === 0
+        || capture.cropBytes <= 0 || capture.viewportBytes <= 0
+        || capture.cropWidth <= 0 || capture.cropHeight <= 0
+        || capture.viewportWidth <= 0 || capture.viewportHeight <= 0
       ) {
-        setCaptureFailure('pngMetaUnavailable')     // tipado; UI localiza (Task 11)
+        setCaptureFailure('pngMetaUnavailable')
         return undefined
       }
-      const deviceRect = {
-        x: rect.x * png.width,
-        y: rect.y * png.height,
-        width: rect.width * png.width,
-        height: rect.height * png.height,
-      }
       return {
-        cropPath: file.path,
-        viewportPath: file.path,
-        cropWidth: png.width,
-        cropHeight: png.height,
-        viewportWidth: png.width,
-        viewportHeight: png.height,
-        cropBytes: png.size,
-        viewportBytes: png.size,
+        ...capture,
         device: {
-          name: current.device.displayName,
-          udid: current.device.avdName,
+          name: capture.device.displayName,
+          udid: capture.device.avdName,
           state: 'Booted',
-          iosVersion: `API ${current.device.apiLevel}`,
-          family: current.device.family === 'tablet' ? 'ipad' : 'iphone',
+          iosVersion: `API ${capture.device.apiLevel}`,
+          family: capture.device.family === 'tablet' ? 'ipad' : 'iphone',
         },
-        orientation: png.width > png.height ? 'landscape' : 'portrait',
-        deviceGeneration: current.generation,
-        frameGeneration: paintedGeneration,
-        rect,
-        deviceRect,
-        element,
       }
     } catch (reason) {
       setError(errorText(reason))
       return undefined
+    }
+  }, [])
+
+  const deleteCapture = useCallback(async (paths: string[]) => {
+    try {
+      await androidEmulatorApi.captureDelete(paths)
+    } catch (reason) {
+      setError(errorText(reason))
     }
   }, [])
 
@@ -856,11 +944,11 @@ export function useAndroidEmulatorPanel() {
       }),
       androidEmulatorApi.onPresence(event => {
         if (disposed || !adoptPresenceGeneration(event.generation)) return
-        setAgentPresence(event.phase === 'start' ? event : undefined)
+        handleAgentPresence(event)
       }),
       androidEmulatorApi.onOpenRequested(presence => {
         if (disposed || !adoptPresenceGeneration(presence.generation)) return
-        if (presence.phase === 'start') setAgentPresence(presence)
+        handleAgentPresence(presence)
         setAgentOpenRequest(current => current + 1)
       }),
       androidEmulatorApi.onFrameReady(ready => {
@@ -884,6 +972,7 @@ export function useAndroidEmulatorPanel() {
           return
         }
         if (generation !== sessionRef.current?.generation) return   // sinal tardio
+        void refreshAccessibilitySnapshot()
         frameStatsRef.current.recordWakeup()
         pendingReadyRef.current = { generation, seq }              // latest vence
         if (!pushFrameRef.current) return       // INVARIANTE: sem paintTarget NÃO toma slot
@@ -917,12 +1006,16 @@ export function useAndroidEmulatorPanel() {
       stopPreviewLoop()
       unlisteners.forEach(unlisten => unlisten())
     }
-  }, [adoptPresenceGeneration, applyPreviewState, clearSession, finishSessionExit, publishFrame, scheduleVaf1Read, stopPreviewLoop, t])
+  }, [adoptPresenceGeneration, applyPreviewState, clearSession, finishSessionExit, handleAgentPresence, publishFrame, refreshAccessibilitySnapshot, scheduleVaf1Read, stopPreviewLoop, t])
 
   useEffect(() => () => {
     if (sessionExitTimerRef.current !== undefined) {
       window.clearTimeout(sessionExitTimerRef.current)
       sessionExitTimerRef.current = undefined
+    }
+    if (presenceClearTimerRef.current !== undefined) {
+      window.clearTimeout(presenceClearTimerRef.current)
+      presenceClearTimerRef.current = undefined
     }
   }, [])
 
@@ -967,8 +1060,10 @@ export function useAndroidEmulatorPanel() {
     typeText,
     pressKey,
     runSystemAction,
+    setElementSelectionActive,
     inspectPoint,
     captureAnnotation,
+    deleteCapture,
     captureScreen,
     toggleRecording,
     setStreamRate,

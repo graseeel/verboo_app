@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   AndroidAccessibilityNode,
+  AndroidEmulatorAnnotationCapture,
   AndroidEmulatorError,
   AndroidEmulatorFrame,
   AndroidEmulatorLifecycleEvent,
@@ -27,6 +28,8 @@ const api = vi.hoisted(() => ({
   systemAction: vi.fn(),
   accessibilitySnapshot: vi.fn(),
   inspectPoint: vi.fn(),
+  captureAnnotation: vi.fn(),
+  captureDelete: vi.fn(),
   captureScreen: vi.fn(),
   recordingStart: vi.fn(),
   recordingStop: vi.fn(),
@@ -73,6 +76,24 @@ const session: AndroidEmulatorSession = {
   lifecycle: { stage: 'ready' },
 }
 
+const annotationCapture: AndroidEmulatorAnnotationCapture = {
+  cropPath: '/tmp/verboo-android-emulator/selection-crop.png',
+  viewportPath: '/tmp/verboo-android-emulator/selection-viewport.png',
+  cropWidth: 216,
+  cropHeight: 640,
+  viewportWidth: 720,
+  viewportHeight: 1600,
+  cropBytes: 2_048,
+  viewportBytes: 12_000,
+  device: { ...device, running: true },
+  orientation: 'portrait',
+  deviceGeneration: session.generation,
+  frameGeneration: session.generation,
+  rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+  deviceRect: { x: 72, y: 320, width: 216, height: 640 },
+  element: null,
+}
+
 describe('useAndroidEmulatorPanel (PA-27)', () => {
   let frameHandler: ((frame: AndroidEmulatorFrame) => void) | undefined
   let lifecycleHandler: ((event: AndroidEmulatorLifecycleEvent) => void) | undefined
@@ -113,6 +134,8 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     api.systemAction.mockResolvedValue(undefined)
     api.accessibilitySnapshot.mockResolvedValue({ nodes: [] })
     api.inspectPoint.mockResolvedValue(null)
+    api.captureAnnotation.mockResolvedValue(annotationCapture)
+    api.captureDelete.mockResolvedValue(undefined)
     api.captureScreen.mockResolvedValue({ path: '/captures/android-screen.png' })
     api.recordingStart.mockResolvedValue(undefined)
     api.recordingStop.mockResolvedValue({ path: '/captures/android-recording.mp4' })
@@ -342,38 +365,80 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     expect(view.result.current.agentPresence).toEqual(opened)
   })
 
-  it('adopts equal/newer presence generations and rejects only late events', async () => {
-    const view = renderHook(() => useAndroidEmulatorPanel())
-    await act(async () => { await view.result.current.attach(device.avdName) })
-    const current: AndroidEmulatorPresenceEvent = {
-      generation: 7,
-      phase: 'start',
-      action: 'tap',
-      target: { x: 0.25, y: 0.25 },
+  it('adopts equal/newer presence generations, rejects late events, and keeps the aura for 900ms', async () => {
+    vi.useFakeTimers()
+    try {
+      const view = renderHook(() => useAndroidEmulatorPanel())
+      await act(async () => { await view.result.current.attach(device.avdName) })
+      const current: AndroidEmulatorPresenceEvent = {
+        generation: 7,
+        phase: 'start',
+        action: 'tap',
+        target: { x: 0.25, y: 0.25 },
+      }
+      const newer: AndroidEmulatorPresenceEvent = {
+        generation: 8,
+        phase: 'start',
+        action: 'tap',
+        target: { x: 0.75, y: 0.75 },
+      }
+
+      act(() => presenceHandler?.({ ...current, generation: 6 }))
+      expect(view.result.current.agentPresence).toBeUndefined()
+      expect(view.result.current.session?.generation).toBe(7)
+
+      act(() => presenceHandler?.(current))
+      expect(view.result.current.agentPresence).toEqual(current)
+
+      act(() => presenceHandler?.(newer))
+      expect(view.result.current.agentPresence).toEqual(newer)
+      expect(view.result.current.session?.generation).toBe(8)
+
+      act(() => presenceHandler?.({ generation: 7, phase: 'clear' }))
+      expect(view.result.current.agentPresence).toEqual(newer)
+
+      act(() => presenceHandler?.({ generation: 8, phase: 'clear' }))
+      expect(view.result.current.agentPresence).toEqual(newer)
+      act(() => { vi.advanceTimersByTime(899) })
+      expect(view.result.current.agentPresence).toEqual(newer)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(view.result.current.agentPresence).toBeUndefined()
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
     }
-    const newer: AndroidEmulatorPresenceEvent = {
-      generation: 8,
-      phase: 'start',
-      action: 'tap',
-      target: { x: 0.75, y: 0.75 },
+  })
+
+  it('cancels the pending presence clear when a new start arrives in the same session', async () => {
+    vi.useFakeTimers()
+    try {
+      const view = renderHook(() => useAndroidEmulatorPanel())
+      await act(async () => { await view.result.current.attach(device.avdName) })
+      const first: AndroidEmulatorPresenceEvent = {
+        generation: 7,
+        phase: 'start',
+        action: 'tap',
+        target: { x: 0.25, y: 0.25 },
+      }
+      const replacement: AndroidEmulatorPresenceEvent = {
+        generation: 7,
+        phase: 'start',
+        action: 'drag',
+        start: { x: 0.2, y: 0.2 },
+        end: { x: 0.8, y: 0.8 },
+      }
+
+      act(() => presenceHandler?.(first))
+      act(() => presenceHandler?.({ generation: 7, phase: 'clear' }))
+      act(() => { vi.advanceTimersByTime(400) })
+      act(() => presenceHandler?.(replacement))
+      act(() => { vi.advanceTimersByTime(900) })
+
+      expect(view.result.current.agentPresence).toEqual(replacement)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
     }
-
-    act(() => presenceHandler?.({ ...current, generation: 6 }))
-    expect(view.result.current.agentPresence).toBeUndefined()
-    expect(view.result.current.session?.generation).toBe(7)
-
-    act(() => presenceHandler?.(current))
-    expect(view.result.current.agentPresence).toEqual(current)
-
-    act(() => presenceHandler?.(newer))
-    expect(view.result.current.agentPresence).toEqual(newer)
-    expect(view.result.current.session?.generation).toBe(8)
-
-    act(() => presenceHandler?.({ generation: 7, phase: 'clear' }))
-    expect(view.result.current.agentPresence).toEqual(newer)
-
-    act(() => presenceHandler?.({ generation: 8, phase: 'clear' }))
-    expect(view.result.current.agentPresence).toBeUndefined()
   })
 
   it('exposes Android accessibility inspection through the frozen inspect command', async () => {
@@ -392,6 +457,62 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
 
     expect(api.inspectPoint).toHaveBeenCalledWith(0.5, 0.25)
     expect(hit).toMatchObject({ element: { id: 'save' }, rect: { x: 0.25, width: 0.5 } })
+  })
+
+  it('takes one accessibility snapshot on select mode entry and hit-tests hover locally', async () => {
+    const nodes: AndroidAccessibilityNode[] = [
+      {
+        id: 'root', role: 'android.view.View', frame: { x: 0, y: 0, width: 720, height: 1600 },
+        enabled: true, visible: true, actionable: false,
+      },
+      {
+        id: 'save', role: 'android.widget.Button', label: 'Save',
+        frame: { x: 180, y: 320, width: 360, height: 160 },
+        enabled: true, visible: true, actionable: true,
+      },
+    ]
+    api.accessibilitySnapshot.mockResolvedValue({ nodes })
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    act(() => view.result.current.setElementSelectionActive(true))
+    await waitFor(() => expect(api.accessibilitySnapshot).toHaveBeenCalledTimes(1))
+    const hit = await view.result.current.inspectPoint({ x: 0.5, y: 0.25 }, false)
+
+    expect(api.inspectPoint).not.toHaveBeenCalled()
+    expect(hit).toEqual({
+      element: nodes[1],
+      rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.1 },
+    })
+  })
+
+  it('refreshes the local accessibility snapshot from frame-ready no more than once per 3s', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-25T14:00:00.000Z'))
+    try {
+      const view = renderHook(() => useAndroidEmulatorPanel())
+      await act(async () => { await view.result.current.attach(device.avdName) })
+      act(() => view.result.current.setElementSelectionActive(true))
+      await act(async () => { await Promise.resolve() })
+      expect(api.accessibilitySnapshot).toHaveBeenCalledTimes(1)
+
+      act(() => readyHandlers.forEach(handler => handler({ generation: 7, seq: 1 })))
+      await act(async () => { await Promise.resolve() })
+      expect(api.accessibilitySnapshot).toHaveBeenCalledTimes(1)
+
+      act(() => { vi.advanceTimersByTime(2_999) })
+      act(() => readyHandlers.forEach(handler => handler({ generation: 7, seq: 2 })))
+      await act(async () => { await Promise.resolve() })
+      expect(api.accessibilitySnapshot).toHaveBeenCalledTimes(1)
+
+      act(() => { vi.advanceTimersByTime(1) })
+      act(() => readyHandlers.forEach(handler => handler({ generation: 7, seq: 3 })))
+      await act(async () => { await Promise.resolve() })
+      expect(api.accessibilitySnapshot).toHaveBeenCalledTimes(2)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preserves resolve-null as empty and rejects the unavailable dump failure verbatim', async () => {
@@ -429,6 +550,15 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       path: '/captures/android-recording.mp4',
       fileName: 'android-recording.mp4',
     })
+  })
+
+  it('deletes pending Android annotation captures through the temporary capture store', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    const paths = [annotationCapture.cropPath, annotationCapture.viewportPath]
+
+    await act(async () => { await view.result.current.deleteCapture(paths) })
+
+    expect(api.captureDelete).toHaveBeenCalledWith(paths)
   })
 
   it('normalizes the echoed attach streamFps into the state (F5, line 133)', async () => {
@@ -1040,8 +1170,6 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       expect(api.end).not.toHaveBeenCalled()
     })
     it('captureAnnotation stays CLOSED before a painted receipt and never touches captures', async () => {
-      const inspect = vi.fn().mockResolvedValue([])
-      ;(window as unknown as { verboo: unknown }).verboo = { inspectFiles: inspect }
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })
       expect(await view.result.current.captureAnnotation(
@@ -1052,15 +1180,10 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       await waitFor(() => expect(api.readFrame).toHaveBeenCalled())
       expect(await view.result.current.captureAnnotation(
         { x: 0, y: 0, width: 0.5, height: 0.5 }, null)).toBeUndefined()
-      expect(api.captureScreen).not.toHaveBeenCalled()
-      expect(inspect).not.toHaveBeenCalled()
-      delete (window as unknown as { verboo?: unknown }).verboo
+      expect(api.captureAnnotation).not.toHaveBeenCalled()
     })
-    it('captureAnnotation returns undefined honestly when inspectFiles lacks physical dims', async () => {
-      ;(window as unknown as { verboo: unknown }).verboo = {
-        inspectFiles: vi.fn().mockResolvedValue([{ path: '/captures/x.png', size: 12 }]),
-      }
-      api.captureScreen.mockResolvedValue({ path: '/captures/x.png' })   // coerente com o inspect
+    it('captureAnnotation returns undefined honestly when native capture metadata lacks physical dims', async () => {
+      api.captureAnnotation.mockResolvedValue({ ...annotationCapture, cropWidth: 0 })
       api.readFrame.mockResolvedValue(vaf1Buffer(session.generation, 1))
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })
@@ -1075,9 +1198,11 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
           { x: 0, y: 0, width: 0.1, height: 0.1 }, null)).toBeUndefined()
       })
       expect(view.result.current.captureFailure).toBe('pngMetaUnavailable')
-      const inspect = (window as unknown as { verboo: { inspectFiles: ReturnType<typeof vi.fn> } }).verboo.inspectFiles
-      expect(inspect).toHaveBeenCalledWith(['/captures/x.png'])
-      delete (window as unknown as { verboo?: unknown }).verboo
+      expect(api.captureAnnotation).toHaveBeenCalledWith(
+        session.generation,
+        { x: 0, y: 0, width: 0.1, height: 0.1 },
+        null,
+      )
     })
   })
 
@@ -1269,12 +1394,23 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     })
 
     it('captureAnnotation SUCESSO retorna capture com deviceRect/dims/path/cropBytes (F4)', async () => {
-      ;(window as unknown as { verboo: unknown }).verboo = {
-        inspectFiles: vi.fn().mockResolvedValue([
-          { path: '/captures/x.png', size: 12345, width: 720, height: 1600 },
-        ]),
+      const element: AndroidAccessibilityNode = {
+        id: 'btn', role: 'Button', label: 'Save',
+        frame: { x: 72, y: 320, width: 216, height: 640 },
+        enabled: true, visible: true, actionable: true,
       }
-      api.captureScreen.mockResolvedValue({ path: '/captures/x.png' })
+      api.captureAnnotation.mockResolvedValue({
+        ...annotationCapture,
+        cropPath: '/tmp/verboo-android-emulator/x.png',
+        viewportPath: '/tmp/verboo-android-emulator/x.png',
+        cropWidth: 720,
+        cropHeight: 1600,
+        viewportWidth: 720,
+        viewportHeight: 1600,
+        cropBytes: 12345,
+        viewportBytes: 12345,
+        element,
+      })
       api.readFrame.mockResolvedValue(vaf1Buffer(session.generation, 1))
       const view = renderHook(() => useAndroidEmulatorPanel())
       await act(async () => { await view.result.current.attach(device.avdName) })
@@ -1286,16 +1422,11 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       await waitFor(() => expect(view.result.current.canvasSize).toEqual({ width: 2, height: 2 }))
 
       const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
-      const element: AndroidAccessibilityNode = {
-        id: 'btn', role: 'Button', label: 'Save',
-        frame: { x: 72, y: 320, width: 216, height: 640 },
-        enabled: true, visible: true, actionable: true,
-      }
       const capture = await act(async () => view.result.current.captureAnnotation(rect, element))
       expect(capture).toBeDefined()
       // Campos CRÍTICOS (mutação em deviceRect → RED):
-      expect(capture!.cropPath).toBe('/captures/x.png')
-      expect(capture!.viewportPath).toBe('/captures/x.png')
+      expect(capture!.cropPath).toBe('/tmp/verboo-android-emulator/x.png')
+      expect(capture!.viewportPath).toBe('/tmp/verboo-android-emulator/x.png')
       expect(capture!.cropWidth).toBe(720)
       expect(capture!.cropHeight).toBe(1600)
       expect(capture!.viewportWidth).toBe(720)
@@ -1311,7 +1442,7 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       expect(capture!.deviceGeneration).toBe(session.generation)
       expect(capture!.frameGeneration).toBe(session.generation)
       expect(capture!.device.name).toBe(session.device.displayName)
-      delete (window as unknown as { verboo?: unknown }).verboo
+      expect(api.captureAnnotation).toHaveBeenCalledWith(session.generation, rect, element)
     })
   })
 })

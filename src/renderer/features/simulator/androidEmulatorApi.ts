@@ -169,6 +169,24 @@ export type AndroidAccessibilityNode = SimulatorAccessibilityNode
 export type AndroidEmulatorElementHit = SimulatorElementHit
 
 export type AndroidEmulatorMediaFile = { path: string }
+export type AndroidEmulatorAnnotationCapture = {
+  cropPath: string
+  viewportPath: string
+  cropWidth: number
+  cropHeight: number
+  viewportWidth: number
+  viewportHeight: number
+  cropBytes: number
+  viewportBytes: number
+  device: AndroidDevice
+  orientation: 'portrait' | 'landscape'
+  deviceGeneration: number
+  frameGeneration: number
+  rect: AndroidEmulatorRect
+  deviceRect: AndroidEmulatorRect
+  element?: AndroidAccessibilityNode | null
+}
+export type AndroidPromotedCaptureFile = { from: string; to: string }
 
 export type AndroidPreviewTransport = 'legacyPng' | 'vaf1'
 export type AndroidFrameErrorCode =
@@ -295,6 +313,21 @@ export const androidEmulatorApi = {
     invoke<{ nodes: AndroidAccessibilityNode[] }>('android_emulator_accessibility_snapshot'),
   inspectPoint: (x: number, y: number) =>
     invoke<AndroidEmulatorElementHit | null>('android_emulator_inspect_point', { x, y }),
+  captureAnnotation: (
+    deviceGeneration: number,
+    rect: AndroidEmulatorRect,
+    element: AndroidAccessibilityNode | null = null,
+  ) => invoke<AndroidEmulatorAnnotationCapture>('android_emulator_capture_annotation', {
+    deviceGeneration,
+    rect,
+    element,
+  }),
+  capturePromote: (ownerId: string, paths: string[]) =>
+    invoke<AndroidPromotedCaptureFile[]>('android_emulator_capture_promote', { ownerId, paths }),
+  captureDelete: (paths: string[]) =>
+    invoke<void>('android_emulator_capture_delete', { paths }),
+  captureCleanup: (activeOwnerIds: string[]) =>
+    invoke<void>('android_emulator_capture_cleanup', { activeOwnerIds }),
   captureScreen: () => invoke<AndroidEmulatorMediaFile>('android_emulator_capture_screen'),
   recordingStart: () => invoke<void>('android_emulator_recording_start'),
   recordingStop: () => invoke<AndroidEmulatorMediaFile>('android_emulator_recording_stop'),

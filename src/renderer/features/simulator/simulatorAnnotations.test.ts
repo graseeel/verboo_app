@@ -97,4 +97,42 @@ describe('simulator annotations', () => {
       },
     })
   })
+
+  it('promotes Android annotation paths through the Android capture owner store', async () => {
+    const androidCapture = {
+      ...capture,
+      cropPath: '/tmp/verboo-android-emulator/one-crop.png',
+      viewportPath: '/tmp/verboo-android-emulator/one-viewport.png',
+      device: {
+        ...capture.device,
+        name: 'Pixel 8',
+        udid: 'Pixel_8_API_35',
+        iosVersion: 'API 35',
+      },
+    }
+    const attachment = createSimulatorAnnotationAttachment(
+      'element',
+      undefined,
+      androidCapture,
+      { platform: 'Android', version: 'API 35', selectionImage: 'viewport' },
+    )
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { from: androidCapture.cropPath, to: '/app/android_captures/crop.png' },
+      { from: androidCapture.viewportPath, to: '/app/android_captures/viewport.png' },
+    ])
+
+    const [promoted] = await promoteSimulatorAttachments([attachment], 'conversation-android')
+
+    expect(invoke).toHaveBeenCalledWith('android_emulator_capture_promote', {
+      ownerId: 'conversation-android',
+      paths: [androidCapture.cropPath, androidCapture.viewportPath],
+    })
+    expect(promoted).toMatchObject({
+      path: '/app/android_captures/crop.png',
+      simulatorAnnotation: {
+        crop: '/app/android_captures/crop.png',
+        viewportSnapshot: { path: '/app/android_captures/viewport.png' },
+      },
+    })
+  })
 })

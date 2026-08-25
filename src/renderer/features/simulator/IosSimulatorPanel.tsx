@@ -606,6 +606,10 @@ function AndroidEmulatorTabContent({
   const announceKeyRef = useRef('')
   const lastAnnouncedAtRef = useRef(0)
   useEffect(() => {
+    android.setElementSelectionActive(interactionMode === 'select-element')
+    return () => android.setElementSelectionActive(false)
+  }, [android.setElementSelectionActive, interactionMode])
+  useEffect(() => {
     if (!android.previewState) return
     const key = `${announceSource}:${announceDegraded ? 'd' : 'ok'}`
     if (announceKeyRef.current === key) return
@@ -809,6 +813,7 @@ function AndroidEmulatorTabContent({
                 onPressKey={android.pressKey}
                 onInspectPoint={android.inspectPoint}
                 onCaptureAnnotation={(_kind, rect, element) => android.captureAnnotation(rect, element)}
+                onDeleteCapture={android.deleteCapture}
                 onAddAnnotation={onAddAnnotation}
                 agentPresence={android.agentPresence}
               />
@@ -851,6 +856,7 @@ function AndroidEmulatorTabContent({
                 onPressKey={android.pressKey}
                 onInspectPoint={android.inspectPoint}
                 onCaptureAnnotation={(_kind, rect, element) => android.captureAnnotation(rect, element)}
+                onDeleteCapture={android.deleteCapture}
                 onAddAnnotation={onAddAnnotation}
                 agentPresence={android.agentPresence}
               />

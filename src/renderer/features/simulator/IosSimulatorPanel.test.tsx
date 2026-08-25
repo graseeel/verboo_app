@@ -683,18 +683,9 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
   it('wires Android a11y selection, annotations, media, stream rate and reused tooltips through real components', async () => {
     const fake = installFakeWebGL()
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
-    // COMPLEMENTO ERRATA Task 8: o pipeline captureAnnotation do hook Android
-    // (useAndroidEmulatorPanel.ts:554-608) usa window.verboo.inspectFiles para
-    // extrair bytes/dims reais do PNG — sem este mock, o caminho captura
-    // → undefined → pendingCapture não setada → nota "Instrução" não renderiza.
-    // Resposta coerente com o capture_screen mockado abaixo (mesmo path +
-    // dims alinhadas ao frame publicado em width:1080/height:2400).
     ;(window as unknown as { verboo: unknown }).verboo = {
       getUserSettings: vi.fn().mockResolvedValue({}),
       updateUserSettings: vi.fn().mockResolvedValue(undefined),
-      inspectFiles: vi.fn().mockResolvedValue([
-        { path: '/captures/android-screen.png', size: 1000, width: 1080, height: 2400 },
-      ]),
     }
     const addedAnnotation = vi.fn()
     vi.mocked(invoke).mockImplementation(async (command: string) => {
@@ -707,9 +698,46 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
           ownership: 'verboo', streamFps: 2, fallbackFps: 1, lifecycle: { stage: 'ready' },
         }
       }
+      if (command === 'android_emulator_accessibility_snapshot') {
+        return { nodes: [
+          {
+            id: 'root', role: 'android.view.View',
+            frame: { x: 0, y: 0, width: 1080, height: 2400 },
+            enabled: true, visible: true, actionable: false,
+          },
+          {
+            id: 'save', role: 'android.widget.Button', label: 'Save',
+            frame: { x: 270, y: 480, width: 540, height: 240 },
+            enabled: true, visible: true, actionable: true,
+          },
+        ] }
+      }
       if (command === 'android_emulator_inspect_point') {
         return {
           rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.1 },
+          element: {
+            id: 'save', role: 'android.widget.Button', label: 'Save',
+            frame: { x: 270, y: 480, width: 540, height: 240 },
+            enabled: true, visible: true, actionable: true,
+          },
+        }
+      }
+      if (command === 'android_emulator_capture_annotation') {
+        return {
+          cropPath: '/tmp/verboo-android-emulator/selection-crop.png',
+          viewportPath: '/tmp/verboo-android-emulator/selection-viewport.png',
+          cropWidth: 540,
+          cropHeight: 240,
+          viewportWidth: 1080,
+          viewportHeight: 2400,
+          cropBytes: 500,
+          viewportBytes: 1000,
+          device: { ...androidDevice, running: true },
+          orientation: 'portrait',
+          deviceGeneration: 9,
+          frameGeneration: 9,
+          rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.1 },
+          deviceRect: { x: 270, y: 480, width: 540, height: 240 },
           element: {
             id: 'save', role: 'android.widget.Button', label: 'Save',
             frame: { x: 270, y: 480, width: 540, height: 240 },
@@ -759,21 +787,43 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Selecionar componente')
     fireEvent.blur(selectComponent)
     fireEvent.click(selectComponent)
-    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 450 })
     await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
-      'android_emulator_inspect_point', { x: 0.5, y: 0.5 },
+      'android_emulator_accessibility_snapshot',
     ))
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 225 })
+    await waitFor(() => expect(document.querySelector('.ios-simulator-selection-outline')).not.toBeNull())
+    expect(vi.mocked(invoke).mock.calls.filter(
+      ([command]) => command === 'android_emulator_inspect_point',
+    )).toHaveLength(0)
     const outline = document.querySelector('.ios-simulator-selection-outline') as HTMLElement
     expect(Number.parseFloat(outline.style.left)).toBeCloseTo(198.75)
     expect(Number.parseFloat(outline.style.top)).toBeCloseTo(180)
     expect(Number.parseFloat(outline.style.width)).toBeCloseTo(202.5)
     expect(Number.parseFloat(outline.style.height)).toBeCloseTo(90)
+    expect(screen.queryByLabelText('Instrução')).not.toBeInTheDocument()
+    expect(vi.mocked(invoke).mock.calls.filter(
+      ([command]) => command === 'android_emulator_capture_annotation',
+    )).toHaveLength(0)
 
-    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 225 })
     await waitFor(() => expect(
       vi.mocked(invoke).mock.calls.filter(([command]) => command === 'android_emulator_inspect_point'),
-    ).toHaveLength(2))
-    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_capture_screen'))
+    ).toHaveLength(1))
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_capture_annotation',
+      expect.objectContaining({ deviceGeneration: 9 }),
+    ))
+    await screen.findByLabelText('Instrução')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_capture_delete',
+      { paths: [
+        '/tmp/verboo-android-emulator/selection-crop.png',
+        '/tmp/verboo-android-emulator/selection-viewport.png',
+      ] },
+    ))
+
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 300, clientY: 225 })
     const note = await screen.findByLabelText('Instrução')
     fireEvent.change(note, { target: { value: 'Aumente o botão' } })
     fireEvent.click(screen.getByRole('button', { name: 'Adicionar ao Chat' }))

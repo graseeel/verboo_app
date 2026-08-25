@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { AttachmentMeta } from '../../../shared/types'
+import { androidEmulatorApi } from './androidEmulatorApi'
 import type { IosSimulatorAnnotationCapture } from './iosSimulatorApi'
 
 type SimulatorAnnotationKind = 'element' | 'area'
@@ -105,10 +106,20 @@ export async function promoteSimulatorAttachments(
       .filter((path): path is string => typeof path === 'string' && isSimulatorTempPath(path))
   }))]
   if (!paths.length) return attachments
-  const promoted = await invoke<PromotedSimulatorFile[]>('ios_simulator_promote_temp_files', {
-    ownerId,
-    paths,
-  })
+  const iosPaths = paths.filter(isIosSimulatorTempPath)
+  const androidPaths = paths.filter(isAndroidSimulatorTempPath)
+  const [iosPromoted, androidPromoted] = await Promise.all([
+    iosPaths.length
+      ? invoke<PromotedSimulatorFile[]>('ios_simulator_promote_temp_files', {
+          ownerId,
+          paths: iosPaths,
+        })
+      : Promise.resolve([]),
+    androidPaths.length
+      ? androidEmulatorApi.capturePromote(ownerId, androidPaths)
+      : Promise.resolve([]),
+  ])
+  const promoted = [...iosPromoted, ...androidPromoted]
   const pathMap = new Map(promoted.map(file => [file.from, file.to]))
   return attachments.map(attachment => {
     const annotation = attachment.simulatorAnnotation
@@ -130,5 +141,13 @@ export async function promoteSimulatorAttachments(
 }
 
 export function isSimulatorTempPath(path: string): boolean {
+  return isIosSimulatorTempPath(path) || isAndroidSimulatorTempPath(path)
+}
+
+export function isIosSimulatorTempPath(path: string): boolean {
   return path.replaceAll('\\', '/').includes('/verboo-ios-simulator/')
+}
+
+export function isAndroidSimulatorTempPath(path: string): boolean {
+  return path.replaceAll('\\', '/').includes('/verboo-android-emulator/')
 }
