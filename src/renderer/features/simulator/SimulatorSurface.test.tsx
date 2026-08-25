@@ -66,6 +66,8 @@ function renderSurface(
         addToChat: 'Add to chat',
         cancel: 'Cancel',
         capturing: 'Capturing selection…',
+        inspecting: 'Inspecting component…',
+        inspectionFailed: 'Could not inspect this point. Try again.',
         selectionTooSmall: 'Select a larger area.',
         elementUnavailable: 'No component found here.',
         agentActive: 'Verboo is controlling this simulator.',
@@ -517,6 +519,8 @@ function renderCanvasSurface(
         addToChat: 'Add to chat',
         cancel: 'Cancel',
         capturing: 'Capturing selection…',
+        inspecting: 'Inspecting component…',
+        inspectionFailed: 'Could not inspect this point. Try again.',
         selectionTooSmall: 'Select a larger area.',
         elementUnavailable: 'No component found here.',
         agentActive: 'Verboo is controlling this emulator.',
@@ -540,6 +544,65 @@ function renderCanvasSurface(
 }
 
 describe('SimulatorSurface — canvas mode selection (F1, amendment)', () => {
+  it('shows immediate inspection feedback and blocks repeated exact clicks until it settles', async () => {
+    const pendingHit = deferred<{
+      rect: { x: number; y: number; width: number; height: number }
+      element: {
+        id: string; role: string; label: string
+        frame: { x: number; y: number; width: number; height: number }
+        enabled: boolean; visible: boolean; actionable: boolean
+      }
+    }>()
+    const { surface, callbacks } = renderCanvasSurface('select-element')
+    callbacks.onInspectPoint.mockReset().mockReturnValue(pendingHit.promise)
+
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+
+    expect(screen.getByRole('status')).toHaveTextContent('Inspecting component…')
+    expect(surface).toHaveAttribute('aria-busy', 'true')
+
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 350, clientY: 500 })
+    expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(1)
+
+    pendingHit.resolve({
+      rect: { x: 100 / 720, y: 200 / 1600, width: 80 / 720, height: 100 / 1600 },
+      element: {
+        id: 'first', role: 'Button', label: 'First',
+        frame: { x: 100, y: 200, width: 80, height: 100 },
+        enabled: true, visible: true, actionable: true,
+      },
+    })
+
+    await waitFor(() => expect(callbacks.onCaptureAnnotation).toHaveBeenCalledWith(
+      'element',
+      expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+      expect.objectContaining({ id: 'first' }),
+    ))
+    expect(screen.queryByText('Inspecting component…')).toBeNull()
+    expect(surface).toHaveAttribute('aria-busy', 'false')
+  })
+
+  it('distinguishes an inspection dump failure from an empty point', async () => {
+    const failed = renderCanvasSurface('select-element')
+    failed.callbacks.onInspectPoint.mockReset().mockRejectedValue({
+      message: 'uiautomator dump failed',
+      code: 'unavailable',
+    })
+
+    fireEvent.pointerDown(failed.surface, {
+      pointerId: 1, button: 0, clientX: 300, clientY: 450,
+    })
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not inspect this point. Try again.',
+    )
+
+    failed.callbacks.onInspectPoint.mockReset().mockResolvedValue(null)
+    fireEvent.pointerDown(failed.surface, {
+      pointerId: 2, button: 0, clientX: 300, clientY: 450,
+    })
+    expect(await screen.findByRole('alert')).toHaveTextContent('No component found here.')
+  })
+
   it('select-element inspects via the injected mediaSize (no <img>)', async () => {
     const { surface, callbacks } = renderCanvasSurface('select-element')
     callbacks.onInspectPoint.mockReset().mockResolvedValue({

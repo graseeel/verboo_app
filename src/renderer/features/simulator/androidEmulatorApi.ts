@@ -311,9 +311,9 @@ export const androidEmulatorApi = {
   onPresence: (handler: (presence: AndroidEmulatorPresenceEvent) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorPresenceEvent>('android-emulator:presence', handler),
   onOpenRequested: (
-    handler: (presence?: AndroidEmulatorPresenceEvent | null) => void,
+    handler: (presence: AndroidEmulatorPresenceEvent) => void,
   ): Promise<UnlistenFn> =>
-    listenInTauri<AndroidEmulatorPresenceEvent | null>('android-emulator:open-requested', handler),
+    listenInTauri<AndroidEmulatorPresenceEvent>('android-emulator:open-requested', handler),
   onSetupProgress: (handler: (progress: AndroidEmulatorSetupProgress) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorSetupProgress>('android-emulator:setup-progress', handler),
   onSetupDone: (handler: (done: AndroidEmulatorSetupDone) => void): Promise<UnlistenFn> =>

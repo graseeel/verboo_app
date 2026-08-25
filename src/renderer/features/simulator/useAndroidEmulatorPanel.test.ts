@@ -79,7 +79,7 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
   let errorHandler: ((event: AndroidEmulatorError) => void) | undefined
   let sessionEndedHandler: ((event: AndroidEmulatorSessionEnded) => void) | undefined
   let presenceHandler: ((event: AndroidEmulatorPresenceEvent) => void) | undefined
-  let openRequestedHandler: ((event?: AndroidEmulatorPresenceEvent | null) => void) | undefined
+  let openRequestedHandler: ((event: AndroidEmulatorPresenceEvent) => void) | undefined
   const readyHandlers: Array<(ready: { generation: number; seq: number }) => void> = []
   const stateHandlers: Array<(event: Record<string, unknown>) => void> = []
 
@@ -303,16 +303,77 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     const view = renderHook(() => useAndroidEmulatorPanel())
     await act(async () => { await view.result.current.attach(device.avdName) })
     const presence: AndroidEmulatorPresenceEvent = {
-      generation: 7,
+      generation: 8,
       phase: 'start',
-      action: 'tap',
-      target: { x: 0.5, y: 0.5 },
+      action: 'attach',
+      target: null,
+      start: null,
+      end: null,
     }
 
     act(() => openRequestedHandler?.(presence))
 
     expect(view.result.current.agentOpenRequest).toBe(1)
     expect(view.result.current.agentPresence).toEqual(presence)
+    expect(view.result.current.session?.generation).toBe(8)
+  })
+
+  it('keeps the open-requested generation as the minimum adopted identity without a local session', () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    const opened: AndroidEmulatorPresenceEvent = {
+      generation: 9,
+      phase: 'start',
+      action: 'attach',
+      target: null,
+      start: null,
+      end: null,
+    }
+
+    act(() => openRequestedHandler?.(opened))
+    expect(view.result.current.agentOpenRequest).toBe(1)
+    expect(view.result.current.agentPresence).toEqual(opened)
+
+    act(() => presenceHandler?.({
+      generation: 8,
+      phase: 'start',
+      action: 'tap',
+      target: { x: 0.1, y: 0.1 },
+    }))
+    expect(view.result.current.agentPresence).toEqual(opened)
+  })
+
+  it('adopts equal/newer presence generations and rejects only late events', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+    const current: AndroidEmulatorPresenceEvent = {
+      generation: 7,
+      phase: 'start',
+      action: 'tap',
+      target: { x: 0.25, y: 0.25 },
+    }
+    const newer: AndroidEmulatorPresenceEvent = {
+      generation: 8,
+      phase: 'start',
+      action: 'tap',
+      target: { x: 0.75, y: 0.75 },
+    }
+
+    act(() => presenceHandler?.({ ...current, generation: 6 }))
+    expect(view.result.current.agentPresence).toBeUndefined()
+    expect(view.result.current.session?.generation).toBe(7)
+
+    act(() => presenceHandler?.(current))
+    expect(view.result.current.agentPresence).toEqual(current)
+
+    act(() => presenceHandler?.(newer))
+    expect(view.result.current.agentPresence).toEqual(newer)
+    expect(view.result.current.session?.generation).toBe(8)
+
+    act(() => presenceHandler?.({ generation: 7, phase: 'clear' }))
+    expect(view.result.current.agentPresence).toEqual(newer)
+
+    act(() => presenceHandler?.({ generation: 8, phase: 'clear' }))
+    expect(view.result.current.agentPresence).toBeUndefined()
   })
 
   it('exposes Android accessibility inspection through the frozen inspect command', async () => {
@@ -331,6 +392,20 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
 
     expect(api.inspectPoint).toHaveBeenCalledWith(0.5, 0.25)
     expect(hit).toMatchObject({ element: { id: 'save' }, rect: { x: 0.25, width: 0.5 } })
+  })
+
+  it('preserves resolve-null as empty and rejects the unavailable dump failure verbatim', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    api.inspectPoint.mockResolvedValueOnce(null)
+    await expect(view.result.current.inspectPoint({ x: 0.2, y: 0.3 }, true))
+      .resolves.toBeUndefined()
+
+    const dumpFailure = { message: 'uiautomator dump failed', code: 'unavailable' }
+    api.inspectPoint.mockRejectedValueOnce(dumpFailure)
+    await expect(view.result.current.inspectPoint({ x: 0.2, y: 0.3 }, true))
+      .rejects.toBe(dumpFailure)
   })
 
   it('drives screenshot and recording state through the frozen media commands', async () => {

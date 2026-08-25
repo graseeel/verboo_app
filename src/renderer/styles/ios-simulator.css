@@ -541,6 +541,18 @@
   color: var(--text);
 }
 
+.android-emulator-boot-status {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.android-emulator-boot-cancel.ghost-button {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .ios-simulator-view-toolbar {
   justify-content: space-between;
   gap: 10px;

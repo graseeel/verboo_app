@@ -467,6 +467,8 @@ export function IosSimulatorPanel({
                         addToChat: t('simulator.annotation.addToChat'),
                         cancel: t('common.cancel'),
                         capturing: t('simulator.annotation.capturing'),
+                        inspecting: t('simulator.annotation.inspecting'),
+                        inspectionFailed: t('simulator.annotation.inspectionFailed'),
                         selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
                         elementUnavailable: t('simulator.annotation.elementUnavailable'),
                         agentActive: t('simulator.agentActive'),
@@ -672,8 +674,9 @@ function AndroidEmulatorTabContent({
     )
   }
   const presentationSession = android.session ?? android.exitingSession
-  const bootDevice = android.busyAvd
-    ? requirements.devices.find(item => item.avdName === android.busyAvd)
+  const presentationAvd = android.busyAvd ?? android.exitingAvd
+  const bootDevice = presentationAvd
+    ? requirements.devices.find(item => item.avdName === presentationAvd)
     : undefined
   const device = bootDevice ?? presentationSession?.device
   const deviceName = device ? androidDeviceDisplayLabel(device) : ''
@@ -747,9 +750,18 @@ function AndroidEmulatorTabContent({
                 <span>{stageCopy}</span>
               </div>
             ) : !ready ? (
-              <div className="ios-simulator-frame-placeholder" role="status" aria-live="polite">
-                <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
-                <span>{stageCopy}</span>
+              <div className="ios-simulator-frame-placeholder">
+                <div className="android-emulator-boot-status" role="status" aria-live="polite">
+                  <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+                  <span>{stageCopy}</span>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button android-emulator-boot-cancel"
+                  onClick={() => { void android.detach() }}
+                >
+                  {t('common.cancel')}
+                </button>
               </div>
             ) : android.previewMode === 'vaf1' ? (
               <SimulatorSurface
@@ -778,6 +790,8 @@ function AndroidEmulatorTabContent({
                   addToChat: t('simulator.annotation.addToChat'),
                   cancel: t('common.cancel'),
                   capturing: t('simulator.annotation.capturing'),
+                  inspecting: t('simulator.annotation.inspecting'),
+                  inspectionFailed: t('simulator.annotation.inspectionFailed'),
                   selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
                   elementUnavailable: t('simulator.annotation.elementUnavailable'),
                   agentActive: t('simulator.agentActive'),
@@ -818,6 +832,8 @@ function AndroidEmulatorTabContent({
                   addToChat: t('simulator.annotation.addToChat'),
                   cancel: t('common.cancel'),
                   capturing: t('simulator.annotation.capturing'),
+                  inspecting: t('simulator.annotation.inspecting'),
+                  inspectionFailed: t('simulator.annotation.inspectionFailed'),
                   selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
                   elementUnavailable: t('simulator.annotation.elementUnavailable'),
                   agentActive: t('simulator.agentActive'),

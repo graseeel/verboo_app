@@ -217,7 +217,17 @@ describe('App settings shortcuts', () => {
     await renderApp()
     await waitFor(() => expect(androidOpenForward).toBeDefined())
 
-    act(() => androidOpenForward?.({ payload: null }))
+    // Contrato novo (pinado nos 2 lados): payload é AndroidEmulatorPresence
+    // com o objeto completo. Null → useAndroidEmulatorPanel.ts:862 explode
+    // em `presence.generation` (gate da adoção). Ajustar a EMISSÃO ao contrato
+    // pinado (sem afrouxar as assertions abaixo — o handler `start` continua
+    // incrementando agentOpenRequest e setando agentPresence).
+    act(() => androidOpenForward?.({
+      payload: {
+        generation: 1, phase: 'start', action: 'attach',
+        target: null, start: null, end: null,
+      },
+    }))
 
     const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
     expect(topbar).toBeDefined()

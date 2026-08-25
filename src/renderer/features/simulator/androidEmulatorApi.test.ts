@@ -228,8 +228,16 @@ describe('androidEmulatorApi — frozen event channels', () => {
     const presencePayload = { generation: 7, phase: 'start', action: 'tap', target: { x: 0.5, y: 0.5 } }
     listenMock.mock.calls[3]?.[1]({ payload: presencePayload })
     expect(presence).toHaveBeenCalledWith(presencePayload)
-    listenMock.mock.calls[4]?.[1]({ payload: presencePayload })
-    expect(openRequested).toHaveBeenCalledWith(presencePayload)
+    const openRequestedPayload = {
+      generation: 9,
+      phase: 'start',
+      action: 'attach',
+      target: null,
+      start: null,
+      end: null,
+    }
+    listenMock.mock.calls[4]?.[1]({ payload: openRequestedPayload })
+    expect(openRequested).toHaveBeenCalledWith(openRequestedPayload)
   })
 
   it('subscribes the additive session-ended channel and forwards its literal payload', async () => {

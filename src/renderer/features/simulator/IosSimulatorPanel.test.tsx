@@ -457,7 +457,13 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     lifecycle: { stage: 'ready' as const },
   }
 
-  function mockAndroidBackend(gate?: { resolveAttach?: (value: typeof androidSession) => void }) {
+  type AndroidBackendGate = {
+    resolveAttach?: (value: typeof androidSession) => void
+    rejectAttach?: (reason: Error) => void
+    resolveDetach?: () => void
+  }
+
+  function mockAndroidBackend(gate?: AndroidBackendGate) {
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === 'android_emulator_requirements') return {
         ready: true,
@@ -468,10 +474,14 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         }],
       }
       if (command === 'android_emulator_attach') {
-        return new Promise<typeof androidSession>(resolve => {
+        return new Promise<typeof androidSession>((resolve, reject) => {
           if (gate) gate.resolveAttach = resolve
+          if (gate) gate.rejectAttach = reject
           else resolve(androidSession)
         })
+      }
+      if (command === 'android_emulator_detach' && gate) {
+        return new Promise<void>(resolve => { gate.resolveDetach = resolve })
       }
       return undefined
     })
@@ -811,6 +821,8 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         const initialPlaceholder = document.querySelector('.ios-simulator-frame-placeholder')
         expect(initialPlaceholder).not.toBeNull()
         expect(within(initialPlaceholder as HTMLElement).getByText('Ligando Pixel 8…')).toBeInTheDocument()
+        expect(within(initialPlaceholder as HTMLElement).getByRole('button', { name: 'Cancelar' }))
+          .toBeInTheDocument()
         expect(screen.queryByText('Nenhum emulador Android anexado')).not.toBeInTheDocument()
 
         const stages = [
@@ -823,6 +835,8 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
           const placeholder = document.querySelector('.ios-simulator-frame-placeholder')
           expect(placeholder, `stage=${stage}`).not.toBeNull()
           expect(within(placeholder as HTMLElement).getByText(copy)).toBeInTheDocument()
+          expect(within(placeholder as HTMLElement).getByRole('button', { name: 'Cancelar' }))
+            .toBeInTheDocument()
           expect(screen.queryByText('Nenhum emulador Android anexado')).not.toBeInTheDocument()
         }
 
@@ -834,6 +848,52 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         expect(document.querySelector('.ios-simulator-frame-placeholder')).toBeNull()
       } finally {
         fake.restore()
+      }
+    })
+
+    it('cancels an in-flight boot through detach, then reuses the shutdown fade into empty', async () => {
+      const gate: AndroidBackendGate = {}
+      mockAndroidBackend(gate)
+      const view = renderPanel({ platform: 'linux' })
+      fireEvent.click(await openAndroidDevice())
+      await waitFor(() => expect(gate.rejectAttach).toBeTypeOf('function'))
+
+      view.rerender(
+        <I18nProvider language="en-US">
+          <IosSimulatorPanel {...view.props} />
+        </I18nProvider>,
+      )
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+      view.rerender(
+        <I18nProvider language="pt-BR">
+          <IosSimulatorPanel {...view.props} />
+        </I18nProvider>,
+      )
+
+      vi.useFakeTimers()
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_detach')
+        expect(gate.resolveDetach).toBeTypeOf('function')
+        const shutdown = document.querySelector('.android-emulator-shutdown-state')
+        expect(shutdown).not.toBeNull()
+        expect(within(shutdown as HTMLElement).getByText('Desligando Pixel 8…')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Cancelar' })).not.toBeInTheDocument()
+
+        await act(async () => {
+          gate.rejectAttach?.(new Error('boot cancelled'))
+          gate.resolveDetach?.()
+          await Promise.resolve()
+        })
+        expect(document.querySelector('.android-emulator-view')).toHaveClass('is-leaving')
+
+        act(() => { vi.advanceTimersByTime(250) })
+        expect(screen.getByText('Nenhum emulador Android anexado')).toBeInTheDocument()
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      } finally {
+        vi.runOnlyPendingTimers()
+        vi.useRealTimers()
       }
     })
 
@@ -1069,6 +1129,18 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         .toBe('Turning off Pixel 8…')
       expect(createTranslator('pt-BR')('androidEmulator.stage.shuttingDown', { name: 'Pixel 8' }))
         .toBe('Desligando Pixel 8…')
+    })
+
+    it('localizes Android inspection progress and dump failure in every supported language', () => {
+      const en = createTranslator('en-US')
+      const pt = createTranslator('pt-BR')
+
+      expect(en('simulator.annotation.inspecting')).toBe('Inspecting component…')
+      expect(en('simulator.annotation.inspectionFailed'))
+        .toBe('Could not inspect this point. Try again.')
+      expect(pt('simulator.annotation.inspecting')).toBe('Inspecionando componente…')
+      expect(pt('simulator.annotation.inspectionFailed'))
+        .toBe('Não foi possível inspecionar este ponto. Tente novamente.')
     })
 
     it('popover Android usa androidEmulator.disclaimer (não simulator.disclaimer) — pin E7', () => {

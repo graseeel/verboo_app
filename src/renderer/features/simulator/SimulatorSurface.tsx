@@ -44,6 +44,8 @@ type Labels = {
   addToChat?: string
   cancel?: string
   capturing?: string
+  inspecting?: string
+  inspectionFailed?: string
   selectionTooSmall?: string
   elementUnavailable?: string
 }
@@ -137,6 +139,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   const [pendingCapture, setPendingCapture] = useState<PendingCapture | undefined>()
   const [note, setNote] = useState('')
   const [capturing, setCapturing] = useState(false)
+  const [inspecting, setInspecting] = useState(false)
   const [selectionError, setSelectionError] = useState<string | undefined>()
   const [hoveredElement, setHoveredElement] = useState<IosSimulatorElementHit | undefined>()
   const [failedStreamUrl, setFailedStreamUrl] = useState<string | undefined>()
@@ -200,6 +203,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
     }
     setSelectionRect(undefined)
     setSelectionError(undefined)
+    setInspecting(false)
     setHoveredElement(undefined)
     areaPointerRef.current = null
   }, [mode])
@@ -292,6 +296,10 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
       setHoveredElement(hit)
       setSelectionRect(hit?.rect)
       setSelectionError(undefined)
+    } catch {
+      if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
+      setHoveredElement(undefined)
+      setSelectionRect(undefined)
     } finally {
       inspection.inFlight = false
       if (inspection.queued && modeRef.current === 'select-element') {
@@ -303,6 +311,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   async function selectElementAt(point: IosSimulatorPoint) {
     if (capturing || pendingCapture || !onInspectPoint) return
     const inspection = inspectionRef.current
+    if (inspection.selecting) return
     inspection.sequence += 1
     inspection.selecting = true
     inspection.queued = undefined
@@ -311,6 +320,8 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
       inspection.timer = undefined
     }
     const sequence = inspection.sequence
+    setInspecting(true)
+    setSelectionError(undefined)
     // Re-inspect the exact click point. The last hover result may belong to a
     // neighbouring control while a newer throttled inspection is still queued.
     try {
@@ -323,9 +334,17 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
       }
       setHoveredElement(hit)
       setSelectionRect(hit.rect)
+      setInspecting(false)
       await captureSelection('element', hit.rect, hit.element)
+    } catch {
+      if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
+      setSelectionRect(undefined)
+      setSelectionError(labels.inspectionFailed)
     } finally {
-      if (sequence === inspection.sequence) inspection.selecting = false
+      if (sequence === inspection.sequence) {
+        inspection.selecting = false
+        setInspecting(false)
+      }
     }
   }
 
@@ -439,7 +458,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
         tabIndex={mode === 'interact' && interactive ? 0 : -1}
         aria-label={labels.interaction}
         aria-describedby={hintId}
-        aria-busy={capturing}
+        aria-busy={capturing || inspecting}
         data-mode={mode}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -480,6 +499,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
         {selectionStyle && (
           <div className="ios-simulator-selection-outline" style={selectionStyle} aria-hidden="true" />
         )}
+        {inspecting && <div className="ios-simulator-capturing" role="status">{labels.inspecting ?? ''}</div>}
         {capturing && <div className="ios-simulator-capturing" role="status">{labels.capturing ?? ''}</div>}
         {!interactive && mode === 'interact' && (
           <div className="ios-simulator-interaction-unavailable" aria-hidden="true">
