@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 pub mod a11y;
+mod capture_store;
 pub(crate) mod grpc;
 pub mod input;
 pub mod media;
@@ -37,7 +38,8 @@ pub use a11y::{
     AndroidAccessibilityNode, AndroidAccessibilitySnapshot, AndroidEmulatorElementHit,
     AndroidEmulatorRect, AndroidEmulatorSystemAction,
 };
-pub use media::AndroidEmulatorMediaFile;
+pub use capture_store::{AndroidEmulatorCaptureStore, PromotedAndroidCaptureFile};
+pub use media::{AndroidEmulatorAnnotationCapture, AndroidEmulatorMediaFile};
 pub use requirements::{
     AndroidDevice, AndroidDeviceFamily, AndroidEmulatorIssue, AndroidEmulatorRequirements,
 };
@@ -518,6 +520,48 @@ pub fn android_emulator_capture_screen(
 }
 
 #[tauri::command]
+pub async fn android_emulator_capture_annotation(
+    service: State<'_, AndroidEmulatorService>,
+    store: State<'_, AndroidEmulatorCaptureStore>,
+    device_generation: u64,
+    rect: AndroidEmulatorRect,
+    element: Option<AndroidAccessibilityNode>,
+) -> Result<AndroidEmulatorAnnotationCapture, String> {
+    let service = service.inner().clone();
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.capture_annotation_sync(&store, device_generation, rect, element)
+    })
+    .await
+    .map_err(|error| format!("failed to capture Android emulator annotation: {error}"))?
+}
+
+#[tauri::command]
+pub fn android_emulator_capture_delete(
+    store: State<'_, AndroidEmulatorCaptureStore>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    store.delete_temp_files(paths)
+}
+
+#[tauri::command]
+pub fn android_emulator_capture_promote(
+    store: State<'_, AndroidEmulatorCaptureStore>,
+    owner_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<PromotedAndroidCaptureFile>, String> {
+    store.promote(&owner_id, paths)
+}
+
+#[tauri::command]
+pub fn android_emulator_capture_cleanup(
+    store: State<'_, AndroidEmulatorCaptureStore>,
+    active_owner_ids: Vec<String>,
+) -> Result<(), String> {
+    store.cleanup_owners(active_owner_ids)
+}
+
+#[tauri::command]
 pub fn android_emulator_recording_start(
     app: AppHandle,
     service: State<'_, AndroidEmulatorService>,
@@ -551,6 +595,37 @@ mod tests {
         assert_eq!(keycode_for_key("arrowRight"), Some(22));
         assert_eq!(keycode_for_key("space"), Some(62));
         assert_eq!(keycode_for_key("unknown"), None);
+    }
+
+    #[test]
+    fn capture_lifecycle_commands_mirror_ios_argument_and_return_shapes() {
+        let source = include_str!("mod.rs").replace("\r\n", "\n");
+        assert!(
+            source.contains(
+                "pub fn android_emulator_capture_delete(\n    store: State<'_, AndroidEmulatorCaptureStore>,\n    paths: Vec<String>,\n) -> Result<(), String>"
+            ),
+            "capture_delete must take paths: Vec<String> and return Result<(), String>"
+        );
+        assert!(
+            source.contains(
+                "pub fn android_emulator_capture_promote(\n    store: State<'_, AndroidEmulatorCaptureStore>,\n    owner_id: String,\n    paths: Vec<String>,\n) -> Result<Vec<PromotedAndroidCaptureFile>, String>"
+            ),
+            "capture_promote must take owner_id + paths and return Vec<{{from,to}}>"
+        );
+        assert!(
+            source.contains(
+                "pub fn android_emulator_capture_cleanup(\n    store: State<'_, AndroidEmulatorCaptureStore>,\n    active_owner_ids: Vec<String>,\n) -> Result<(), String>"
+            ),
+            "capture_cleanup must take active_owner_ids: Vec<String> and return Result<(), String>"
+        );
+        assert!(
+            source.contains("device_generation: u64"),
+            "capture_annotation must take device_generation like iOS"
+        );
+        assert!(
+            source.contains("android_emulator_capture_annotation"),
+            "annotation write command must exist so inspection does not use Desktop capture_screen"
+        );
     }
 
     #[cfg(unix)]

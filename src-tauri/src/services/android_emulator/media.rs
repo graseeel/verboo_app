@@ -12,9 +12,14 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
+use super::capture_store::{AndroidEmulatorCaptureStore, NormalizedCaptureRect};
 use super::session::AndroidSession;
-use super::{AndroidEmulatorService, CommandRunner, ANDROID_CLEANUP_BUDGET};
+use super::{
+    AndroidAccessibilityNode, AndroidDevice, AndroidEmulatorRect, AndroidEmulatorService,
+    CommandRunner, ANDROID_CLEANUP_BUDGET,
+};
 use crate::services::child_signal;
 
 const RECORDING_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -266,6 +271,33 @@ pub struct AndroidEmulatorMediaFile {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AndroidEmulatorOrientation {
+    Portrait,
+    Landscape,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidEmulatorAnnotationCapture {
+    pub crop_path: String,
+    pub viewport_path: String,
+    pub crop_width: u32,
+    pub crop_height: u32,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    pub crop_bytes: usize,
+    pub viewport_bytes: usize,
+    pub device: AndroidDevice,
+    pub orientation: AndroidEmulatorOrientation,
+    pub device_generation: u64,
+    pub frame_generation: u64,
+    pub rect: AndroidEmulatorRect,
+    pub device_rect: AndroidEmulatorRect,
+    pub element: Option<AndroidAccessibilityNode>,
+}
+
 pub(crate) struct ActiveRecording {
     pub(crate) partial_path: PathBuf,
     pub(crate) final_path: PathBuf,
@@ -491,6 +523,103 @@ impl AndroidEmulatorService {
         Ok(file)
     }
 
+    pub(crate) fn capture_annotation_sync(
+        &self,
+        store: &AndroidEmulatorCaptureStore,
+        device_generation: u64,
+        rect: AndroidEmulatorRect,
+        element: Option<AndroidAccessibilityNode>,
+    ) -> Result<AndroidEmulatorAnnotationCapture, String> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .expect("Android emulator operation lock poisoned");
+        let session = self.current_session()?;
+        if session.generation != device_generation {
+            return Err("A captura pertence a outra sessão do emulador Android.".into());
+        }
+
+        fs::create_dir_all(store.temp_root())
+            .map_err(|error| format!("create android emulator temp store falhou: {error}"))?;
+        let staging = store.temp_root().join(format!("{}.png", Uuid::new_v4()));
+        let written = match (|| {
+            self.media_backend.screenshot(
+                self.runner.as_ref(),
+                &session.adb_path,
+                &session.serial,
+                &staging,
+                session.stop.as_ref(),
+                Instant::now() + ANDROID_CLEANUP_BUDGET,
+            )?;
+            let bytes = fs::read(&staging).map_err(|error| {
+                format!("read android emulator annotation staging falhou: {error}")
+            })?;
+            store.write_capture(
+                &bytes,
+                NormalizedCaptureRect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                },
+            )
+        })() {
+            Ok(written) => {
+                let _ = fs::remove_file(&staging);
+                written
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&staging);
+                return Err(error);
+            }
+        };
+
+        let still_current = self
+            .current_session()
+            .ok()
+            .map(|current| current.generation == device_generation)
+            .unwrap_or(false);
+        if !still_current {
+            let _ = store.delete_temp_files(vec![
+                written.crop_path.clone(),
+                written.viewport_path.clone(),
+            ]);
+            return Err("A sessão do emulador Android mudou durante a captura.".into());
+        }
+
+        let device_rect = element
+            .as_ref()
+            .map(|node| node.frame)
+            .unwrap_or(AndroidEmulatorRect {
+                x: rect.x * f64::from(written.viewport_width),
+                y: rect.y * f64::from(written.viewport_height),
+                width: rect.width * f64::from(written.viewport_width),
+                height: rect.height * f64::from(written.viewport_height),
+            });
+
+        Ok(AndroidEmulatorAnnotationCapture {
+            crop_path: written.crop_path,
+            viewport_path: written.viewport_path,
+            crop_width: written.crop_width,
+            crop_height: written.crop_height,
+            viewport_width: written.viewport_width,
+            viewport_height: written.viewport_height,
+            crop_bytes: written.crop_bytes,
+            viewport_bytes: written.viewport_bytes,
+            device: session.device.clone(),
+            orientation: if written.viewport_height >= written.viewport_width {
+                AndroidEmulatorOrientation::Portrait
+            } else {
+                AndroidEmulatorOrientation::Landscape
+            },
+            device_generation,
+            frame_generation: session.generation,
+            rect,
+            device_rect,
+            element,
+        })
+    }
+
     pub(crate) fn start_recording_sync(&self, desktop: &Path) -> Result<(), String> {
         let _operation = self
             .operation_lock
@@ -574,6 +703,9 @@ mod tests {
         AndroidEmulatorOwnership, AndroidSession, PreviewGate, PreviewRuntime,
     };
     use crate::services::android_emulator::AndroidDevice;
+
+    use super::super::capture_store::AndroidEmulatorCaptureStore;
+    use super::super::AndroidEmulatorRect;
 
     #[derive(Default)]
     struct FakeBackend {
@@ -662,6 +794,170 @@ mod tests {
         assert!(!file.path.contains(".partial."));
         assert_eq!(desktop.path().read_dir().unwrap().count(), 1);
         assert!(backend.calls.lock().unwrap()[0].contains("emulator-5554"));
+    }
+
+    fn annotation_png(width: u32, height: u32) -> Vec<u8> {
+        use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+        use std::io::Cursor;
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+            width,
+            height,
+            Rgba([90, 40, 180, 255]),
+        ));
+        let mut bytes = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    struct PngBackend {
+        png: Vec<u8>,
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    impl PngBackend {
+        fn new(width: u32, height: u32) -> Self {
+            Self {
+                png: annotation_png(width, height),
+                paths: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AndroidMediaBackend for PngBackend {
+        fn screenshot(
+            &self,
+            _runner: &dyn CommandRunner,
+            _adb: &Path,
+            _serial: &str,
+            path: &Path,
+            _cancel: &AtomicBool,
+            _deadline: Instant,
+        ) -> Result<(), String> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::write(path, &self.png).map_err(|error| error.to_string())?;
+            self.paths.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        }
+
+        fn start_recording(
+            &self,
+            _runner: Arc<dyn CommandRunner>,
+            _adb: &Path,
+            _serial: &str,
+            _path: &Path,
+            _cancel: Arc<AtomicBool>,
+        ) -> Result<Box<dyn RecordingProcess>, String> {
+            Err("recording is not used by annotation captures".into())
+        }
+    }
+
+    #[test]
+    fn capture_annotation_writes_uuid_pngs_under_temp_and_never_the_desktop() {
+        let root = tempfile::tempdir().unwrap();
+        let desktop = root.path().join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        let mut service =
+            super::super::AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        let backend = Arc::new(PngBackend::new(400, 800));
+        service.media_backend = backend.clone();
+        service.state.lock().unwrap().session = Some(test_session());
+        let store = AndroidEmulatorCaptureStore::for_test(
+            root.path().join("temp"),
+            root.path().join("android_captures"),
+        );
+        let rect = AndroidEmulatorRect {
+            x: 0.25,
+            y: 0.25,
+            width: 0.5,
+            height: 0.25,
+        };
+
+        let capture = service
+            .capture_annotation_sync(&store, 1, rect, None)
+            .unwrap();
+
+        assert_eq!((capture.crop_width, capture.crop_height), (200, 200));
+        assert_eq!(
+            (capture.viewport_width, capture.viewport_height),
+            (400, 800)
+        );
+        let crop = PathBuf::from(&capture.crop_path);
+        let viewport = PathBuf::from(&capture.viewport_path);
+        assert!(crop.starts_with(store.temp_root()));
+        assert!(viewport.starts_with(store.temp_root()));
+        assert!(!crop.starts_with(&desktop));
+        assert!(!viewport.starts_with(&desktop));
+        assert_eq!(desktop.read_dir().unwrap().count(), 0);
+        assert_eq!(store.durable_root().read_dir().unwrap().count(), 0);
+        for path in backend.paths.lock().unwrap().iter() {
+            assert!(
+                path.starts_with(store.temp_root()),
+                "screencap staging leaked off temp: {}",
+                path.display()
+            );
+            assert!(!path.starts_with(&desktop));
+            assert!(
+                !path.exists(),
+                "staging screencap must be deleted after write_capture"
+            );
+        }
+        assert_eq!(capture.orientation, AndroidEmulatorOrientation::Portrait);
+        assert_eq!(capture.device_generation, 1);
+        assert_eq!(capture.frame_generation, 1);
+        assert_eq!(capture.rect, rect);
+        assert_eq!(
+            capture.device_rect,
+            AndroidEmulatorRect {
+                x: 100.0,
+                y: 200.0,
+                width: 200.0,
+                height: 200.0,
+            }
+        );
+        let json = serde_json::to_value(&capture).unwrap();
+        assert!(json.get("cropPath").is_some());
+        assert!(json.get("viewportPath").is_some());
+        assert!(json.get("deviceGeneration").is_some());
+    }
+
+    #[test]
+    fn capture_annotation_rejects_a_stale_generation_without_touching_desktop() {
+        let root = tempfile::tempdir().unwrap();
+        let desktop = root.path().join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        let mut service =
+            super::super::AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.media_backend = Arc::new(PngBackend::new(400, 800));
+        service.state.lock().unwrap().session = Some(test_session());
+        let store = AndroidEmulatorCaptureStore::for_test(
+            root.path().join("temp"),
+            root.path().join("android_captures"),
+        );
+
+        let error = service
+            .capture_annotation_sync(
+                &store,
+                99,
+                AndroidEmulatorRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+                None,
+            )
+            .unwrap_err();
+
+        assert!(
+            error.contains("outra sessão"),
+            "stale generation must name the session mismatch, got {error}"
+        );
+        assert_eq!(desktop.read_dir().unwrap().count(), 0);
+        assert_eq!(store.temp_root().read_dir().unwrap().count(), 0);
     }
 
     #[test]

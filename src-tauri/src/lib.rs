@@ -2343,6 +2343,10 @@ pub fn run() {
                 services::android_emulator::AndroidEmulatorService::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?;
             app.manage(android_service.clone());
+            app.manage(
+                services::android_emulator::AndroidEmulatorCaptureStore::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
             let android_cache_dir = app.path().app_cache_dir().map_err(std::io::Error::other)?;
             let android_bridge = services::android_emulator_bridge::AndroidEmulatorBridge::start(
                 android_cache_dir,
@@ -2652,6 +2656,10 @@ pub fn run() {
             services::android_emulator::android_emulator_accessibility_snapshot,
             services::android_emulator::android_emulator_inspect_point,
             services::android_emulator::android_emulator_capture_screen,
+            services::android_emulator::android_emulator_capture_annotation,
+            services::android_emulator::android_emulator_capture_promote,
+            services::android_emulator::android_emulator_capture_delete,
+            services::android_emulator::android_emulator_capture_cleanup,
             services::android_emulator::android_emulator_recording_start,
             services::android_emulator::android_emulator_recording_stop,
             #[cfg(target_os = "macos")]
@@ -2904,5 +2912,53 @@ mod platform_contract_tests {
             !setup[macos_block_end..android_start].contains("#[cfg(target_os = \"macos\")]"),
             "Android emulator MCP must register on every platform"
         );
+    }
+
+    #[test]
+    fn android_emulator_capture_store_is_registered_on_every_platform() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        let handler = &source[invoke_start..];
+        assert!(
+            setup.contains("AndroidEmulatorCaptureStore::new"),
+            "the Android capture store must be created in setup"
+        );
+        let macos_block_end = setup
+            .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+            .and_then(|offset| setup[offset..].find("\n            }"))
+            .map(|relative| {
+                setup
+                    .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+                    .unwrap()
+                    + relative
+            })
+            .expect("macOS-only simulator block");
+        let store_start = setup
+            .find("AndroidEmulatorCaptureStore::new")
+            .expect("android capture store");
+        assert!(
+            store_start > macos_block_end,
+            "Android capture store must not be trapped inside the macOS-only iOS block"
+        );
+        for command in [
+            "services::android_emulator::android_emulator_capture_annotation",
+            "services::android_emulator::android_emulator_capture_promote",
+            "services::android_emulator::android_emulator_capture_delete",
+            "services::android_emulator::android_emulator_capture_cleanup",
+        ] {
+            let offset = handler
+                .find(command)
+                .unwrap_or_else(|| panic!("missing invoke handler command: {command}"));
+            let prefix = &handler[..offset];
+            assert_ne!(
+                prefix.lines().last().map(str::trim),
+                Some("#[cfg(target_os = \"macos\")]"),
+                "Android capture command is macOS-gated: {command}"
+            );
+        }
     }
 }
