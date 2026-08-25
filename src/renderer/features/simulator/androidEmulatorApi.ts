@@ -119,7 +119,11 @@ export type AndroidEmulatorFrame = {
   generation: number
 }
 
-export type AndroidEmulatorError = { message: string }
+export type AndroidEmulatorError = { message: string; code?: AndroidPreviewReason }
+export type AndroidEmulatorSessionEnded = {
+  generation: number
+  code?: AndroidPreviewReason
+}
 
 export type AndroidEmulatorPoint = SimulatorPoint
 export type AndroidEmulatorRect = SimulatorRect
@@ -203,6 +207,7 @@ export type AndroidPreviewReason =
   | 'unavailable'
   | 'unauthenticated'
   | 'unsupported'
+  | 'deviceLost'
 export type AndroidPreviewStateEvent = {
   generation: number
   source: AndroidPreviewSource
@@ -214,7 +219,7 @@ const PREVIEW_STATE_KEYS: readonly string[] = [
   'generation', 'source', 'requestedFps', 'degraded', 'reason',
 ]
 const PREVIEW_STATE_REASONS: readonly AndroidPreviewReason[] = [
-  'gpuSoftware', 'unavailable', 'unauthenticated', 'unsupported',
+  'gpuSoftware', 'unavailable', 'unauthenticated', 'unsupported', 'deviceLost',
 ]
 /** Guard exato do preview-state; NUNCA inventa campo ausente. */
 export function parsePreviewState(payload: unknown): AndroidPreviewStateEvent | null {
@@ -299,6 +304,10 @@ export const androidEmulatorApi = {
     listenInTauri<AndroidEmulatorLifecycleEvent>('android-emulator:lifecycle', handler),
   onError: (handler: (error: AndroidEmulatorError) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorError>('android-emulator:error', handler),
+  onSessionEnded: (
+    handler: (event: AndroidEmulatorSessionEnded) => void,
+  ): Promise<UnlistenFn> =>
+    listenInTauri<AndroidEmulatorSessionEnded>('android-emulator:session-ended', handler),
   onPresence: (handler: (presence: AndroidEmulatorPresenceEvent) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorPresenceEvent>('android-emulator:presence', handler),
   onOpenRequested: (

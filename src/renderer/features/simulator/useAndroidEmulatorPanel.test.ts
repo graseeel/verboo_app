@@ -2,11 +2,13 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   AndroidAccessibilityNode,
+  AndroidEmulatorError,
   AndroidEmulatorFrame,
   AndroidEmulatorLifecycleEvent,
   AndroidEmulatorPresenceEvent,
   AndroidEmulatorRequirements,
   AndroidEmulatorSession,
+  AndroidEmulatorSessionEnded,
 } from './androidEmulatorApi'
 import type { Vaf1Frame } from './vaf1'
 import { useAndroidEmulatorPanel } from './useAndroidEmulatorPanel'
@@ -31,6 +33,7 @@ const api = vi.hoisted(() => ({
   onFrame: vi.fn(),
   onLifecycle: vi.fn(),
   onError: vi.fn(),
+  onSessionEnded: vi.fn(),
   onPresence: vi.fn(),
   onOpenRequested: vi.fn(),
   readFrame: vi.fn(),
@@ -73,6 +76,8 @@ const session: AndroidEmulatorSession = {
 describe('useAndroidEmulatorPanel (PA-27)', () => {
   let frameHandler: ((frame: AndroidEmulatorFrame) => void) | undefined
   let lifecycleHandler: ((event: AndroidEmulatorLifecycleEvent) => void) | undefined
+  let errorHandler: ((event: AndroidEmulatorError) => void) | undefined
+  let sessionEndedHandler: ((event: AndroidEmulatorSessionEnded) => void) | undefined
   let presenceHandler: ((event: AndroidEmulatorPresenceEvent) => void) | undefined
   let openRequestedHandler: ((event?: AndroidEmulatorPresenceEvent | null) => void) | undefined
   const readyHandlers: Array<(ready: { generation: number; seq: number }) => void> = []
@@ -86,6 +91,8 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     vi.resetAllMocks()
     frameHandler = undefined
     lifecycleHandler = undefined
+    errorHandler = undefined
+    sessionEndedHandler = undefined
     presenceHandler = undefined
     openRequestedHandler = undefined
     readyHandlers.length = 0
@@ -117,7 +124,14 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       lifecycleHandler = handler
       return Promise.resolve(() => {})
     })
-    api.onError.mockImplementation(() => Promise.resolve(() => {}))
+    api.onError.mockImplementation((handler: typeof errorHandler) => {
+      errorHandler = handler
+      return Promise.resolve(() => {})
+    })
+    api.onSessionEnded.mockImplementation((handler: typeof sessionEndedHandler) => {
+      sessionEndedHandler = handler
+      return Promise.resolve(() => {})
+    })
     api.onPresence.mockImplementation((handler: typeof presenceHandler) => {
       presenceHandler = handler
       return Promise.resolve(() => {})
@@ -199,6 +213,58 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     await act(async () => { await view.result.current.attach(device.avdName) })
     await act(async () => { await view.result.current.endSimulation() })
     expect(view.result.current.session).toBeUndefined()
+  })
+
+  it('maps every typed native preview error to friendly localized copy', () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    const cases = [
+      ['gpuSoftware', 'The Android emulator is using software graphics. Preview performance may be reduced.'],
+      ['unavailable', 'The Android emulator preview is temporarily unavailable. Reconnect the emulator and try again.'],
+      ['unauthenticated', 'The Android emulator preview could not authenticate. Reconnect the emulator and try again.'],
+      ['unsupported', 'This Android emulator does not support the fast preview. Try another emulator.'],
+      ['deviceLost', 'The Android emulator disconnected. Reconnect it to continue.'],
+    ] as const
+
+    for (const [code, expected] of cases) {
+      act(() => errorHandler?.({
+        code,
+        message: 'Android emulator preview failed: LegacyPng("raw Rust debug")',
+      }))
+      expect(view.result.current.error).toBe(expected)
+    }
+  })
+
+  it('keeps the native message as the compatibility fallback when error code is absent', () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+
+    act(() => errorHandler?.({ message: 'Legacy backend error' }))
+
+    expect(view.result.current.error).toBe('Legacy backend error')
+  })
+
+  it('clears the current session on session-ended and ignores stale generations', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+    act(() => stateHandlers.at(-1)?.({
+      generation: 7,
+      source: 'adbFallback',
+      requestedFps: 60,
+      degraded: true,
+      reason: 'unavailable',
+    }))
+    act(() => errorHandler?.({ code: 'unavailable', message: 'raw native error' }))
+
+    act(() => sessionEndedHandler?.({ generation: 6, code: 'deviceLost' }))
+    expect(view.result.current.session?.generation).toBe(7)
+    expect(view.result.current.previewState).toMatchObject({ degraded: true })
+    expect(view.result.current.error).toBeDefined()
+
+    act(() => sessionEndedHandler?.({ generation: 7, code: 'deviceLost' }))
+    expect(view.result.current.session).toBeUndefined()
+    expect(view.result.current.previewState).toBeUndefined()
+    expect(view.result.current.frameDataUrl).toBeUndefined()
+    expect(view.result.current.error).toBeUndefined()
+    expect(view.result.current.interactionReady).toBe(false)
   })
 
   it('increments agentOpenRequest and forwards a starting presence from onOpenRequested', async () => {

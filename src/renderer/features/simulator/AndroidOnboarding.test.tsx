@@ -169,6 +169,24 @@ describe('AndroidOnboarding — automatic sequence (frozen vocabulary)', () => {
     expect(screen.getByText('Setting up the Android emulator')).toBeTruthy()
   })
 
+  it('keeps 0% in a dedicated flow row before Cancel so the label cannot overlap the action', async () => {
+    renderOnboarding({ issue: 'sdkMissing' })
+    fireEvent.click(screen.getByRole('button', { name: /Automatic setup/ }))
+    await flush()
+
+    emitProgress({ step: 'downloadTools', percent: 0 })
+
+    const bar = screen.getByRole('progressbar')
+    const progressLayout = bar.parentElement
+    const percentage = screen.getByText('0%')
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(progressLayout).toHaveClass('android-onboarding-progress')
+    expect(progressLayout).toContainElement(percentage)
+    expect(bar).not.toContainElement(percentage)
+    expect(percentage).toHaveAttribute('aria-hidden', 'true')
+    expect(progressLayout?.nextElementSibling).toBe(cancel)
+  })
+
   it('progress events drive the step list, the download percent drives the bar, and ready re-detects', async () => {
     const { props } = renderOnboarding({ issue: 'sdkMissing' })
     fireEvent.click(screen.getByRole('button', { name: /Automatic setup/ }))
@@ -181,7 +199,7 @@ describe('AndroidOnboarding — automatic sequence (frozen vocabulary)', () => {
     expect(screen.getByText('Install the SDK packages (adb, emulator)').closest('li')).toHaveAttribute('data-state', 'active')
     const bar = screen.getByRole('progressbar')
     expect(bar).toHaveAttribute('aria-valuenow', '12')
-    expect(bar).toHaveTextContent('12%')
+    expect(bar.parentElement).toHaveTextContent('12%')
 
     emitDone({ ready: true })
     await flush()

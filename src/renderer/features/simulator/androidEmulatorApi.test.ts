@@ -33,7 +33,13 @@ vi.mock('@tauri-apps/api/event', () => ({
     listenMock(eventName, callback),
 }))
 
-import { androidEmulatorApi, parseFrameError, parsePreviewState, type AndroidFrameReady } from './androidEmulatorApi'
+import {
+  androidEmulatorApi,
+  parseFrameError,
+  parsePreviewState,
+  type AndroidEmulatorSessionEnded,
+  type AndroidFrameReady,
+} from './androidEmulatorApi'
 
 function defineTauriRuntime() {
   Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
@@ -224,6 +230,18 @@ describe('androidEmulatorApi — frozen event channels', () => {
     expect(presence).toHaveBeenCalledWith(presencePayload)
     listenMock.mock.calls[4]?.[1]({ payload: presencePayload })
     expect(openRequested).toHaveBeenCalledWith(presencePayload)
+  })
+
+  it('subscribes the additive session-ended channel and forwards its literal payload', async () => {
+    defineTauriRuntime()
+    const ended = vi.fn<(event: AndroidEmulatorSessionEnded) => void>()
+
+    await androidEmulatorApi.onSessionEnded(ended)
+
+    expect(listenMock).toHaveBeenCalledWith('android-emulator:session-ended', expect.any(Function))
+    const payload = { generation: 7, code: 'deviceLost' }
+    listenMock.mock.calls[0]?.[1]({ payload })
+    expect(ended).toHaveBeenCalledWith(payload)
   })
 
   it('subscribes the setup channels verbatim and forwards the awaiting field untouched', async () => {

@@ -246,6 +246,24 @@
   font-size: 12.5px;
 }
 
+.android-onboarding-progress {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: min(300px, 100%);
+}
+
+.android-onboarding-progress .cli-bootstrap-progress {
+  width: 100%;
+}
+
+.android-onboarding-progress > small {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .ios-onboarding-steps {
   display: grid;
   gap: 6px;

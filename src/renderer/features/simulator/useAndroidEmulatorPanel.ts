@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useI18n } from '../../i18n'
 import { androidEmulatorApi } from './androidEmulatorApi'
 import type {
   AndroidEmulatorFrame,
@@ -8,6 +9,7 @@ import type {
   AndroidEmulatorLifecycleEvent,
   AndroidEmulatorPoint,
   AndroidEmulatorPresenceEvent,
+  AndroidPreviewReason,
   AndroidEmulatorRequirements,
   AndroidEmulatorSession,
   AndroidEmulatorSystemAction,
@@ -32,6 +34,13 @@ import {
 } from './androidEmulatorModel'
 
 const INITIAL_LIFECYCLE: AndroidEmulatorLifecycleEvent = { stage: 'booting' }
+const ANDROID_ERROR_I18N_KEYS = {
+  gpuSoftware: 'androidEmulator.error.gpuSoftware',
+  unavailable: 'androidEmulator.error.unavailable',
+  unauthenticated: 'androidEmulator.error.unauthenticated',
+  unsupported: 'androidEmulator.error.unsupported',
+  deviceLost: 'androidEmulator.error.deviceLost',
+} satisfies Record<AndroidPreviewReason, string>
 type AndroidRecordingState =
   | { state: 'idle' }
   | { state: 'starting' }
@@ -47,6 +56,7 @@ function mediaFile(path: string): AndroidMediaFile {
  * progress and frames; the attach response supplies the session identity used
  * to reject stale frame generations. F2 adds a11y inspection and media state. */
 export function useAndroidEmulatorPanel() {
+  const { t } = useI18n()
   const [requirements, setRequirements] = useState<AndroidEmulatorRequirements>()
   const [requirementsLoading, setRequirementsLoading] = useState(false)
   const [legacyBackend, setLegacyBackend] = useState(false)
@@ -378,6 +388,7 @@ export function useAndroidEmulatorPanel() {
     setCaptureFailure(undefined)
     setSession(undefined)
     setFrameDataUrl(undefined)
+    setError(undefined)
     setAgentPresence(undefined)
     setLifecycle(INITIAL_LIFECYCLE)
     setRecording({ state: 'idle' })
@@ -721,7 +732,13 @@ export function useAndroidEmulatorPanel() {
         if (!disposed) setLifecycle(event)
       }),
       androidEmulatorApi.onError(event => {
-        if (!disposed) setError(event.message)
+        if (disposed) return
+        const key = event.code && ANDROID_ERROR_I18N_KEYS[event.code]
+        setError(key ? t(key) : event.message)
+      }),
+      androidEmulatorApi.onSessionEnded(event => {
+        if (disposed || event.generation !== sessionRef.current?.generation) return
+        clearSession()
       }),
       androidEmulatorApi.onPresence(event => {
         if (disposed || event.generation !== sessionRef.current?.generation) return
@@ -786,7 +803,7 @@ export function useAndroidEmulatorPanel() {
       stopPreviewLoop()
       unlisteners.forEach(unlisten => unlisten())
     }
-  }, [applyPreviewState, publishFrame, scheduleVaf1Read, stopPreviewLoop])
+  }, [applyPreviewState, clearSession, publishFrame, scheduleVaf1Read, stopPreviewLoop, t])
 
   return {
     requirements,

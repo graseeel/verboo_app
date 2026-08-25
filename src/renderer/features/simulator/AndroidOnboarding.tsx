@@ -329,16 +329,18 @@ function AutomaticProgress({
         })}
       </ol>
       {typeof state.percent === 'number' && (
-        <div
-          className="cli-bootstrap-progress"
-          role="progressbar"
-          aria-label={activeStepLabel ?? t('androidEmulator.onboarding.progressTitle')}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(state.percent)}
-        >
-          <span style={{ transform: `scaleX(${Math.min(100, Math.max(0, state.percent)) / 100})` }} />
-          <small>{Math.round(state.percent)}%</small>
+        <div className="android-onboarding-progress">
+          <div
+            className="cli-bootstrap-progress"
+            role="progressbar"
+            aria-label={activeStepLabel ?? t('androidEmulator.onboarding.progressTitle')}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(state.percent)}
+          >
+            <span style={{ transform: `scaleX(${Math.min(100, Math.max(0, state.percent)) / 100})` }} />
+          </div>
+          <small aria-hidden="true">{Math.round(state.percent)}%</small>
         </div>
       )}
       {state.awaiting === 'licenses' && (
