@@ -181,10 +181,10 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
       await view.result.current.runSystemAction('recents')
     })
 
-    expect(api.tap).toHaveBeenCalledWith(0.25, 0.75)
-    expect(api.drag).toHaveBeenCalledWith(0.1, 0.2, 0.8, 0.9, 240)
-    expect(api.typeText).toHaveBeenCalledWith('hello android')
-    expect(api.pressKey).toHaveBeenCalledWith('arrowLeft')
+    expect(api.tap).toHaveBeenCalledWith(0.25, 0.75, 'manual')
+    expect(api.drag).toHaveBeenCalledWith(0.1, 0.2, 0.8, 0.9, 240, 'manual')
+    expect(api.typeText).toHaveBeenCalledWith('hello android', 'manual')
+    expect(api.pressKey).toHaveBeenCalledWith('arrowLeft', 'manual')
     expect(api.systemAction).toHaveBeenCalledWith('recents')
   })
 

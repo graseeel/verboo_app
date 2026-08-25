@@ -683,6 +683,10 @@ function AndroidEmulatorTabContent({
     { action: 'notifications', label: t('simulator.control.notifications'), icon: Bell },
     { action: 'rotate', label: t('simulator.control.rotate'), icon: RotateCw },
   ]
+  const previewSourceLabel = android.previewState?.source === 'grpc'
+    ? t('androidEmulator.stream.grpc')
+    : t('androidEmulator.stream.adb')
+  const showEffectiveStreamRate = android.previewState?.source === 'adbFallback'
   return (
     <>
       <div className="ios-simulator-device-bar">
@@ -729,8 +733,10 @@ function AndroidEmulatorTabContent({
             {android.previewMode === 'vaf1' ? (
               <SimulatorSurface
                 canvasMedia={{
-                  width: android.canvasSize?.width ?? 0,
-                  height: android.canvasSize?.height ?? 0,
+                  // O stream abre em 720x1600 (portrait); o primeiro receipt
+                  // assume com as dims reais, inclusive 1600x720 landscape.
+                  width: android.canvasSize?.width ?? 720,
+                  height: android.canvasSize?.height ?? 1600,
                   onPushReady: android.bindPreviewCanvas,
                   onTerminalFailure: android.onWebglTerminalFailure,
                 }}
@@ -836,11 +842,16 @@ function AndroidEmulatorTabContent({
           <div className="ios-simulator-stream-bar">
             <div className="ios-simulator-stream-status">
               <span className="ios-simulator-stream-source">
-                {android.previewState?.source === 'grpc'
-                  ? t('androidEmulator.stream.grpc')
-                  : t('androidEmulator.stream.adb')}
+                {showEffectiveStreamRate
+                  ? t('androidEmulator.stream.effectiveRate', {
+                    fps: android.fallbackFps,
+                    source: previewSourceLabel,
+                  })
+                  : previewSourceLabel}
               </span>
-              <span>{normalizeAndroidStreamFps(android.streamFps)} fps</span>
+              {!showEffectiveStreamRate && (
+                <span>{normalizeAndroidStreamFps(android.streamFps)} fps</span>
+              )}
               {(() => {
                 const state = android.previewState
                 if (!state) return null
@@ -855,6 +866,7 @@ function AndroidEmulatorTabContent({
             <span
               data-testid="actual-paint-fps"
               aria-hidden="true"
+              hidden={showEffectiveStreamRate}
               ref={android.bindActualFpsNode}
             />
             <button
@@ -892,7 +904,7 @@ function AndroidEmulatorTabContent({
                   ))}
                 </select>
               </label>
-              <p className="ios-simulator-disclaimer">{t('simulator.disclaimer')}</p>
+              <p className="ios-simulator-disclaimer">{t('androidEmulator.disclaimer')}</p>
             </div>
           )}
         </section>

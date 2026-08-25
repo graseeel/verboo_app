@@ -195,17 +195,20 @@ describe('createRgbWebglPainter', () => {
   it('reapplies the two UNPACK pixel stores only when the canvas resizes', () => {
     const h = makeGlHarness()
     const { painter } = createRgbWebglPainter(h.canvas)
-    painter.draw(makeFrame({ width: 720, height: 1600 }))
-    const beforeSteady = h.callsOf('pixelStorei').length
-    painter.draw(makeFrame({ width: 720, height: 1600 }))   // sem resize: nada
-    expect(h.callsOf('pixelStorei')).toHaveLength(beforeSteady)
-    painter.draw(makeFrame({ width: 1600, height: 720 }))   // rotação: resize
-    // Reassertion DEFENSIVA no caminho raro de resize: a spec NÃO define
-    // reset de UNPACK; o par deve ser reaplicado antes de qualquer upload.
-    expect(h.callsOf('pixelStorei').slice(beforeSteady)).toEqual([
-      { method: 'pixelStorei', args: [h.c.UNPACK_FLIP_Y_WEBGL, false] },
-      { method: 'pixelStorei', args: [h.c.UNPACK_ALIGNMENT, 1] },
-    ])
+    // 1º frame: buildResources já chama pixelStorei(UNPACK_FLIP_Y_WEBGL, true) + UNPACK_ALIGNMENT=1.
+    const frame720 = makeFrame({ width: 720, height: 1600 })
+    painter.draw(frame720)
+    const storeCallsInitial = h.callsOf('pixelStorei').length
+    // 2º frame com MESMAS dims → ZERO novas chamadas de pixelStorei (sem resize).
+    painter.draw(frame720)
+    expect(h.callsOf('pixelStorei').length).toBe(storeCallsInitial)
+    // 3º frame com NOVAS dims (rotação 1600x720) → reset defensivo: reaplica o par.
+    const frame1600 = makeFrame({ width: 1600, height: 720 })
+    painter.draw(frame1600)
+    const flippedCalls = h.callsOf('pixelStorei').filter(({ args }) => args[0] === h.c.UNPACK_FLIP_Y_WEBGL)
+    expect(flippedCalls.at(-1)?.args[1]).toBe(true)
+    const alignedCalls = h.callsOf('pixelStorei').filter(({ args }) => args[0] === h.c.UNPACK_ALIGNMENT)
+    expect(alignedCalls.at(-1)?.args[1]).toBe(1)
   })
   it('drains pre-existing error flags: pending errors + a VALID texImage2D still paint (F-02)', () => {
     // Dois flags antigos na fila (ex.: hot path não sonda erros) — sem a
@@ -289,20 +292,29 @@ describe('createRgbWebglPainter', () => {
     expect(handlers.painter.draw(frame)).toMatchObject({ width: 720, height: 1600 })
     expect(h.callsOf('drawArrays')).toHaveLength(2)
   })
-  it('sets UNPACK_FLIP_Y false and UNPACK_ALIGNMENT 1 (rows are width*3)', () => {
+  it('sets UNPACK_FLIP_Y true (payload TOP-DOWN) and UNPACK_ALIGNMENT 1 (rows are width*3)', () => {
     const h = makeGlHarness()
     createRgbWebglPainter(h.canvas)
     const storeCalls = h.callsOf('pixelStorei')
-    expect(storeCalls.some(({ args }) => args[0] === h.c.UNPACK_FLIP_Y_WEBGL && args[1] === false)).toBe(true)
+    // Campo: payload do emulador é TOP-DOWN (primeira linha = topo da tela).
+    // O flip no upload alinha a primeira linha à base da textura; o quad
+    // padrão (UV (0,0) na base) coloca a base da textura no fundo do quad →
+    // texto legível correto.
+    expect(storeCalls.some(({ args }) => args[0] === h.c.UNPACK_FLIP_Y_WEBGL && args[1] === true)).toBe(true)
+    // Linhas RGB888 têm w*3 bytes; alinhamento 4 corromperia linhas ímpares.
     expect(storeCalls.some(({ args }) => args[0] === h.c.UNPACK_ALIGNMENT && args[1] === 1)).toBe(true)
   })
-  it('shaders map bottom-up rows WITHOUT any flip and pin alpha to 1', () => {
+  it('shader flip + fragment identity-pin (TOP-DOWN payload rendered correctly)', () => {
     const h = makeGlHarness()
     createRgbWebglPainter(h.canvas)
     expect(h.shaderSourceBodies).toHaveLength(2)
     const [vertexSource, fragmentSource] = h.shaderSourceBodies
+    // O pin do contrato TOP-DOWN: o painter NÃO faz flip no shader (v_uv
+    // crua = a_position * 0.5 + 0.5). O flip é responsabilidade exclusiva
+    // do UNPACK_FLIP_Y_WEBGL=true no pixelStorei (test acima).
     expect(vertexSource).toContain('v_uv = a_position * 0.5 + 0.5;')
     expect(vertexSource).not.toContain('1.0 -')
+    // Fragment: identidade de canais (RGB) e alpha forçado a 1.
     expect(fragmentSource).toContain('vec4(texture2D(u_texture, v_uv).rgb, 1.0)')
     expect(fragmentSource).toContain('precision mediump float;')
   })

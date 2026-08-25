@@ -120,6 +120,22 @@ describe('androidEmulatorApi — frozen F1/F2 command surface', () => {
     ])
   })
 
+  it('adds origin manual to every explicit panel input payload', async () => {
+    await androidEmulatorApi.tap(120, 340, 'manual')
+    await androidEmulatorApi.drag(10, 20, 300, 400, 250, 'manual')
+    await androidEmulatorApi.typeText('hello android', 'manual')
+    await androidEmulatorApi.pressKey('arrowUp', 'manual')
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['android_emulator_tap', { x: 120, y: 340, origin: 'manual' }],
+      ['android_emulator_drag', {
+        fromX: 10, fromY: 20, toX: 300, toY: 400, durationMs: 250, origin: 'manual',
+      }],
+      ['android_emulator_type_text', { text: 'hello android', origin: 'manual' }],
+      ['android_emulator_press_key', { key: 'arrowUp', origin: 'manual' }],
+    ])
+  })
+
   it('maps system actions verbatim (back|home|recents|notifications|rotate)', async () => {
     await androidEmulatorApi.systemAction('back')
     await androidEmulatorApi.systemAction('notifications')

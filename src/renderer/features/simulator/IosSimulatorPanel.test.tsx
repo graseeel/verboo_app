@@ -3,7 +3,7 @@ import { Profiler } from 'react'
 import type { ProfilerOnRenderCallback } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { I18nProvider } from '../../i18n'
+import { createTranslator, I18nProvider } from '../../i18n'
 import type { IosSimulatorLifecycleSnapshot, IosSimulatorRequirements } from './iosSimulatorApi'
 import { IosSimulatorPanel } from './IosSimulatorPanel'
 
@@ -654,7 +654,10 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Voltar' }))
     fireEvent.click(screen.getByRole('button', { name: 'Recentes' }))
 
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_tap', { x: 0.5, y: 0.5 })
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_tap',
+      { x: 0.5, y: 0.5, origin: 'manual' },
+    )
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'back' })
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'recents' })
     expect(screen.getByRole('button', { name: 'Capturar tela' })).toBeInTheDocument()
@@ -909,6 +912,9 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         await waitFor(() => expect(screen.getByText('GPU direta', {
           selector: 'span[role="status"]',
         })).toBeInTheDocument())
+        const visualStatus = document.querySelector('.ios-simulator-stream-status') as HTMLElement
+        expect(visualStatus).toHaveTextContent('GPU direta')
+        expect(visualStatus).toHaveTextContent('60 fps')
 
         now = 6_001
         const stateHandler = listenMock.mock.calls
@@ -917,25 +923,76 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         expect(stateHandler).toBeDefined()
         act(() => stateHandler!({ payload: {
           generation: 7,
+          source: 'grpc',
+          requestedFps: 60,
+          degraded: true,
+          reason: 'gpuSoftware',
+        } }))
+
+        await waitFor(() => expect(screen.getByText('Renderização por software · degradado', {
+          selector: 'span[role="status"]',
+        })).toBeInTheDocument())
+        // grpc + degraded: o stream VAF1 continua rodando a requestedFps (60).
+        // O display NÃO troca para ~1 fps (taxa do PNG); mostra 60 fps com o
+        // motivo de software visível (F1 do Lacre/campo).
+        expect(visualStatus).toHaveTextContent('GPU direta')
+        expect(visualStatus).toHaveTextContent('60 fps')
+        expect(visualStatus).not.toHaveTextContent('~1 fps')
+        expect(visualStatus).toHaveTextContent('Renderização GPU por software detectada')
+
+        now = 9_002
+        act(() => stateHandler!({ payload: {
+          generation: 7,
           source: 'adbFallback',
           requestedFps: 60,
           degraded: true,
           reason: 'unavailable',
         } }))
 
-        await waitFor(() => expect(screen.getByText('Renderização por software · degradado', {
-          selector: 'span[role="status"]',
-        })).toBeInTheDocument())
-        const visualStatus = document.querySelector('.ios-simulator-stream-status') as HTMLElement
+        await waitFor(() => expect(visualStatus).toHaveTextContent('~1 fps · PNG via ADB'))
         expect(visualStatus).not.toHaveAttribute('role')
         expect(visualStatus).not.toHaveAttribute('aria-live')
-        expect(visualStatus).toHaveTextContent('PNG via ADB')
-        expect(visualStatus).toHaveTextContent('60 fps')
+        expect(visualStatus).toHaveTextContent('~1 fps · PNG via ADB')
+        expect(visualStatus).not.toHaveTextContent('60 fps')
         expect(visualStatus).toHaveTextContent('Transporte de streaming indisponível')
         expect(screen.getByTestId('actual-paint-fps')).toHaveAttribute('aria-hidden', 'true')
       } finally {
         nowSpy.mockRestore()
         fake.restore()
+      }
+    })
+
+    it('localizes the effective fallback rate in every supported language', () => {
+      const en = createTranslator('en-US')
+      const pt = createTranslator('pt-BR')
+
+      expect(en('androidEmulator.stream.effectiveRate', {
+        fps: 1,
+        source: en('androidEmulator.stream.adb'),
+      })).toBe('~1 fps · ADB PNG')
+      expect(pt('androidEmulator.stream.effectiveRate', {
+        fps: 1,
+        source: pt('androidEmulator.stream.adb'),
+      })).toBe('~1 fps · PNG via ADB')
+    })
+
+    it('popover Android usa androidEmulator.disclaimer (não simulator.disclaimer) — pin E7', () => {
+      // E7: o popover Android (IosSimulatorPanel.tsx:907) usa a chave
+      // `androidEmulator.disclaimer` (EN+PT), NÃO `simulator.disclaimer`
+      // (que é copy iOS). Enumeração dos locales para garantir cobertura
+      // paritária.
+      const locales = ['en-US', 'pt-BR'] as const
+      for (const locale of locales) {
+        const t = createTranslator(locale)
+        const copy = t('androidEmulator.disclaimer')
+        // Copy Android: menciona VAF1/gRPC + PNG via ADB. Copy iOS seria
+        // MJPEG/simctl — proibido no popover Android.
+        expect(copy, `locale=${locale}`).toMatch(/VAF1|gRPC/)
+        expect(copy, `locale=${locale}`).toMatch(/PNG/)
+        expect(copy, `locale=${locale}`).not.toMatch(/MJPEG/)
+        expect(copy, `locale=${locale}`).not.toMatch(/simctl/)
+        // Chave iOS NÃO é usada pelo Android:
+        expect(t('simulator.disclaimer'), `locale=${locale}`).toMatch(/MJPEG/)
       }
     })
 

@@ -545,11 +545,13 @@ export function useAndroidEmulatorPanel() {
   }, [])
 
   const tap = useCallback((point: AndroidEmulatorPoint) =>
-    run(() => androidEmulatorApi.tap(point.x, point.y)), [run])
+    run(() => androidEmulatorApi.tap(point.x, point.y, 'manual')), [run])
   const drag = useCallback((from: AndroidEmulatorPoint, to: AndroidEmulatorPoint, durationMs: number) =>
-    run(() => androidEmulatorApi.drag(from.x, from.y, to.x, to.y, durationMs)), [run])
-  const typeText = useCallback((text: string) => run(() => androidEmulatorApi.typeText(text)), [run])
-  const pressKey = useCallback((key: AndroidEmulatorKey) => run(() => androidEmulatorApi.pressKey(key)), [run])
+    run(() => androidEmulatorApi.drag(from.x, from.y, to.x, to.y, durationMs, 'manual')), [run])
+  const typeText = useCallback((text: string) =>
+    run(() => androidEmulatorApi.typeText(text, 'manual')), [run])
+  const pressKey = useCallback((key: AndroidEmulatorKey) =>
+    run(() => androidEmulatorApi.pressKey(key, 'manual')), [run])
   const runSystemAction = useCallback((action: AndroidEmulatorSystemAction) =>
     run(() => androidEmulatorApi.systemAction(action)), [run])
 

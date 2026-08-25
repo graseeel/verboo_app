@@ -150,6 +150,14 @@ export type AndroidEmulatorKey =
   | 'space'
 
 export type AndroidEmulatorSystemAction = 'back' | 'home' | 'recents' | 'notifications' | 'rotate'
+export type AndroidEmulatorInputOrigin = 'agent' | 'manual'
+
+function withInputOrigin<T extends Record<string, unknown>>(
+  payload: T,
+  origin?: AndroidEmulatorInputOrigin,
+): T & { origin?: AndroidEmulatorInputOrigin } {
+  return origin === undefined ? payload : { ...payload, origin }
+}
 
 /** Mirrors the iOS accessibility node shape (parity goal); PA-28 owns the
  *  final field set when the uiautomator parser lands. */
@@ -259,11 +267,23 @@ export const androidEmulatorApi = {
   setVisible: (visible: boolean) => invoke<void>('android_emulator_set_visible', { visible }),
   setStreamRate: (fps: number) => invoke<number>('android_emulator_set_stream_rate', { fps }),
   setFallbackRate: (fps: number) => invoke<number>('android_emulator_set_fallback_rate', { fps }),
-  tap: (x: number, y: number) => invoke<void>('android_emulator_tap', { x, y }),
-  drag: (fromX: number, fromY: number, toX: number, toY: number, durationMs = 180) =>
-    invoke<void>('android_emulator_drag', { fromX, fromY, toX, toY, durationMs }),
-  typeText: (text: string) => invoke<void>('android_emulator_type_text', { text }),
-  pressKey: (key: AndroidEmulatorKey) => invoke<void>('android_emulator_press_key', { key }),
+  tap: (x: number, y: number, origin?: AndroidEmulatorInputOrigin) =>
+    invoke<void>('android_emulator_tap', withInputOrigin({ x, y }, origin)),
+  drag: (
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    durationMs = 180,
+    origin?: AndroidEmulatorInputOrigin,
+  ) => invoke<void>(
+    'android_emulator_drag',
+    withInputOrigin({ fromX, fromY, toX, toY, durationMs }, origin),
+  ),
+  typeText: (text: string, origin?: AndroidEmulatorInputOrigin) =>
+    invoke<void>('android_emulator_type_text', withInputOrigin({ text }, origin)),
+  pressKey: (key: AndroidEmulatorKey, origin?: AndroidEmulatorInputOrigin) =>
+    invoke<void>('android_emulator_press_key', withInputOrigin({ key }, origin)),
   systemAction: (action: AndroidEmulatorSystemAction) =>
     invoke<void>('android_emulator_system_action', { action }),
   accessibilitySnapshot: () =>

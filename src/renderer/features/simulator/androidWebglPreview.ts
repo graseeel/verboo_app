@@ -120,8 +120,8 @@ function buildResources(
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  // Payload permanece BOTTOM-UP: o mapeamento UV resolve a orientação.
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+  // Payload TOP-DOWN: o flip no upload alinha a primeira linha ao topo do quad.
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
   // Linhas RGB888 têm w*3 bytes — alinhamento 4 corromperia linhas ímpares.
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
   gl.useProgram(program)
@@ -206,7 +206,7 @@ export function createRgbWebglPainter(
         // Reassertion DEFENSIVA (L-1): a spec NÃO define reset de UNPACK no
         // resize; reaplicar o par no caminho raro de rotação garante o estado
         // esperado antes de qualquer upload, custo desprezível.
-        context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, false)
+        context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, true)
         context.pixelStorei(context.UNPACK_ALIGNMENT, 1)
       }
       context.useProgram(bundle.program)
