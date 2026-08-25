@@ -532,6 +532,15 @@
   gap: 9px;
 }
 
+.android-emulator-view.is-leaving {
+  pointer-events: none;
+  animation: android-emulator-view-out 180ms ease-in both;
+}
+
+.android-emulator-shutdown-state {
+  color: var(--text);
+}
+
 .ios-simulator-view-toolbar {
   justify-content: space-between;
   gap: 10px;
@@ -1372,6 +1381,13 @@
   to { transform: rotate(360deg); }
 }
 
+@keyframes android-emulator-view-out {
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
 @keyframes ios-simulator-recording-pulse {
   50% {
     opacity: 0.45;
@@ -1401,6 +1417,10 @@
   .ios-simulator-presence::after,
   .ios-simulator-agent-ripple,
   .topbar-simulator-recording {
+    animation: none;
+  }
+
+  .android-emulator-view.is-leaving {
     animation: none;
   }
 

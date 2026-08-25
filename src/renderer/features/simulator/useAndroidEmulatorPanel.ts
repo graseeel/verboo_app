@@ -34,6 +34,7 @@ import {
 } from './androidEmulatorModel'
 
 const INITIAL_LIFECYCLE: AndroidEmulatorLifecycleEvent = { stage: 'booting' }
+const ANDROID_SESSION_EXIT_MS = 220
 const ANDROID_ERROR_I18N_KEYS = {
   gpuSoftware: 'androidEmulator.error.gpuSoftware',
   unavailable: 'androidEmulator.error.unavailable',
@@ -46,10 +47,20 @@ type AndroidRecordingState =
   | { state: 'starting' }
   | { state: 'recording'; startedAtMs: number }
   | { state: 'finalizing' }
+type AndroidSessionExit = {
+  session: AndroidEmulatorSession
+  phase: 'shuttingDown' | 'leaving'
+}
 type AndroidMediaFile = { path: string; fileName: string }
 
 function mediaFile(path: string): AndroidMediaFile {
   return { path, fileName: path.replaceAll('\\', '/').split('/').pop() || path }
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false
 }
 
 /** Renderer owner for the Android session. Backend events author preview
@@ -61,6 +72,7 @@ export function useAndroidEmulatorPanel() {
   const [requirementsLoading, setRequirementsLoading] = useState(false)
   const [legacyBackend, setLegacyBackend] = useState(false)
   const [session, setSession] = useState<AndroidEmulatorSession>()
+  const [sessionExit, setSessionExit] = useState<AndroidSessionExit>()
   const [streamFps, setStreamFps] = useState(DEFAULT_ANDROID_EMULATOR_STREAM_FPS)
   const [fallbackFps, setFallbackFps] = useState(DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS)
   const [lifecycle, setLifecycle] = useState<AndroidEmulatorLifecycleEvent>(INITIAL_LIFECYCLE)
@@ -72,6 +84,7 @@ export function useAndroidEmulatorPanel() {
   const [recording, setRecording] = useState<AndroidRecordingState>({ state: 'idle' })
   const [lastMediaFile, setLastMediaFile] = useState<AndroidMediaFile>()
   const sessionRef = useRef<AndroidEmulatorSession | undefined>(undefined)
+  const sessionExitTimerRef = useRef<number | undefined>(undefined)
   const streamTouchedRef = useRef(false)
   const streamFpsRef = useRef(DEFAULT_ANDROID_EMULATOR_STREAM_FPS)
   const persistedLoadedRef = useRef(false)
@@ -371,6 +384,39 @@ export function useAndroidEmulatorPanel() {
     [],
   )
 
+  const cancelSessionExit = useCallback(() => {
+    if (sessionExitTimerRef.current !== undefined) {
+      window.clearTimeout(sessionExitTimerRef.current)
+      sessionExitTimerRef.current = undefined
+    }
+    setSessionExit(undefined)
+  }, [])
+
+  const beginSessionExit = useCallback((current: AndroidEmulatorSession | undefined) => {
+    if (!current) return
+    if (sessionExitTimerRef.current !== undefined) {
+      window.clearTimeout(sessionExitTimerRef.current)
+      sessionExitTimerRef.current = undefined
+    }
+    setSessionExit({ session: current, phase: 'shuttingDown' })
+  }, [])
+
+  const finishSessionExit = useCallback((current: AndroidEmulatorSession) => {
+    if (sessionExitTimerRef.current !== undefined) {
+      window.clearTimeout(sessionExitTimerRef.current)
+      sessionExitTimerRef.current = undefined
+    }
+    if (prefersReducedMotion()) {
+      setSessionExit(undefined)
+      return
+    }
+    setSessionExit({ session: current, phase: 'leaving' })
+    sessionExitTimerRef.current = window.setTimeout(() => {
+      sessionExitTimerRef.current = undefined
+      setSessionExit(exit => exit?.session.generation === current.generation ? undefined : exit)
+    }, ANDROID_SESSION_EXIT_MS)
+  }, [])
+
   const clearSession = useCallback(() => {
     sessionRef.current = undefined
     pendingFrameRef.current = undefined
@@ -444,6 +490,7 @@ export function useAndroidEmulatorPanel() {
   }, [stopPreviewLoop])
 
   const attach = useCallback(async (avdName: string) => {
+    cancelSessionExit()
     setBusyAvd(avdName)
     setError(undefined)
     setFrameDataUrl(undefined)
@@ -522,29 +569,37 @@ export function useAndroidEmulatorPanel() {
       pendingFrameRef.current = undefined
       setBusyAvd(undefined)
     }
-  }, [applyPreviewState, applyStreamFps, clearSession, ensurePersistedFps, publishFrame, readPendingFrame, scheduleVaf1Read, stopPreviewLoop])
+  }, [applyPreviewState, applyStreamFps, cancelSessionExit, clearSession, ensurePersistedFps, publishFrame, readPendingFrame, scheduleVaf1Read, stopPreviewLoop])
 
   const detach = useCallback(async () => {
+    const current = sessionRef.current
+    beginSessionExit(current)
     setError(undefined)
     try {
       await androidEmulatorApi.detach()
       clearSession()
+      if (current) finishSessionExit(current)
       await refresh()
     } catch (reason) {
+      cancelSessionExit()
       setError(errorText(reason))
     }
-  }, [clearSession, refresh])
+  }, [beginSessionExit, cancelSessionExit, clearSession, finishSessionExit, refresh])
 
   const endSimulation = useCallback(async () => {
+    const current = sessionRef.current
+    beginSessionExit(current)
     setError(undefined)
     try {
       await androidEmulatorApi.end()
       clearSession()
+      if (current) finishSessionExit(current)
       await refresh()
     } catch (reason) {
+      cancelSessionExit()
       setError(errorText(reason))
     }
-  }, [clearSession, refresh])
+  }, [beginSessionExit, cancelSessionExit, clearSession, finishSessionExit, refresh])
 
   const run = useCallback(async (operation: () => Promise<unknown>) => {
     setError(undefined)
@@ -738,7 +793,9 @@ export function useAndroidEmulatorPanel() {
       }),
       androidEmulatorApi.onSessionEnded(event => {
         if (disposed || event.generation !== sessionRef.current?.generation) return
+        const current = sessionRef.current
         clearSession()
+        if (current) finishSessionExit(current)
       }),
       androidEmulatorApi.onPresence(event => {
         if (disposed || event.generation !== sessionRef.current?.generation) return
@@ -803,17 +860,27 @@ export function useAndroidEmulatorPanel() {
       stopPreviewLoop()
       unlisteners.forEach(unlisten => unlisten())
     }
-  }, [applyPreviewState, clearSession, publishFrame, scheduleVaf1Read, stopPreviewLoop, t])
+  }, [applyPreviewState, clearSession, finishSessionExit, publishFrame, scheduleVaf1Read, stopPreviewLoop, t])
+
+  useEffect(() => () => {
+    if (sessionExitTimerRef.current !== undefined) {
+      window.clearTimeout(sessionExitTimerRef.current)
+      sessionExitTimerRef.current = undefined
+    }
+  }, [])
 
   return {
     requirements,
     requirementsLoading,
     legacyBackend,
     session,
+    exitingSession: sessionExit?.session,
+    shutdownPhase: sessionExit?.phase,
+    shuttingDown: sessionExit !== undefined,
     streamFps,
     fallbackFps,
     lifecycle,
-    interactionReady: Boolean(session && lifecycle.stage === 'ready'),
+    interactionReady: Boolean(session && !sessionExit && lifecycle.stage === 'ready'),
     frameDataUrl,
     busyAvd,
     error,

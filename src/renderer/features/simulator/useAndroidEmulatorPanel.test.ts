@@ -215,6 +215,38 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     expect(view.result.current.session).toBeUndefined()
   })
 
+  it('keeps an inert presentation snapshot while manual detach shuts down and fades out', async () => {
+    let resolveDetach: (() => void) | undefined
+    api.detach.mockImplementation(() => new Promise<void>(resolve => { resolveDetach = resolve }))
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+    vi.useFakeTimers()
+    try {
+      let detachPromise: Promise<void> | undefined
+      act(() => { detachPromise = view.result.current.detach() })
+
+      expect(view.result.current.shutdownPhase).toBe('shuttingDown')
+      expect(view.result.current.exitingSession?.generation).toBe(7)
+      expect(view.result.current.session?.generation).toBe(7)
+      expect(view.result.current.interactionReady).toBe(false)
+
+      await act(async () => {
+        resolveDetach?.()
+        await detachPromise
+      })
+      expect(view.result.current.session).toBeUndefined()
+      expect(view.result.current.shutdownPhase).toBe('leaving')
+      expect(view.result.current.exitingSession?.device.avdName).toBe(device.avdName)
+
+      act(() => { vi.advanceTimersByTime(250) })
+      expect(view.result.current.shutdownPhase).toBeUndefined()
+      expect(view.result.current.exitingSession).toBeUndefined()
+    } finally {
+      vi.runOnlyPendingTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('maps every typed native preview error to friendly localized copy', () => {
     const view = renderHook(() => useAndroidEmulatorPanel())
     const cases = [

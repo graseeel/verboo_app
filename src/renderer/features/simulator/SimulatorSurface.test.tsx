@@ -745,3 +745,151 @@ describe('SimulatorSurface — canvas containment + tap aligned (Task 9 F3)', ()
     }
   })
 })
+
+// Task M2 (Prumo root-cause): pins assimétricos para expor offset/inversão do
+// mapeamento de tap. Os pins atuais usam (0.5, 0.5) — simétrico, cego a
+// offset vertical e inversão de Y. Pins com y=0.9 e x=0.9 (arith explicita)
+// capturam: deslocamento proporcional, inversão do eixo, mistura de
+// orientações (portrait + landscape). Reaproveitam mockSurfaceGBCR do F3.
+describe('Task M2 — tap assimétrico portrait + landscape (Prumo root-cause)', () => {
+  function mockSurfaceGBCR(width = 600, height = 900) {
+    const original = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function(this: HTMLElement) {
+      if (this.getAttribute('role') === 'application') {
+        return { left: 0, top: 0, width, height, right: width, bottom: height, x: 0, y: 0, toJSON: () => ({}) }
+      }
+      return original.call(this)
+    }
+    return () => { HTMLElement.prototype.getBoundingClientRect = original }
+  }
+
+  function renderCanvasLandscape() {
+    const callbacks = {
+      onTap: vi.fn(),
+      onDrag: vi.fn(),
+      onTypeText: vi.fn(),
+      onPressKey: vi.fn(),
+      onModeChange: vi.fn(),
+      onInspectPoint: vi.fn().mockResolvedValue(undefined),
+      onCaptureAnnotation: vi.fn().mockResolvedValue(undefined),
+      onDeleteCapture: vi.fn().mockResolvedValue(undefined),
+      onAddAnnotation: vi.fn(),
+    }
+    render(
+      <SimulatorSurface
+        deviceName="Pixel 8"
+        previewAlt="Live Pixel 8 preview"
+        mode="interact"
+        interactive
+        selectionEnabled
+        labels={{
+          interact: 'Interact', selectElement: 'Select component', selectArea: 'Select area',
+          interaction: 'Control Pixel 8', keyboardHint: 'Type, paste, or use special keys.',
+          unavailable: 'Interaction unavailable', note: 'Instruction', notePlaceholder: 'Describe the change',
+          addToChat: 'Add to chat', cancel: 'Cancel', capturing: 'Capturing selection…',
+          selectionTooSmall: 'Select a larger area.', elementUnavailable: 'No component found here.',
+          agentActive: 'Verboo is controlling this emulator.', agentBadge: 'Verboo at work',
+        }}
+        canvasMedia={{
+          width: 1600, height: 720,
+          onPushReady: vi.fn(),
+          onTerminalFailure: vi.fn(),
+        }}
+        {...callbacks}
+      />,
+    )
+    const surface = screen.getByRole('application')
+    Object.defineProperty(surface, 'setPointerCapture', { configurable: true, value: vi.fn() })
+    Object.defineProperty(surface, 'releasePointerCapture', { configurable: true, value: vi.fn() })
+    return { surface, callbacks }
+  }
+
+  it('portrait: y assimétrico = 0.9 → onTap recebe { x: 0.5, y: 0.9 } (Prumo M2)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      const { surface, callbacks } = renderCanvasSurface('interact')
+      // Aritmética derivada (não números mágicos):
+      //   surface 600x900, canvasMedia 720x1600
+      //   scale = min(600/720, 900/1600) = min(0.8333, 0.5625) = 0.5625
+      //   painted = { x: (600 - 720*0.5625)/2, y: (900 - 1600*0.5625)/2, w: 405, height }
+      //            = { x: 97.5, y: 0, width: 405, height: 900 }
+      //   click (300, 810):
+      //     x_norm = (300 - 97.5) / 405 = 202.5/405 = 0.5
+      //     y_norm = (810 - 0) / 900 = 0.9
+      fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 810 })
+      fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 810 })
+      fireEvent.click(surface, { button: 0, clientX: 300, clientY: 810 })
+
+      expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+      const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+      expect(point.x).toBeCloseTo(0.5, 5)
+      expect(point.y).toBeCloseTo(0.9, 5)        // ← pin Y assimétrico
+    } finally {
+      restore()
+    }
+  })
+
+  it('portrait: x assimétrico = 0.9 → onTap recebe { x: 0.9, y: 0.5 } (Prumo M2)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      const { surface, callbacks } = renderCanvasSurface('interact')
+      // click (462, 450):
+      //   x_norm = (462 - 97.5) / 405 = 364.5/405 = 0.9
+      //   y_norm = (450 - 0) / 900 = 0.5
+      fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 462, clientY: 450 })
+      fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 462, clientY: 450 })
+      fireEvent.click(surface, { button: 0, clientX: 462, clientY: 450 })
+
+      expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+      const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+      expect(point.x).toBeCloseTo(0.9, 5)        // ← pin X assimétrico
+      expect(point.y).toBeCloseTo(0.5, 5)
+    } finally {
+      restore()
+    }
+  })
+
+  it('landscape: y assimétrico = 0.9 → onTap recebe { x: 0.5, y: 0.9 } (Prumo M2)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      const { surface, callbacks } = renderCanvasLandscape()
+      // Aritmética derivada (landscape 1600x720):
+      //   scale = min(600/1600, 900/720) = min(0.375, 1.25) = 0.375
+      //   painted = { x: (600 - 1600*0.375)/2, y: (900 - 720*0.375)/2, w: 600, height }
+      //            = { x: 0, y: 315, width: 600, height: 270 }
+      //   click (300, 558):
+      //     x_norm = (300 - 0) / 600 = 0.5
+      //     y_norm = (558 - 315) / 270 = 243/270 = 0.9
+      fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 558 })
+      fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 558 })
+      fireEvent.click(surface, { button: 0, clientX: 300, clientY: 558 })
+
+      expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+      const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+      expect(point.x).toBeCloseTo(0.5, 5)
+      expect(point.y).toBeCloseTo(0.9, 5)        // ← pin Y assimétrico em landscape
+    } finally {
+      restore()
+    }
+  })
+
+  it('landscape: x assimétrico = 0.9 → onTap recebe { x: 0.9, y: 0.5 } (Prumo M2)', () => {
+    const restore = mockSurfaceGBCR()
+    try {
+      const { surface, callbacks } = renderCanvasLandscape()
+      // click (540, 450):
+      //   x_norm = (540 - 0) / 600 = 0.9
+      //   y_norm = (450 - 315) / 270 = 135/270 = 0.5
+      fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 540, clientY: 450 })
+      fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 540, clientY: 450 })
+      fireEvent.click(surface, { button: 0, clientX: 540, clientY: 450 })
+
+      expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+      const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+      expect(point.x).toBeCloseTo(0.9, 5)        // ← pin X assimétrico em landscape
+      expect(point.y).toBeCloseTo(0.5, 5)
+    } finally {
+      restore()
+    }
+  })
+})

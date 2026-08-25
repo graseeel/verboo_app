@@ -671,7 +671,16 @@ function AndroidEmulatorTabContent({
       </div>
     )
   }
-  const device = android.session?.device
+  const presentationSession = android.session ?? android.exitingSession
+  const bootDevice = android.busyAvd
+    ? requirements.devices.find(item => item.avdName === android.busyAvd)
+    : undefined
+  const device = bootDevice ?? presentationSession?.device
+  const deviceName = device ? androidDeviceDisplayLabel(device) : ''
+  const ready = Boolean(android.session && android.lifecycle.stage === 'ready' && !android.shuttingDown)
+  const stageCopy = android.shuttingDown
+    ? t('androidEmulator.stage.shuttingDown', { name: deviceName })
+    : t(simulatorStageMessageKey(android.lifecycle.stage), { name: deviceName })
   const actions: Array<{
     action: AndroidEmulatorSystemAction
     label: string
@@ -693,19 +702,17 @@ function AndroidEmulatorTabContent({
         <AndroidDevicePicker
           devices={requirements.devices}
           selectedAvd={device?.avdName}
-          busyAvd={android.busyAvd}
+          busyAvd={android.busyAvd ?? (android.shuttingDown ? device?.avdName : undefined)}
           compact
           onSelect={avdName => { void android.attach(avdName) }}
         />
         <div className="ios-simulator-device-status">
           <span role="status" aria-live="polite">
-            {device
-              ? t(simulatorStageMessageKey(android.lifecycle.stage), { name: androidDeviceDisplayLabel(device) })
-              : t('simulator.stage.idle')}
+            {device ? stageCopy : t('simulator.stage.idle')}
           </span>
-          {android.session?.ownership && (
-            <span className={`ios-simulator-origin is-${android.session.ownership}`}>
-              {t(`simulator.origin.${android.session.ownership}`)}
+          {presentationSession?.ownership && (
+            <span className={`ios-simulator-origin is-${presentationSession.ownership}`}>
+              {t(`simulator.origin.${presentationSession.ownership}`)}
             </span>
           )}
         </div>
@@ -728,9 +735,23 @@ function AndroidEmulatorTabContent({
       )}
 
       {device && (
-        <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: androidDeviceDisplayLabel(device) })}>
+        <section
+          className={`ios-simulator-view android-emulator-view ${android.shutdownPhase === 'leaving' ? 'is-leaving' : ''}`}
+          aria-label={t('simulator.previewLabel', { name: deviceName })}
+          aria-busy={!ready}
+        >
           <div className="ios-simulator-frame">
-            {android.previewMode === 'vaf1' ? (
+            {android.shuttingDown ? (
+              <div className="ios-simulator-frame-placeholder android-emulator-shutdown-state" role="status" aria-live="polite">
+                <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+                <span>{stageCopy}</span>
+              </div>
+            ) : !ready ? (
+              <div className="ios-simulator-frame-placeholder" role="status" aria-live="polite">
+                <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+                <span>{stageCopy}</span>
+              </div>
+            ) : android.previewMode === 'vaf1' ? (
               <SimulatorSurface
                 canvasMedia={{
                   // O stream abre em 720x1600 (portrait); o primeiro receipt
@@ -740,8 +761,8 @@ function AndroidEmulatorTabContent({
                   onPushReady: android.bindPreviewCanvas,
                   onTerminalFailure: android.onWebglTerminalFailure,
                 }}
-                deviceName={androidDeviceDisplayLabel(device)}
-                previewAlt={t('simulator.previewAlt', { name: androidDeviceDisplayLabel(device) })}
+                deviceName={deviceName}
+                previewAlt={t('simulator.previewAlt', { name: deviceName })}
                 mode={interactionMode}
                 interactive={android.interactionReady}
                 keyMapper={androidEmulatorKeyForKeyboardEvent}
@@ -749,7 +770,7 @@ function AndroidEmulatorTabContent({
                   interact: t('simulator.mode.interact'),
                   selectElement: t('simulator.mode.selectElement'),
                   selectArea: t('simulator.mode.selectArea'),
-                  interaction: t('simulator.interactionLabel', { name: androidDeviceDisplayLabel(device) }),
+                  interaction: t('simulator.interactionLabel', { name: deviceName }),
                   keyboardHint: t('simulator.keyboardHint'),
                   unavailable: t('simulator.interactionUnavailable'),
                   note: t('simulator.annotation.note'),
@@ -780,8 +801,8 @@ function AndroidEmulatorTabContent({
             ) : android.frameDataUrl ? (
               <SimulatorSurface
                 frameDataUrl={android.frameDataUrl}
-                deviceName={androidDeviceDisplayLabel(device)}
-                previewAlt={t('simulator.previewAlt', { name: androidDeviceDisplayLabel(device) })}
+                deviceName={deviceName}
+                previewAlt={t('simulator.previewAlt', { name: deviceName })}
                 mode={interactionMode}
                 interactive={android.interactionReady}
                 keyMapper={androidEmulatorKeyForKeyboardEvent}
@@ -789,7 +810,7 @@ function AndroidEmulatorTabContent({
                   interact: t('simulator.mode.interact'),
                   selectElement: t('simulator.mode.selectElement'),
                   selectArea: t('simulator.mode.selectArea'),
-                  interaction: t('simulator.interactionLabel', { name: androidDeviceDisplayLabel(device) }),
+                  interaction: t('simulator.interactionLabel', { name: deviceName }),
                   keyboardHint: t('simulator.keyboardHint'),
                   unavailable: t('simulator.interactionUnavailable'),
                   note: t('simulator.annotation.note'),
@@ -824,88 +845,92 @@ function AndroidEmulatorTabContent({
               </div>
             )}
           </div>
-          <SimulatorControlDock
-            deviceName={androidDeviceDisplayLabel(device)}
-            ownership={android.session?.ownership ?? 'external'}
-            interactionReady={android.interactionReady}
-            busy={Boolean(android.busyAvd)}
-            actions={actions}
-            recording={android.recording}
-            lastMediaFile={android.lastMediaFile}
-            onSystemAction={android.runSystemAction}
-            onCaptureScreen={android.captureScreen}
-            onToggleRecording={android.toggleRecording}
-            onDetach={android.detach}
-            onEnd={android.endSimulation}
-            onShutdownExternal={android.endSimulation}
-          />
-          <div className="ios-simulator-stream-bar">
-            <div className="ios-simulator-stream-status">
-              <span className="ios-simulator-stream-source">
-                {showEffectiveStreamRate
-                  ? t('androidEmulator.stream.effectiveRate', {
-                    fps: android.fallbackFps,
-                    source: previewSourceLabel,
-                  })
-                  : previewSourceLabel}
-              </span>
-              {!showEffectiveStreamRate && (
-                <span>{normalizeAndroidStreamFps(android.streamFps)} fps</span>
-              )}
-              {(() => {
-                const state = android.previewState
-                if (!state) return null
-                const showReason = state.degraded || state.source === 'adbFallback'
-                return showReason && state.reason ? (
-                  <span className="ios-simulator-origin is-external">
-                    {t(`androidEmulator.stream.fallbackReason.${state.reason}`)}
+          {ready && (
+            <>
+              <SimulatorControlDock
+                deviceName={deviceName}
+                ownership={android.session!.ownership}
+                interactionReady={android.interactionReady}
+                busy={Boolean(android.busyAvd)}
+                actions={actions}
+                recording={android.recording}
+                lastMediaFile={android.lastMediaFile}
+                onSystemAction={android.runSystemAction}
+                onCaptureScreen={android.captureScreen}
+                onToggleRecording={android.toggleRecording}
+                onDetach={android.detach}
+                onEnd={android.endSimulation}
+                onShutdownExternal={android.endSimulation}
+              />
+              <div className="ios-simulator-stream-bar">
+                <div className="ios-simulator-stream-status">
+                  <span className="ios-simulator-stream-source">
+                    {showEffectiveStreamRate
+                      ? t('androidEmulator.stream.effectiveRate', {
+                        fps: android.fallbackFps,
+                        source: previewSourceLabel,
+                      })
+                      : previewSourceLabel}
                   </span>
-                ) : null
-              })()}
-            </div>
-            <span
-              data-testid="actual-paint-fps"
-              aria-hidden="true"
-              hidden={showEffectiveStreamRate}
-              ref={android.bindActualFpsNode}
-            />
-            <button
-              type="button"
-              className="ios-simulator-performance-toggle"
-              aria-expanded={performanceOpen}
-              onClick={() => setPerformanceOpen(current => !current)}
-            >
-              <Gauge size={13} aria-hidden="true" />
-              {t('simulator.performance')}
-            </button>
-          </div>
-          {android.captureFailure === 'pngMetaUnavailable' && (
-            <div className="ios-simulator-error" role="alert">
-              <span>{t('androidEmulator.annotation.captureUnavailable')}</span>
-            </div>
-          )}
-          {android.fpsSyncError !== undefined && (
-            <div className="ios-simulator-error" role="alert">
-              <span>{t(`androidEmulator.stream.fpsSync.${android.fpsSyncError}`)}</span>
-            </div>
-          )}
-          {performanceOpen && (
-            <div className="ios-simulator-performance-settings">
-              <label className="ios-simulator-rate">
-                <span>{t('simulator.streamRate')}</span>
-                <select
-                  value={normalizeAndroidStreamFps(android.streamFps)}
-                  onChange={event => { void android.setStreamRate(Number(event.target.value)) }}
-                  disabled={android.fpsSyncError === 'persistFailed'
-                    || android.fpsSyncError === 'rollbackFailed'}
+                  {!showEffectiveStreamRate && (
+                    <span>{normalizeAndroidStreamFps(android.streamFps)} fps</span>
+                  )}
+                  {(() => {
+                    const state = android.previewState
+                    if (!state) return null
+                    const showReason = state.degraded || state.source === 'adbFallback'
+                    return showReason && state.reason ? (
+                      <span className="ios-simulator-origin is-external">
+                        {t(`androidEmulator.stream.fallbackReason.${state.reason}`)}
+                      </span>
+                    ) : null
+                  })()}
+                </div>
+                <span
+                  data-testid="actual-paint-fps"
+                  aria-hidden="true"
+                  hidden={showEffectiveStreamRate}
+                  ref={android.bindActualFpsNode}
+                />
+                <button
+                  type="button"
+                  className="ios-simulator-performance-toggle"
+                  aria-expanded={performanceOpen}
+                  onClick={() => setPerformanceOpen(current => !current)}
                 >
-                  {ANDROID_EMULATOR_STREAM_RATES.map(rate => (
-                    <option key={rate} value={rate}>{rate} fps</option>
-                  ))}
-                </select>
-              </label>
-              <p className="ios-simulator-disclaimer">{t('androidEmulator.disclaimer')}</p>
-            </div>
+                  <Gauge size={13} aria-hidden="true" />
+                  {t('simulator.performance')}
+                </button>
+              </div>
+              {android.captureFailure === 'pngMetaUnavailable' && (
+                <div className="ios-simulator-error" role="alert">
+                  <span>{t('androidEmulator.annotation.captureUnavailable')}</span>
+                </div>
+              )}
+              {android.fpsSyncError !== undefined && (
+                <div className="ios-simulator-error" role="alert">
+                  <span>{t(`androidEmulator.stream.fpsSync.${android.fpsSyncError}`)}</span>
+                </div>
+              )}
+              {performanceOpen && (
+                <div className="ios-simulator-performance-settings">
+                  <label className="ios-simulator-rate">
+                    <span>{t('simulator.streamRate')}</span>
+                    <select
+                      value={normalizeAndroidStreamFps(android.streamFps)}
+                      onChange={event => { void android.setStreamRate(Number(event.target.value)) }}
+                      disabled={android.fpsSyncError === 'persistFailed'
+                        || android.fpsSyncError === 'rollbackFailed'}
+                    >
+                      {ANDROID_EMULATOR_STREAM_RATES.map(rate => (
+                        <option key={rate} value={rate}>{rate} fps</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="ios-simulator-disclaimer">{t('androidEmulator.disclaimer')}</p>
+                </div>
+              )}
+            </>
           )}
         </section>
       )}

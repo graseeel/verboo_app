@@ -795,6 +795,88 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
       Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
     })
 
+    it('renders every native boot stage while attach is pending, then swaps to the ready preview', async () => {
+      const fake = installFakeWebGL()
+      const gate: { resolveAttach?: (value: typeof androidSession) => void } = {}
+      mockAndroidBackend(gate)
+      try {
+        renderPanel({ platform: 'linux' })
+        const lifecycleHandler = listenMock.mock.calls
+          .find(([name]) => name === 'android-emulator:lifecycle')?.[1] as
+            ((event: { payload: unknown }) => void) | undefined
+        expect(lifecycleHandler).toBeDefined()
+        fireEvent.click(await openAndroidDevice())
+        await waitFor(() => expect(gate.resolveAttach).toBeTypeOf('function'))
+
+        const initialPlaceholder = document.querySelector('.ios-simulator-frame-placeholder')
+        expect(initialPlaceholder).not.toBeNull()
+        expect(within(initialPlaceholder as HTMLElement).getByText('Ligando Pixel 8…')).toBeInTheDocument()
+        expect(screen.queryByText('Nenhum emulador Android anexado')).not.toBeInTheDocument()
+
+        const stages = [
+          ['waitingForDisplay', 'Aguardando a tela ficar pronta…'],
+          ['generatingFirstPreview', 'Gerando primeiro preview…'],
+          ['preparingInteraction', 'Preparando interação…'],
+        ] as const
+        for (const [stage, copy] of stages) {
+          act(() => lifecycleHandler!({ payload: { stage } }))
+          const placeholder = document.querySelector('.ios-simulator-frame-placeholder')
+          expect(placeholder, `stage=${stage}`).not.toBeNull()
+          expect(within(placeholder as HTMLElement).getByText(copy)).toBeInTheDocument()
+          expect(screen.queryByText('Nenhum emulador Android anexado')).not.toBeInTheDocument()
+        }
+
+        act(() => lifecycleHandler!({ payload: { stage: 'ready' } }))
+        await act(async () => { gate.resolveAttach?.(androidSession) })
+        await waitFor(() => {
+          expect(screen.getByRole('application').querySelector('canvas[role="img"]')).not.toBeNull()
+        })
+        expect(document.querySelector('.ios-simulator-frame-placeholder')).toBeNull()
+      } finally {
+        fake.restore()
+      }
+    })
+
+    it('renders a generation-owned shutdown fade before session-ended becomes the empty state', async () => {
+      const fake = installFakeWebGL()
+      mockAndroidBackend()
+      try {
+        const view = renderPanel({ platform: 'linux' })
+        fireEvent.click(await openAndroidDevice())
+        await waitFor(() => {
+          expect(screen.getByRole('application').querySelector('canvas[role="img"]')).not.toBeNull()
+        })
+        const endedHandler = listenMock.mock.calls
+          .find(([name]) => name === 'android-emulator:session-ended')?.[1] as
+            ((event: { payload: unknown }) => void) | undefined
+        expect(endedHandler).toBeDefined()
+
+        vi.useFakeTimers()
+        act(() => endedHandler!({ payload: { generation: 7, code: 'deviceLost' } }))
+
+        const shutdown = document.querySelector('.android-emulator-shutdown-state')
+        expect(shutdown).not.toBeNull()
+        expect(within(shutdown as HTMLElement).getByText('Desligando Pixel 8…')).toBeInTheDocument()
+        expect(document.querySelector('.android-emulator-view')).toHaveClass('is-leaving')
+        expect(screen.queryByText('Nenhum emulador Android anexado')).not.toBeInTheDocument()
+
+        view.rerender(
+          <I18nProvider language="en-US">
+            <IosSimulatorPanel {...view.props} />
+          </I18nProvider>,
+        )
+        expect(screen.getAllByText('Turning off Pixel 8…')).toHaveLength(2)
+
+        act(() => { vi.advanceTimersByTime(250) })
+        expect(screen.getByText('No Android emulator attached')).toBeInTheDocument()
+        expect(document.querySelector('.android-emulator-shutdown-state')).toBeNull()
+      } finally {
+        vi.runOnlyPendingTimers()
+        vi.useRealTimers()
+        fake.restore()
+      }
+    })
+
     it('renders the canvas leaf after a preview-state grpc that raced ahead of attach', async () => {
       // GL stub OBRIGATÓRIO: sem ele jsdom devolve getContext null → terminal
       // failure → legacyPng e o canvas pode sumir por TIMING (falso verde).
@@ -980,6 +1062,13 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
         fps: 1,
         source: pt('androidEmulator.stream.adb'),
       })).toBe('~1 fps · PNG via ADB')
+    })
+
+    it('localizes the Android shutdown state in every supported language', () => {
+      expect(createTranslator('en-US')('androidEmulator.stage.shuttingDown', { name: 'Pixel 8' }))
+        .toBe('Turning off Pixel 8…')
+      expect(createTranslator('pt-BR')('androidEmulator.stage.shuttingDown', { name: 'Pixel 8' }))
+        .toBe('Desligando Pixel 8…')
     })
 
     it('popover Android usa androidEmulator.disclaimer (não simulator.disclaimer) — pin E7', () => {
