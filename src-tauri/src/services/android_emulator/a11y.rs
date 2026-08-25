@@ -9,10 +9,11 @@ use quick_xml::XmlVersion;
 use serde::{Deserialize, Serialize};
 
 use super::input::{emit_presence, InputOrigin, PresenceTarget};
-use super::session::AndroidSession;
+use super::preview::PreviewReason;
+use super::session::{AndroidEmulatorError, AndroidSession};
 use super::AndroidEmulatorService;
 
-const A11Y_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const A11Y_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const UIAUTOMATOR_DUMP_PATH: &str = "/sdcard/verboo-uiautomator.xml";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -368,9 +369,11 @@ impl AndroidEmulatorService {
         &self,
         x: f64,
         y: f64,
-    ) -> Result<Option<AndroidEmulatorElementHit>, String> {
-        let snapshot = self.accessibility_snapshot_sync()?;
-        hit_test_nodes(&snapshot.nodes, x, y)
+    ) -> Result<Option<AndroidEmulatorElementHit>, AndroidEmulatorError> {
+        let snapshot = self.accessibility_snapshot_sync().map_err(|message| {
+            AndroidEmulatorError::with_code(message, PreviewReason::Unavailable)
+        })?;
+        hit_test_nodes(&snapshot.nodes, x, y).map_err(AndroidEmulatorError::from_message)
     }
 }
 
@@ -452,6 +455,57 @@ mod tests {
     }
 
     #[test]
+    fn a11y_command_timeout_is_eight_seconds_so_a_slow_dump_cannot_hold_the_panel() {
+        assert_eq!(A11Y_COMMAND_TIMEOUT, Duration::from_secs(8));
+        assert_ne!(
+            A11Y_COMMAND_TIMEOUT,
+            Duration::from_secs(30),
+            "dump timeout must not stay at the 30s panel-blocking budget"
+        );
+    }
+
+    #[test]
+    fn inspect_point_dump_failure_rejects_with_e1_unavailable_and_not_null() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = Arc::new(DumpFailingRunner);
+        service.state.lock().unwrap().session = Some(test_session());
+
+        let error = service.inspect_point_sync(0.5, 0.5).unwrap_err();
+        let wire =
+            serde_json::to_value(&error).expect("dump error must serialize for the invoke wire");
+        assert_eq!(wire["code"], "unavailable");
+        assert!(
+            wire["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("uiautomator dump")),
+            "dump failure must keep a human message, got {wire}"
+        );
+        assert_ne!(wire, serde_json::Value::Null);
+        assert!(
+            wire.is_object(),
+            "dump failure must reject as an object, not a string"
+        );
+    }
+
+    #[test]
+    fn inspect_point_miss_resolves_json_null_without_an_error_code() {
+        let root = tempfile::tempdir().unwrap();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = Arc::new(EmptyHierarchyRunner);
+        service.state.lock().unwrap().session = Some(test_session());
+
+        let hit = service
+            .inspect_point_sync(0.5, 0.5)
+            .expect("empty dump is a miss, not a dump failure");
+        assert!(hit.is_none());
+        assert_eq!(
+            serde_json::to_value(&hit).expect("miss must serialize"),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
     fn inspect_point_returns_the_most_specific_matching_node() {
         let snapshot = AndroidAccessibilitySnapshot {
             nodes: vec![
@@ -522,6 +576,39 @@ mod tests {
                 "1"
             ]
         );
+    }
+
+    struct DumpFailingRunner;
+
+    impl CommandRunner for DumpFailingRunner {
+        fn run(&self, _program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            assert!(
+                args.iter().any(|argument| argument == "uiautomator"),
+                "dump failure fixture must be reached on the uiautomator dump, got {args:?}"
+            );
+            Ok(CommandOutput {
+                success: false,
+                stdout: Vec::new(),
+                stderr: b"uiautomator dumped killed".to_vec(),
+            })
+        }
+    }
+
+    struct EmptyHierarchyRunner;
+
+    impl CommandRunner for EmptyHierarchyRunner {
+        fn run(&self, _program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            let stdout = if args.iter().any(|argument| argument == "cat") {
+                br#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"></hierarchy>"#.to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok(CommandOutput {
+                success: true,
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
     }
 
     #[derive(Default)]

@@ -41,7 +41,7 @@ pub use media::AndroidEmulatorMediaFile;
 pub use requirements::{
     AndroidDevice, AndroidDeviceFamily, AndroidEmulatorIssue, AndroidEmulatorRequirements,
 };
-pub use session::{AndroidEmulatorLifecycleEvent, AndroidEmulatorSession};
+pub use session::{AndroidEmulatorError, AndroidEmulatorLifecycleEvent, AndroidEmulatorSession};
 pub use setup::{SetupDone, SetupMode, SetupProgress};
 
 /// Frozen key map for `android_emulator_press_key` (contract §key map):
@@ -491,11 +491,15 @@ pub async fn android_emulator_inspect_point(
     service: State<'_, AndroidEmulatorService>,
     x: f64,
     y: f64,
-) -> Result<Option<AndroidEmulatorElementHit>, String> {
+) -> Result<Option<AndroidEmulatorElementHit>, AndroidEmulatorError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || service.inspect_point_sync(x, y))
         .await
-        .map_err(|error| format!("failed to inspect Android emulator point: {error}"))?
+        .map_err(|error| {
+            AndroidEmulatorError::from_message(format!(
+                "failed to inspect Android emulator point: {error}"
+            ))
+        })?
 }
 
 fn desktop_directory(app: &AppHandle) -> Result<PathBuf, String> {

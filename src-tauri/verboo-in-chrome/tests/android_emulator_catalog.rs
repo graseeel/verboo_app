@@ -214,3 +214,45 @@ fn android_emulator_catalog_bounds_points_keys_actions_and_marks_only_observatio
         }))
         .is_err());
 }
+
+const ANDROID_SESSION_ROUTING_PREFIX: &str = "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use.";
+
+#[test]
+fn android_emulator_catalog_tells_the_model_to_check_list_first_and_reuse_an_active_session() {
+    let catalog = android_emulator_catalog().unwrap();
+    for tool in &catalog.tools {
+        assert!(
+            tool.description.starts_with(ANDROID_SESSION_ROUTING_PREFIX),
+            "{} must start with the session-routing prefix, got: {}",
+            tool.name,
+            tool.description,
+        );
+    }
+}
+
+#[test]
+fn android_emulator_screenshot_schema_does_not_advertise_ignored_frame_gating_params() {
+    let catalog = android_emulator_catalog().unwrap();
+    let screenshot = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "android_emulator_screenshot")
+        .unwrap();
+    let properties = screenshot.input_schema["properties"].as_object().unwrap();
+    assert!(
+        !properties.contains_key("afterFrameGeneration"),
+        "screenshot must not advertise afterFrameGeneration; capture is always fresh"
+    );
+    assert!(
+        !properties.contains_key("timeoutMs"),
+        "screenshot must not advertise timeoutMs; capture is always fresh"
+    );
+    assert!(properties.contains_key("avdName"));
+    let validator = jsonschema::validator_for(&screenshot.input_schema).unwrap();
+    assert!(validator
+        .validate(&json!({"avdName": "Pixel_8_API_35"}))
+        .is_ok());
+    assert!(validator
+        .validate(&json!({"afterFrameGeneration": 42, "timeoutMs": 5_000}))
+        .is_err());
+}

@@ -366,6 +366,8 @@ fn attach_device(
     ensure_attach_compatible(service, &avd_name)?;
     if let Some(session) = attached_session(service).filter(|session| session.avd_name == avd_name)
     {
+        let _ = service.set_visible_sync(true);
+        service.request_agent_panel_open();
         return serde_json::to_value(session.summary()).map_err(internal_error);
     }
     let app = app
@@ -381,6 +383,7 @@ fn attach_device(
         )
         .map_err(tool_error)?;
     let _ = service.set_visible_sync(true);
+    service.request_agent_panel_open();
     serde_json::to_value(session).map_err(internal_error)
 }
 
@@ -431,10 +434,6 @@ fn capture_screenshot(
     #[serde(rename_all = "camelCase")]
     struct Args {
         avd_name: Option<String>,
-        #[allow(dead_code)]
-        after_frame_generation: Option<u64>,
-        #[allow(dead_code)]
-        timeout_ms: Option<u64>,
     }
     let args: Args = parse_args(arguments)?;
     ensure_device(service, args.avd_name.as_deref())?;
@@ -863,7 +862,8 @@ mod tests {
     use crate::services::android_emulator::input::take_presence_log;
     use crate::services::android_emulator::preview::{FirstPreviewGate, PreviewMode};
     use crate::services::android_emulator::session::{
-        AndroidEmulatorOwnership, AndroidSession, PreviewGate, PreviewRuntime,
+        take_open_requested_sink, AndroidEmulatorOwnership, AndroidSession, PreviewGate,
+        PreviewRuntime, OPEN_REQUESTED_EVENT,
     };
     use crate::services::android_emulator::{CommandOutput, CommandRunner};
 
@@ -964,6 +964,43 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "device_mismatch");
+        assert!(
+            take_open_requested_sink().is_empty(),
+            "failed attach must not emit open-requested"
+        );
+    }
+
+    #[test]
+    fn mcp_attach_emits_open_requested_presence_literal_on_the_existing_channel() {
+        let service = attached_service("Pixel_8_API_35");
+        let _ = take_open_requested_sink();
+        let result = dispatch_tool(
+            "android_emulator_attach",
+            json!({ "avdName": "Pixel_8_API_35" }),
+            &service,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result["generation"], 1);
+
+        let events = take_open_requested_sink();
+        assert_eq!(
+            events.len(),
+            1,
+            "successful MCP attach must emit open-requested once, got {events:?}"
+        );
+        assert_eq!(events[0].0, OPEN_REQUESTED_EVENT);
+        assert_eq!(
+            events[0].1,
+            json!({
+                "generation": 1,
+                "phase": "start",
+                "action": "attach",
+                "target": null,
+                "start": null,
+                "end": null,
+            })
+        );
     }
 
     #[test]

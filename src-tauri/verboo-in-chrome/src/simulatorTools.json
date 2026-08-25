@@ -3,13 +3,13 @@
   "tools": [
     {
       "name": "ios_simulator_list",
-      "description": "List available iOS Simulator devices and the currently attached device.",
+      "description": "List available iOS Simulator devices and the currently attached device. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "read",
       "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     },
     {
       "name": "ios_simulator_attach",
-      "description": "Attach one iOS Simulator device to the Verboo desktop session. Provide either udid, or both model and iosVersion. Do not combine the two selector forms.",
+      "description": "Attach one iOS Simulator device to the Verboo desktop session. Provide either udid, or both model and iosVersion. Do not combine the two selector forms. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -25,7 +25,7 @@
     },
     {
       "name": "ios_simulator_wait_until_ready",
-      "description": "Wait for the attached iOS Simulator preview and interaction transport to become ready without shell sleeps or polling.",
+      "description": "Wait for the attached iOS Simulator preview and interaction transport to become ready without shell sleeps or polling. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "read",
       "inputSchema": {
         "type": "object",
@@ -38,7 +38,7 @@
     },
     {
       "name": "ios_simulator_screenshot",
-      "description": "Capture a frame from the attached iOS Simulator, optionally waiting for a generation newer than the last observed frame.",
+      "description": "Capture a frame from the attached iOS Simulator, optionally waiting for a generation newer than the last observed frame. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "read",
       "inputSchema": {
         "type": "object",
@@ -52,7 +52,7 @@
     },
     {
       "name": "ios_simulator_focused_element",
-      "description": "Read only the currently keyboard-focused control and its bounded label/value fields. This never requests the full accessibility hierarchy.",
+      "description": "Read only the currently keyboard-focused control and its bounded label/value fields. This never requests the full accessibility hierarchy. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "read",
       "inputSchema": {
         "type": "object",
@@ -64,7 +64,7 @@
     },
     {
       "name": "ios_simulator_tap",
-      "description": "Tap a control in the attached iOS Simulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete x and y pair. Omit target only when no usable text or identifier exists. You must provide target, both coordinates, or target with both coordinates.",
+      "description": "Tap a control in the attached iOS Simulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete x and y pair. Omit target only when no usable text or identifier exists. You must provide target, both coordinates, or target with both coordinates. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -79,7 +79,7 @@
     },
     {
       "name": "ios_simulator_drag",
-      "description": "Drag between two normalized points in the attached iOS Simulator.",
+      "description": "Drag between two normalized points in the attached iOS Simulator. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -97,7 +97,7 @@
     },
     {
       "name": "ios_simulator_type_text",
-      "description": "Type text into the focused control in the attached iOS Simulator. Verify the resulting value with ios_simulator_focused_element before reporting success.",
+      "description": "Type text into the focused control in the attached iOS Simulator. Verify the resulting value with ios_simulator_focused_element before reporting success. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -111,7 +111,7 @@
     },
     {
       "name": "ios_simulator_press_key",
-      "description": "Press a supported key in the attached iOS Simulator.",
+      "description": "Press a supported key in the attached iOS Simulator. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -128,7 +128,7 @@
     },
     {
       "name": "ios_simulator_system_action",
-      "description": "Perform a generic iOS system action on the attached Simulator.",
+      "description": "Perform a generic iOS system action on the attached Simulator. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -145,7 +145,7 @@
     },
     {
       "name": "ios_simulator_list_apps",
-      "description": "List installed applications on the attached iOS Simulator, including their display names and bundle identifiers.",
+      "description": "List installed applications on the attached iOS Simulator, including their display names and bundle identifiers. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "read",
       "inputSchema": {
         "type": "object",
@@ -157,7 +157,7 @@
     },
     {
       "name": "ios_simulator_launch_app",
-      "description": "Launch any installed application on the attached iOS Simulator by bundle identifier.",
+      "description": "Launch any installed application on the attached iOS Simulator by bundle identifier. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -171,7 +171,7 @@
     },
     {
       "name": "ios_simulator_detach",
-      "description": "Detach Verboo from the current iOS Simulator without shutting the device down.",
+      "description": "Detach Verboo from the current iOS Simulator without shutting the device down. If an Android emulator session is active, use the android_emulator_* tools instead of these.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",

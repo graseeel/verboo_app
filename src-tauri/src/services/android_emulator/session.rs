@@ -58,9 +58,31 @@ pub(crate) const PREVIEW_STATE_EVENT: &str = "android-emulator:preview-state";
 pub(crate) const LIFECYCLE_EVENT: &str = "android-emulator:lifecycle";
 pub(crate) const ERROR_EVENT: &str = "android-emulator:error";
 pub(crate) const PRESENCE_EVENT: &str = "android-emulator:presence";
+/// Renderer listener: `androidEmulatorApi.onOpenRequested` — frozen literal.
+pub(crate) const OPEN_REQUESTED_EVENT: &str = "android-emulator:open-requested";
 /// Additive session-ended channel (E2 device-death teardown). Frozen
 /// literal — do not rename; renderer subscribes to this exact string.
 pub(crate) const SESSION_ENDED_EVENT: &str = "android-emulator:session-ended";
+
+#[cfg(test)]
+thread_local! {
+    static OPEN_REQUESTED_SINK: std::cell::RefCell<Vec<(String, serde_json::Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_open_requested_sink() -> Vec<(String, serde_json::Value)> {
+    OPEN_REQUESTED_SINK.with(|sink| sink.replace(Vec::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn record_open_requested_for_test(presence: &AndroidEmulatorPresenceEvent) {
+    let payload = serde_json::to_value(presence).expect("open-requested presence must serialize");
+    OPEN_REQUESTED_SINK.with(|sink| {
+        sink.borrow_mut()
+            .push((OPEN_REQUESTED_EVENT.to_string(), payload));
+    });
+}
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MIN_STREAM_FPS: u16 = 1;
@@ -751,6 +773,30 @@ impl AndroidEmulatorService {
             .app
             .lock()
             .expect("Android emulator app handle poisoned") = Some(app);
+    }
+
+    pub(crate) fn request_agent_panel_open(&self) {
+        let Some(session) = self.current_session_option() else {
+            return;
+        };
+        let presence = AndroidEmulatorPresenceEvent {
+            generation: session.generation,
+            phase: "start".to_string(),
+            action: Some("attach".to_string()),
+            target: None,
+            start: None,
+            end: None,
+        };
+        #[cfg(test)]
+        record_open_requested_for_test(&presence);
+        if let Some(app) = self
+            .app
+            .lock()
+            .expect("Android emulator app handle poisoned")
+            .clone()
+        {
+            let _ = app.emit(OPEN_REQUESTED_EVENT, presence);
+        }
     }
 
     pub(crate) fn current_session(&self) -> Result<Arc<AndroidSession>, String> {

@@ -224,3 +224,18 @@ fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() 
         .validate(&json!({"timeoutMs": 10_001}))
         .is_err());
 }
+
+#[test]
+fn simulator_catalog_defers_to_android_tools_when_an_android_session_is_active() {
+    let catalog = simulator_catalog().unwrap();
+    let needle =
+        "If an Android emulator session is active, use the android_emulator_* tools instead of these.";
+    for tool in &catalog.tools {
+        assert!(
+            tool.description.contains(needle),
+            "{} must defer to android_emulator_* when an Android session is active, got: {}",
+            tool.name,
+            tool.description,
+        );
+    }
+}
