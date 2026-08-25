@@ -60,6 +60,8 @@ test('cross-platform Rust gates prepare every required external runtime', () => 
     /Prepare macOS WebDriverAgent resource[\s\S]*?if: runner\.os == 'macOS'[\s\S]*?copy-wda-resource\.mjs/,
   )
   assert.match(linuxBrowserGate, /verboo-ios-simulator/)
+  assert.match(linuxBrowserGate, /verboo-android-emulator/)
+  assert.match(read('scripts/verify/ci-local-docker.sh'), /verboo-android-emulator/)
   assert.doesNotMatch(linuxBrowserGate, /build-node-sidecar|verboo-node/)
   assert.match(linuxBrowserGate, /if \[ ! -d dist-renderer \]/)
   assert.match(linuxBrowserGate, /trap cleanup_frontend_dist EXIT/)

@@ -42,6 +42,9 @@ fn stop_simulators_for_app_exit(app_handle: &tauri::AppHandle) {
 
     let service = app_handle.state::<services::android_emulator::AndroidEmulatorService>();
     service.begin_exit();
+    app_handle
+        .state::<services::android_emulator_bridge::AndroidEmulatorBridge>()
+        .stop();
     let _ = service.stop_for_app_exit(deadline);
 }
 
@@ -2336,10 +2339,31 @@ pub fn run() {
                 });
             }
             // Android emulator service (PA-24): requirements/setup probes are per-OS inside the service.
-            app.manage(
+            let android_service =
                 services::android_emulator::AndroidEmulatorService::new(app_data_dir.clone())
-                    .map_err(std::io::Error::other)?,
-            );
+                    .map_err(std::io::Error::other)?;
+            app.manage(android_service.clone());
+            let android_cache_dir = app.path().app_cache_dir().map_err(std::io::Error::other)?;
+            let android_bridge = services::android_emulator_bridge::AndroidEmulatorBridge::start(
+                android_cache_dir,
+                app.package_info().version.to_string(),
+                app.handle().clone(),
+                android_service,
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(android_bridge);
+            let android_mcp_app_data = app_data_dir.clone();
+            let android_mcp_version = app.package_info().version.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = services::android_emulator_mcp::AndroidEmulatorMcpService::new(
+                    android_mcp_app_data,
+                    android_mcp_version,
+                )
+                .and_then(|service| service.ensure_registered());
+                if let Err(error) = result {
+                    eprintln!("[verboo:android-emulator-mcp] setup skipped: {error}");
+                }
+            });
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2841,5 +2865,44 @@ mod platform_contract_tests {
                 "iOS simulator command is exposed without a macOS gate: {line}"
             );
         }
+    }
+
+    #[test]
+    fn android_emulator_mcp_is_registered_on_every_platform() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains("AndroidEmulatorBridge::start"),
+            "the Android emulator MCP bridge must start in setup"
+        );
+        assert!(
+            setup.contains("AndroidEmulatorMcpService::new"),
+            "the Android emulator MCP helper must be registered in setup"
+        );
+        let macos_block_end = setup
+            .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+            .and_then(|offset| setup[offset..].find("\n            }"))
+            .map(|relative| {
+                setup
+                    .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+                    .unwrap()
+                    + relative
+            })
+            .expect("macOS-only simulator block");
+        let android_start = setup
+            .find("AndroidEmulatorBridge::start")
+            .expect("android bridge");
+        assert!(
+            android_start > macos_block_end,
+            "Android emulator MCP must not be trapped inside the macOS-only iOS block"
+        );
+        assert!(
+            !setup[macos_block_end..android_start].contains("#[cfg(target_os = \"macos\")]"),
+            "Android emulator MCP must register on every platform"
+        );
     }
 }

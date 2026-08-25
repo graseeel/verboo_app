@@ -11,6 +11,7 @@ const MAIN_EXECUTABLE = "verboo-desktop";
 const SIDECARS = [
   "verboo-in-chrome",
   "verboo-ios-simulator",
+  "verboo-android-emulator",
   "verboo-ffmpeg",
   "verboo-ffprobe",
   "verboo-whisper",

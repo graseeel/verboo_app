@@ -82,7 +82,7 @@ set -euo pipefail
 TRIPLE="$(rustc -vV | grep "^host:" | sed "s/^host: //")"
 BINDIR="src-tauri/binaries"
 mkdir -p "$BINDIR"
-for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
+for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-android-emulator verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
   TARGET="$BINDIR/${SIDECAR}-${TRIPLE}"
   case "$SIDECAR" in
     verboo-ffmpeg)   cp -f /usr/bin/ffmpeg "$TARGET"; chmod +x "$TARGET" ;;

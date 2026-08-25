@@ -161,7 +161,7 @@ case "$TRIPLE" in
     ;;
 esac
 
-for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
+for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-android-emulator verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
   TARGET="$BINDIR/${SIDECAR}-${TRIPLE}"
 
   # Barreira dura: nunca escrever em caminho com sufixo apple-darwin.
@@ -191,7 +191,7 @@ for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprob
       chmod +x "$TARGET"
       echo "    binário distro: $TARGET ($(stat -c %s "$TARGET") bytes)"
       ;;
-    verboo-in-chrome|verboo-ios-simulator|verboo-whisper|computer-use-helper)
+    verboo-in-chrome|verboo-ios-simulator|verboo-android-emulator|verboo-whisper|computer-use-helper)
       # Os testes usam fixtures isoladas para estes helpers. Stub vazio.
       # Só cria se não existir (não sobrescreve binário real se já houver).
       if [ ! -s "$TARGET" ]; then

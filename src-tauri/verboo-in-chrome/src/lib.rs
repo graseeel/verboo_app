@@ -1,3 +1,7 @@
+pub mod android_emulator_catalog;
+pub mod android_emulator_client;
+pub mod android_emulator_mcp;
+pub mod android_emulator_protocol;
 pub mod catalog;
 pub mod discovery;
 pub mod error;
