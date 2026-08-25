@@ -553,7 +553,7 @@ export function useAndroidEmulatorPanel() {
   const pressKey = useCallback((key: AndroidEmulatorKey) =>
     run(() => androidEmulatorApi.pressKey(key, 'manual')), [run])
   const runSystemAction = useCallback((action: AndroidEmulatorSystemAction) =>
-    run(() => androidEmulatorApi.systemAction(action)), [run])
+    run(() => androidEmulatorApi.systemAction(action, 'manual')), [run])
 
   const inspectPoint = useCallback(async (
     point: AndroidEmulatorPoint,

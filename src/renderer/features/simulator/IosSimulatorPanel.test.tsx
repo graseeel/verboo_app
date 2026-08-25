@@ -658,8 +658,14 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
       'android_emulator_tap',
       { x: 0.5, y: 0.5, origin: 'manual' },
     )
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'back' })
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'recents' })
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_system_action',
+      { action: 'back', origin: 'manual' },
+    )
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_system_action',
+      { action: 'recents', origin: 'manual' },
+    )
     expect(screen.getByRole('button', { name: 'Capturar tela' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Selecionar componente' })).toBeInTheDocument()
   })

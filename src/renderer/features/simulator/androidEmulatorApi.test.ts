@@ -136,13 +136,13 @@ describe('androidEmulatorApi — frozen F1/F2 command surface', () => {
     ])
   })
 
-  it('maps system actions verbatim (back|home|recents|notifications|rotate)', async () => {
+  it('maps system actions verbatim and adds origin only for manual panel calls', async () => {
     await androidEmulatorApi.systemAction('back')
-    await androidEmulatorApi.systemAction('notifications')
+    await androidEmulatorApi.systemAction('notifications', 'manual')
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
       ['android_emulator_system_action', { action: 'back' }],
-      ['android_emulator_system_action', { action: 'notifications' }],
+      ['android_emulator_system_action', { action: 'notifications', origin: 'manual' }],
     ])
   })
 

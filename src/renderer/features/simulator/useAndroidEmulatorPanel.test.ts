@@ -185,7 +185,7 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     expect(api.drag).toHaveBeenCalledWith(0.1, 0.2, 0.8, 0.9, 240, 'manual')
     expect(api.typeText).toHaveBeenCalledWith('hello android', 'manual')
     expect(api.pressKey).toHaveBeenCalledWith('arrowLeft', 'manual')
-    expect(api.systemAction).toHaveBeenCalledWith('recents')
+    expect(api.systemAction).toHaveBeenCalledWith('recents', 'manual')
   })
 
   it('clears local session state after detach and end', async () => {

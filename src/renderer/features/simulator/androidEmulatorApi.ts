@@ -284,8 +284,8 @@ export const androidEmulatorApi = {
     invoke<void>('android_emulator_type_text', withInputOrigin({ text }, origin)),
   pressKey: (key: AndroidEmulatorKey, origin?: AndroidEmulatorInputOrigin) =>
     invoke<void>('android_emulator_press_key', withInputOrigin({ key }, origin)),
-  systemAction: (action: AndroidEmulatorSystemAction) =>
-    invoke<void>('android_emulator_system_action', { action }),
+  systemAction: (action: AndroidEmulatorSystemAction, origin?: AndroidEmulatorInputOrigin) =>
+    invoke<void>('android_emulator_system_action', withInputOrigin({ action }, origin)),
   accessibilitySnapshot: () =>
     invoke<{ nodes: AndroidAccessibilityNode[] }>('android_emulator_accessibility_snapshot'),
   inspectPoint: (x: number, y: number) =>
