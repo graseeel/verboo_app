@@ -11,16 +11,32 @@ vi.mock('./features/composer/Composer', () => ({
     busy,
     onSubmit,
     onStop,
+    queue,
+    onQueueEdit,
+    onQueueRemove,
   }: {
     busy?: boolean
     onSubmit: (message: string) => void
     onStop?: () => void
+    queue?: { id: string; message: string }[]
+    onQueueEdit?: (queueItemId: string, newText: string) => void
+    onQueueRemove?: (queueItemId: string) => void
   }) => (
     <div>
       <button type="button" onClick={() => { void onSubmit(busy ? 'Queued follow-up' : 'Start a turn') }}>
         {busy ? 'Queue main' : 'Send main'}
       </button>
       {busy && <button type="button" onClick={onStop}>Stop main</button>}
+      {queue?.[0] && (
+        <>
+          <button type="button" onClick={() => onQueueEdit?.(queue[0].id, 'Edited follow-up')}>
+            Edit first queued
+          </button>
+          <button type="button" onClick={() => onQueueRemove?.(queue[0].id)}>
+            Remove first queued
+          </button>
+        </>
+      )}
     </div>
   ),
 }))
@@ -253,6 +269,12 @@ function expectTranscriptOrder(...texts: string[]) {
   }
 }
 
+function transcriptQueries() {
+  const transcript = document.querySelector<HTMLElement>('.transcript')
+  expect(transcript).not.toBeNull()
+  return within(transcript!)
+}
+
 beforeEach(() => {
   window.localStorage.clear()
   seedConversation()
@@ -362,12 +384,31 @@ describe('App stop-button turn ownership', () => {
 })
 
 describe('App interruption marker transcript order', () => {
+  it('keeps a pending follow-up out of the transcript until a clean flush sends it', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+    emitPartialResponse(host, turnId)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await act(async () => {})
+
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
+
+    act(() => host.emitAgentEvent({ type: 'done', turnId, conversationId: 'chat:stop-button', exitCode: 0 }))
+    await waitFor(() => expect(host.sendTurn).toHaveBeenCalledTimes(2))
+
+    expect(await transcriptQueries().findByText('Queued follow-up')).toBeInTheDocument()
+    expectTranscriptOrder('Partial response from turn A', 'Queued follow-up')
+  })
+
   it('places a button-stop marker before the queued follow-up bubble', async () => {
     const host = renderApp()
     const turnId = await startMainTurn(host)
     emitPartialResponse(host, turnId)
     fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
     await act(async () => {})
+
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop main' }))
     await waitFor(() => expect(host.interrupt).toHaveBeenCalledTimes(1))
@@ -388,6 +429,8 @@ describe('App interruption marker transcript order', () => {
     emitPartialResponse(host, turnId)
     fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
     await act(async () => {})
+
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
 
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -417,7 +460,7 @@ describe('App interruption marker transcript order', () => {
     expectTranscriptOrder('Partial response from turn A', 'Turn interrupted by the user.')
   })
 
-  it('re-reads a follow-up queued while rate-limit usage refresh is pending', async () => {
+  it('flushes a follow-up queued while rate-limit usage refresh is pending after the marker', async () => {
     const pendingUsage = deferred<ProviderUsageResult[]>()
     seedConversation({ providerAccountBindings: { claude: 'claude-a' } })
     const host = renderApp(undefined, { providerAccountsUsage: () => pendingUsage.promise })
@@ -432,6 +475,7 @@ describe('App interruption marker transcript order', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
     await act(async () => {})
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
     pendingUsage.resolve([])
     await act(async () => {})
 
@@ -442,6 +486,40 @@ describe('App interruption marker transcript order', () => {
       'Turn interrupted by the user.',
       'Queued follow-up',
     )
+  })
+
+  it('uses an edited queue message only when the follow-up flushes', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await screen.findByRole('button', { name: 'Edit first queued' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit first queued' }))
+
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
+    expect(transcriptQueries().queryByText('Edited follow-up')).not.toBeInTheDocument()
+
+    act(() => host.emitAgentEvent({ type: 'done', turnId, conversationId: 'chat:stop-button', exitCode: 0 }))
+    await waitFor(() => expect(host.sendTurn).toHaveBeenCalledTimes(2))
+
+    expect(host.sendTurn.mock.calls[1][0].message).toBe('Edited follow-up')
+    expect(await transcriptQueries().findByText('Edited follow-up')).toBeInTheDocument()
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
+  })
+
+  it('removes a queued follow-up without leaving an orphan transcript bubble', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await screen.findByRole('button', { name: 'Remove first queued' })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove first queued' }))
+
+    act(() => host.emitAgentEvent({ type: 'done', turnId, conversationId: 'chat:stop-button', exitCode: 0 }))
+    await screen.findByRole('button', { name: 'Send main' })
+
+    expect(host.sendTurn).toHaveBeenCalledTimes(1)
+    expect(transcriptQueries().queryByText('Queued follow-up')).not.toBeInTheDocument()
   })
 })
 

@@ -349,9 +349,9 @@ type QueuedFollowUp = {
   id: string
   conversationId: string
   message: string
-  /** User bubble already rendered for this pending follow-up. Turn outcomes
-   *  from the running turn must land before this transcript boundary. */
-  transcriptItemId?: string
+  /** User bubble that is appended only when this entry begins dispatch.
+   *  Internal/synthetic queue entries intentionally omit it. */
+  transcriptItem?: TranscriptItem
   request: AgentTurnRequest
   sideChat?: boolean
   /** How this entry interacts with the queue panel. TOTAL discriminator:
@@ -3044,11 +3044,10 @@ export function App() {
             // User-requested interruption: already renders as assistant (no
             // "Sistema" label, no badge — Transcript.tsx visualRole override).
             // Keep the system row; the T19 guard still suppresses its text
-            // when the body already carries a parseable API error.
-            const nextQueuedTranscriptItemId = queuedFollowUpsRef.current.find(item =>
-              item.conversationId === conversationId && item.transcriptItemId,
-            )?.transcriptItemId
-            appendConversationItemBefore(conversationId, {
+            // when the body already carries a parseable API error. Pending
+            // follow-ups have no transcript row yet, so the state-driven flush
+            // appends their user bubble only after this marker.
+            appendConversationItem(conversationId, {
               id: `${event.turnId}:error`,
               role: 'system',
               text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
@@ -3057,7 +3056,7 @@ export function App() {
               errorDetail: errorPresentation.technicalDetail,
               presentation: 'interruption',
               timestamp: Date.now(),
-            }, nextQueuedTranscriptItemId)
+            })
           } else {
             // T23: the error message is the model's natural response, not a
             // "Sistema" badge. Two sub-paths:
@@ -3521,9 +3520,19 @@ export function App() {
     }
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
-    const transcriptItemId = trimmed ? `user:${Date.now()}` : undefined
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
-    queued.transcriptItemId = transcriptItemId
+    if (trimmed) {
+      queued.transcriptItem = {
+        id: `user:${Date.now()}`,
+        role: 'user',
+        text: trimmed,
+        timestamp: Date.now(),
+        skills: selectedSkillsUnion,
+        // Persist a slim version of attachments — just path/name/kind — so the
+        // transcript can render chips/thumbnails on reload without base64 bloat.
+        attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
+      }
+    }
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
@@ -3532,29 +3541,13 @@ export function App() {
       return Object.keys(next).length === Object.keys(current).length ? current : next
     })
 
-    // F3: envio SÓ-anotação não cria bolha de usuário vazia — o registro do
-    // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
-    // confirmação; bolha vazia seria ruído sem conteúdo (o veto de produto a
-    // mensagem redundante segue valendo). Com texto, a bolha é a de sempre.
-    if (trimmed && transcriptItemId) {
-      appendConversationItem(conversationId, {
-        id: transcriptItemId,
-        role: 'user',
-        text: trimmed,
-        timestamp: Date.now(),
-        skills: selectedSkillsUnion,
-        // Persist a slim version of attachments — just path/name/kind — so the
-        // transcript can render chips/thumbnails on reload without base64 bloat.
-        attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
-      }, titleFromMessage(trimmed))
-    }
-
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
       clearAttachments(true)
       return
     }
 
+    appendQueuedUserTranscriptItem(queued)
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
     // D-D item 2: reply-to-resume. The reply already landed in the
@@ -3804,6 +3797,15 @@ export function App() {
     setQueuedFollowUpsList(current => [...current, item])
   }
 
+  function appendQueuedUserTranscriptItem(item: QueuedFollowUp) {
+    if (!item.transcriptItem) return
+    appendConversationItem(
+      item.conversationId,
+      { ...item.transcriptItem, timestamp: Date.now() },
+      titleFromMessage(item.transcriptItem.text),
+    )
+  }
+
   async function flushQueuedFollowUps() {
     if (queuedFollowUpsRef.current.length === 0) return
     const runningConversationIds = new Set(Object.keys(runningTurnByConversationRef.current))
@@ -3813,6 +3815,7 @@ export function App() {
     if (!next) return
     const rest = queuedFollowUpsRef.current.filter((_, index) => index !== nextIndex)
     setQueuedFollowUpsList(() => rest)
+    appendQueuedUserTranscriptItem(next)
     await runTurn(next)
   }
 
@@ -3836,6 +3839,7 @@ export function App() {
     }))
 
     if (!currentTurnId) {
+      appendQueuedUserTranscriptItem(item)
       appendDowngradeActivity(conversationId)
       await runTurn(item)
       return
@@ -3857,6 +3861,7 @@ export function App() {
     }
     await interruptedTurn
 
+    appendQueuedUserTranscriptItem(item)
     appendDowngradeActivity(conversationId)
     await runTurn(item)
   }
@@ -3881,7 +3886,18 @@ export function App() {
   }
 
   function editQueuedItem(queueItemId: string, newText: string) {
-    setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId ? { ...q, message: newText } : q))
+    setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId
+      ? {
+          ...q,
+          message: newText,
+          transcriptItem: q.transcriptItem ? { ...q.transcriptItem, text: newText } : undefined,
+          request: {
+            ...q.request,
+            message: newText,
+            responseLanguage: inferResponseLanguage(newText, conversationLanguageFallback(q.conversationId)),
+          },
+        }
+      : q))
   }
 
   // Edit a user's sent message: update the transcript text, remove all
@@ -5682,23 +5698,6 @@ export function App() {
         : [...conversation.items, item],
       updatedAt: Date.now(),
     }))
-  }
-
-  function appendConversationItemBefore(conversationId: string, item: TranscriptItem, beforeItemId?: string) {
-    if (!beforeItemId) {
-      appendConversationItem(conversationId, item)
-      return
-    }
-    updateConversation(conversationId, conversation => {
-      const beforeIndex = conversation.items.findIndex(candidate => candidate.id === beforeItemId)
-      return {
-        ...conversation,
-        items: beforeIndex < 0
-          ? [...conversation.items, item]
-          : [...conversation.items.slice(0, beforeIndex), item, ...conversation.items.slice(beforeIndex)],
-        updatedAt: Date.now(),
-      }
-    })
   }
 
   function conversationCliSessionId(conversationId: string): string | undefined {
