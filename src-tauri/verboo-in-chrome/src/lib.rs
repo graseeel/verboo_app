@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod error;
 pub mod framing;
 pub mod local_transport;
+pub mod mcp_discovery;
 pub mod mcp_server;
 pub mod native_host;
 pub mod protocol;

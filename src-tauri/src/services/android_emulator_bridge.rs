@@ -246,6 +246,20 @@ fn handle_connection(
     }
 }
 
+/// Compare bridge secrets without returning on the first mismatched byte.
+fn secrets_match(provided: Option<&str>, expected: &str) -> bool {
+    let provided = provided.unwrap_or("").as_bytes();
+    let expected = expected.as_bytes();
+    let len = provided.len().max(expected.len());
+    let mut diff = provided.len() ^ expected.len();
+    for index in 0..len {
+        let left = provided.get(index).copied().unwrap_or(0);
+        let right = expected.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left ^ right);
+    }
+    diff == 0
+}
+
 fn handle_request_line(
     line: &[u8],
     expected_secret: &str,
@@ -256,7 +270,7 @@ fn handle_request_line(
         Ok(auth) => auth,
         Err(error) => return error_response(None, "invalid_request", error.to_string()),
     };
-    if auth.secret.as_deref() != Some(expected_secret) {
+    if !secrets_match(auth.secret.as_deref(), expected_secret) {
         return error_response(None, "unauthorized", "missing or invalid bridge secret");
     }
     let request = match serde_json::from_slice::<BridgeRequest>(line) {
@@ -270,7 +284,7 @@ fn handle_request_line(
             "unsupported protocol version",
         );
     }
-    if request.secret.as_deref() != Some(expected_secret) {
+    if !secrets_match(request.secret.as_deref(), expected_secret) {
         return error_response(
             request.id,
             "unauthorized",
@@ -846,11 +860,34 @@ fn endpoint_is_reachable(endpoint: &str) -> bool {
 
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
+    if pid > i32::MAX as u32 {
+        return false;
+    }
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+/// Windows cleanup used to treat every PID as live, so stale records depended
+/// only on `endpoint_is_reachable` (TIME_WAIT could linger ~60s). `OpenProcess`
+/// now matches the Chrome native-host helper; a recycled PID can still look
+/// alive until the TCP probe fails.
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        false
+    } else {
+        unsafe {
+            CloseHandle(handle);
+        }
+        true
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_is_alive(_pid: u32) -> bool {
     true
 }
@@ -936,6 +973,114 @@ mod tests {
             resolve_attach_avd_name(&[], None).unwrap_err().code,
             "device_not_found"
         );
+    }
+
+    #[test]
+    fn missing_or_wrong_secret_is_rejected_before_tool_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        for secret in [None, Some("wrong")] {
+            let request = json!({
+                "protocolVersion": 1,
+                "type": "toolRequest",
+                "secret": secret,
+                "tool": "android_emulator_tap",
+                "arguments": "not-an-object",
+            });
+            let response =
+                handle_request_line(request.to_string().as_bytes(), "right", &service, None);
+            assert_eq!(response_value(response)["code"], "unauthorized");
+        }
+    }
+
+    #[test]
+    fn secret_comparison_does_not_short_circuit_on_the_first_mismatched_byte() {
+        assert!(secrets_match(Some("right"), "right"));
+        assert!(!secrets_match(Some("wrong"), "right"));
+        assert!(!secrets_match(None, "right"));
+        assert!(!secrets_match(Some(""), "right"));
+        let source = include_str!("android_emulator_bridge.rs");
+        assert!(source.contains("fn secrets_match("));
+        let short_circuit = format!(
+            "{}{}",
+            "auth.secret.as_deref() != ", "Some(expected_secret)"
+        );
+        assert!(
+            !source.contains(&short_circuit),
+            "auth envelope must use secrets_match, not != "
+        );
+    }
+
+    #[test]
+    fn process_liveness_sees_this_process_and_rejects_an_unrepresentable_pid() {
+        assert!(process_is_alive(std::process::id()));
+        assert!(!process_is_alive(u32::MAX));
+    }
+
+    #[test]
+    fn android_and_ios_secret_and_liveness_helpers_stay_byte_identical() {
+        let android = include_str!("android_emulator_bridge.rs");
+        let ios = include_str!("ios_simulator/bridge.rs");
+        assert_eq!(
+            rust_fn_src(
+                android,
+                "fn secrets_match(provided: Option<&str>, expected: &str) -> bool"
+            ),
+            rust_fn_src(
+                ios,
+                "fn secrets_match(provided: Option<&str>, expected: &str) -> bool"
+            ),
+            "secrets_match must stay mirrored across the two MCP bridges"
+        );
+        assert_eq!(
+            rust_fn_src(
+                android,
+                "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool"
+            ),
+            rust_fn_src(ios, "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool"),
+        );
+        assert_eq!(
+            rust_fn_src(
+                android,
+                "#[cfg(windows)]\nfn process_is_alive(pid: u32) -> bool"
+            ),
+            rust_fn_src(
+                ios,
+                "#[cfg(windows)]\nfn process_is_alive(pid: u32) -> bool"
+            ),
+        );
+        assert_eq!(
+            rust_fn_src(
+                android,
+                "#[cfg(not(any(unix, windows)))]\nfn process_is_alive(_pid: u32) -> bool"
+            ),
+            rust_fn_src(
+                ios,
+                "#[cfg(not(any(unix, windows)))]\nfn process_is_alive(_pid: u32) -> bool"
+            ),
+        );
+    }
+
+    fn rust_fn_src<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("missing {signature}"));
+        let rest = &source[start..];
+        let open = rest.find('{').expect("function body");
+        let mut depth = 0usize;
+        for (index, ch) in rest[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[..open + index + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unclosed {signature}");
     }
 
     #[test]

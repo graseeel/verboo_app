@@ -39,18 +39,31 @@ pub struct SimulatorDiscoveryStore {
 }
 
 impl SimulatorDiscoveryStore {
+    /// Trusted-process override: tests and developers may set
+    /// `VERBOO_IOS_SIMULATOR_DISCOVERY_DIR` to an absolute path without
+    /// `..`. Relative values are rejected. The helper still forces `0o700`
+    /// on Unix when the directory exists (same as the desktop bridge).
     pub fn for_current_user() -> Result<Self, SimulatorClientError> {
         if let Some(root) = std::env::var_os("VERBOO_IOS_SIMULATOR_DISCOVERY_DIR") {
-            return Ok(Self::at(PathBuf::from(root)));
+            let root = crate::mcp_discovery::parse_override_root(root).map_err(|error| {
+                SimulatorClientError::InvalidDiscovery(format!(
+                    "VERBOO_IOS_SIMULATOR_DISCOVERY_DIR: {error}"
+                ))
+            })?;
+            crate::mcp_discovery::ensure_private_root(&root)
+                .map_err(|error| SimulatorClientError::InvalidDiscovery(error.to_string()))?;
+            return Ok(Self::at(root));
         }
         let base = BaseDirs::new().ok_or_else(|| {
             SimulatorClientError::InvalidDiscovery("user cache directory unavailable".into())
         })?;
-        Ok(Self::at(
-            base.cache_dir()
-                .join(VERBOO_APP_IDENTIFIER)
-                .join(SIMULATOR_DISCOVERY_DIRECTORY),
-        ))
+        let root = base
+            .cache_dir()
+            .join(VERBOO_APP_IDENTIFIER)
+            .join(SIMULATOR_DISCOVERY_DIRECTORY);
+        crate::mcp_discovery::ensure_private_root(&root)
+            .map_err(|error| SimulatorClientError::InvalidDiscovery(error.to_string()))?;
+        Ok(Self::at(root))
     }
 
     pub fn at(root: PathBuf) -> Self {
@@ -65,7 +78,7 @@ impl SimulatorDiscoveryStore {
         &self,
         record: &SimulatorDiscoveryRecord,
     ) -> Result<PathBuf, SimulatorClientError> {
-        fs::create_dir_all(&self.root)
+        crate::mcp_discovery::create_private_root(&self.root)
             .map_err(|error| SimulatorClientError::InvalidDiscovery(error.to_string()))?;
         let path = self.root.join(format!("{}.json", record.pid));
         fs::write(
@@ -80,6 +93,8 @@ impl SimulatorDiscoveryStore {
     fn discover(
         &self,
     ) -> Result<Option<(PathBuf, SimulatorDiscoveryRecord)>, SimulatorClientError> {
+        crate::mcp_discovery::ensure_private_root(&self.root)
+            .map_err(|error| SimulatorClientError::InvalidDiscovery(error.to_string()))?;
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -251,7 +266,8 @@ fn parse_loopback_endpoint(value: &str) -> Result<SocketAddr, SimulatorClientErr
 
 #[cfg(test)]
 mod tests {
-    use super::parse_loopback_endpoint;
+    use super::*;
+    use crate::simulator_protocol::{SimulatorDiscoveryRecord, SIMULATOR_PROTOCOL_VERSION};
 
     #[test]
     fn accepts_only_explicit_ipv4_loopback() {
@@ -259,5 +275,35 @@ mod tests {
         assert!(parse_loopback_endpoint("0.0.0.0:1234").is_err());
         assert!(parse_loopback_endpoint("[::1]:1234").is_err());
         assert!(parse_loopback_endpoint("localhost:1234").is_err());
+    }
+
+    #[test]
+    fn discovery_store_uses_the_shared_hardening_helpers() {
+        let source = include_str!("simulator_client.rs");
+        assert!(source.contains("mcp_discovery::parse_override_root"));
+        assert!(source.contains("mcp_discovery::ensure_private_root"));
+        assert!(source.contains("mcp_discovery::create_private_root"));
+        assert!(source.contains("VERBOO_IOS_SIMULATOR_DISCOVERY_DIR"));
+        let legacy_create = format!("{}{}", "fs::create_dir_all(", "&self.root)");
+        assert!(!source.contains(&legacy_create));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_record_for_test_hardens_the_discovery_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("discovery");
+        let store = SimulatorDiscoveryStore::at(root.clone());
+        store
+            .write_record_for_test(&SimulatorDiscoveryRecord {
+                protocol_version: SIMULATOR_PROTOCOL_VERSION,
+                pid: std::process::id(),
+                endpoint: "127.0.0.1:9".into(),
+                secret: "secret".into(),
+                app_version: "test".into(),
+            })
+            .unwrap();
+        assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o700);
     }
 }
