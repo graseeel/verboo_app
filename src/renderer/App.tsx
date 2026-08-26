@@ -349,6 +349,9 @@ type QueuedFollowUp = {
   id: string
   conversationId: string
   message: string
+  /** User bubble already rendered for this pending follow-up. Turn outcomes
+   *  from the running turn must land before this transcript boundary. */
+  transcriptItemId?: string
   request: AgentTurnRequest
   sideChat?: boolean
   /** How this entry interacts with the queue panel. TOTAL discriminator:
@@ -3042,7 +3045,10 @@ export function App() {
             // "Sistema" label, no badge — Transcript.tsx visualRole override).
             // Keep the system row; the T19 guard still suppresses its text
             // when the body already carries a parseable API error.
-            appendConversationItem(conversationId, {
+            const nextQueuedTranscriptItemId = queuedFollowUpsRef.current.find(item =>
+              item.conversationId === conversationId && item.transcriptItemId,
+            )?.transcriptItemId
+            appendConversationItemBefore(conversationId, {
               id: `${event.turnId}:error`,
               role: 'system',
               text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
@@ -3051,7 +3057,7 @@ export function App() {
               errorDetail: errorPresentation.technicalDetail,
               presentation: 'interruption',
               timestamp: Date.now(),
-            })
+            }, nextQueuedTranscriptItemId)
           } else {
             // T23: the error message is the model's natural response, not a
             // "Sistema" badge. Two sub-paths:
@@ -3515,7 +3521,9 @@ export function App() {
     }
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
+    const transcriptItemId = trimmed ? `user:${Date.now()}` : undefined
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
+    queued.transcriptItemId = transcriptItemId
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
@@ -3528,9 +3536,9 @@ export function App() {
     // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
     // confirmação; bolha vazia seria ruído sem conteúdo (o veto de produto a
     // mensagem redundante segue valendo). Com texto, a bolha é a de sempre.
-    if (trimmed) {
+    if (trimmed && transcriptItemId) {
       appendConversationItem(conversationId, {
-        id: `user:${Date.now()}`,
+        id: transcriptItemId,
         role: 'user',
         text: trimmed,
         timestamp: Date.now(),
@@ -5674,6 +5682,23 @@ export function App() {
         : [...conversation.items, item],
       updatedAt: Date.now(),
     }))
+  }
+
+  function appendConversationItemBefore(conversationId: string, item: TranscriptItem, beforeItemId?: string) {
+    if (!beforeItemId) {
+      appendConversationItem(conversationId, item)
+      return
+    }
+    updateConversation(conversationId, conversation => {
+      const beforeIndex = conversation.items.findIndex(candidate => candidate.id === beforeItemId)
+      return {
+        ...conversation,
+        items: beforeIndex < 0
+          ? [...conversation.items, item]
+          : [...conversation.items.slice(0, beforeIndex), item, ...conversation.items.slice(beforeIndex)],
+        updatedAt: Date.now(),
+      }
+    })
   }
 
   function conversationCliSessionId(conversationId: string): string | undefined {

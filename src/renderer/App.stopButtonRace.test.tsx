@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AgentEvent, Annotation, UserSettings } from '../shared/types'
+import type { AgentEvent, AgentTurnRequest, Annotation, ProviderUsageResult, StoredConversation, UserSettings } from '../shared/types'
 import { ToastProvider } from './components/Toast'
 import { App } from './App'
 import { CHAT_STORE_KEY, createConversation } from './state/chatStore'
@@ -89,11 +89,26 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function createBridge(interruptImpl: () => Promise<boolean> = async () => true) {
+type BridgeOptions = {
+  providerAccountsUsage?: () => Promise<ProviderUsageResult[]>
+}
+
+function createBridge(
+  interruptImpl: () => Promise<boolean> = async () => true,
+  options: BridgeOptions = {},
+) {
   let onAgentEvent: ((event: AgentEvent) => void) | undefined
   const unsubscribe = () => {}
   const interrupt = vi.fn(interruptImpl)
-  const sendTurn = vi.fn(async (request: { turnId?: string; conversationId?: string }) => request.turnId ?? 'turn:test')
+  const sendTurn = vi.fn(async (request: AgentTurnRequest) => request.turnId ?? 'turn:test')
+  const providerEnabled = Boolean(options.providerAccountsUsage)
+  const model = {
+    id: 'model-1',
+    displayName: 'Test model',
+    raw: {},
+    ...(providerEnabled ? { provider: 'claude' as const } : {}),
+  }
+  const providerAccountsUsage = vi.fn(options.providerAccountsUsage ?? (async () => []))
   const bridge = {
     getUserSettings: vi.fn(async () => userSettings),
     getConfig: vi.fn(async () => ({ workingDirectory: '', accessMode: 'approval', platform: 'darwin' })),
@@ -101,7 +116,7 @@ function createBridge(interruptImpl: () => Promise<boolean> = async () => true) 
     getCredentialStatus: vi.fn(async () => ({ hasApiKey: true, apiKeyHint: '…1234' })),
     getCliAuthStatus: vi.fn(async () => ({ loggedIn: true, email: 'ada@example.test' })),
     listModels: vi.fn(async () => ({
-      models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
+      models: [model],
       source: 'api-key',
       stale: false,
     })),
@@ -135,12 +150,27 @@ function createBridge(interruptImpl: () => Promise<boolean> = async () => true) 
     getVideoComponentState: vi.fn(async () => ({ asrModel: 'absent' })),
     onVideoTranscriberProgress: vi.fn(() => unsubscribe),
     getWorkspaceChanges: vi.fn(async () => undefined),
+    providerCapabilities: vi.fn(async () => ({
+      providerAccountsV1: providerEnabled,
+      providerUsageV1: providerEnabled,
+    })),
+    providerAccountsList: vi.fn(async () => providerEnabled ? [{
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      displayLabel: 'Claude 1',
+      isDefault: true,
+      connectionState: 'connected',
+    }] : []),
+    providerAccountsUsage,
+    providerAccountModels: vi.fn(async () => providerEnabled ? [model] : []),
     sendTurn,
     interrupt,
   }
 
   return {
     interrupt,
+    providerAccountsUsage,
     sendTurn,
     emitAgentEvent(event: AgentEvent) {
       onAgentEvent?.(event)
@@ -154,7 +184,7 @@ function createBridge(interruptImpl: () => Promise<boolean> = async () => true) 
   }
 }
 
-function seedConversation() {
+function seedConversation(extra: Partial<StoredConversation> = {}) {
   const conversation = {
     ...createConversation(),
     id: 'chat:stop-button',
@@ -163,6 +193,7 @@ function seedConversation() {
     updatedAt: 20,
     lastTurnEndedAt: 20,
     items: [{ id: 'message:seed', role: 'user' as const, text: 'Existing message', timestamp: 10 }],
+    ...extra,
   }
   window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
     version: 3,
@@ -171,8 +202,8 @@ function seedConversation() {
   }))
 }
 
-function renderApp(interruptImpl?: () => Promise<boolean>) {
-  const host = createBridge(interruptImpl)
+function renderApp(interruptImpl?: () => Promise<boolean>, options?: BridgeOptions) {
+  const host = createBridge(interruptImpl, options)
   ;(window as unknown as { verboo: unknown }).verboo = host.bridge
   render(<ToastProvider><App /></ToastProvider>)
   return host
@@ -185,6 +216,41 @@ async function startMainTurn(host: ReturnType<typeof createBridge>) {
   const turnId = host.sendTurn.mock.calls[0][0].turnId!
   expect(await screen.findByRole('button', { name: 'Stop main' })).toBeInTheDocument()
   return turnId
+}
+
+function emitPartialResponse(host: ReturnType<typeof createBridge>, turnId: string) {
+  act(() => host.emitAgentEvent({ type: 'stdout', turnId, text: 'Partial response from turn A' }))
+}
+
+function emitUserInterruption(
+  host: ReturnType<typeof createBridge>,
+  turnId: string,
+  category = 'unknown',
+) {
+  act(() => host.emitAgentEvent({
+    type: 'error',
+    turnId,
+    conversationId: 'chat:stop-button',
+    message: 'CLI process interrupted by the user',
+    payload: {
+      category,
+      message: 'CLI process interrupted by the user',
+      details: [],
+      exitCode: 1,
+      recoveryReady: false,
+    },
+    exitCode: 1,
+  }))
+}
+
+function expectTranscriptOrder(...texts: string[]) {
+  const transcript = document.querySelector<HTMLElement>('.transcript')
+  expect(transcript).not.toBeNull()
+  const nodes = texts.map(text => within(transcript!).getByText(text))
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    expect(nodes[index].compareDocumentPosition(nodes[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  }
 }
 
 beforeEach(() => {
@@ -292,6 +358,90 @@ describe('App stop-button turn ownership', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop main' }))
 
     expect(host.interrupt).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('App interruption marker transcript order', () => {
+  it('places a button-stop marker before the queued follow-up bubble', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+    emitPartialResponse(host, turnId)
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await act(async () => {})
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop main' }))
+    await waitFor(() => expect(host.interrupt).toHaveBeenCalledTimes(1))
+    emitUserInterruption(host, turnId)
+
+    await within(document.querySelector<HTMLElement>('.transcript')!).findByText('Turn interrupted by the user.')
+    await waitFor(() => expect(host.sendTurn).toHaveBeenCalledTimes(2))
+    expectTranscriptOrder(
+      'Partial response from turn A',
+      'Turn interrupted by the user.',
+      'Queued follow-up',
+    )
+  })
+
+  it('places an Escape-stop marker before the queued follow-up bubble', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+    emitPartialResponse(host, turnId)
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await act(async () => {})
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(host.interrupt).toHaveBeenCalledTimes(1))
+    emitUserInterruption(host, turnId)
+
+    await within(document.querySelector<HTMLElement>('.transcript')!).findByText('Turn interrupted by the user.')
+    await waitFor(() => expect(host.sendTurn).toHaveBeenCalledTimes(2))
+    expectTranscriptOrder(
+      'Partial response from turn A',
+      'Turn interrupted by the user.',
+      'Queued follow-up',
+    )
+  })
+
+  it('keeps the interruption marker after the partial response when there is no queue', async () => {
+    const host = renderApp()
+    const turnId = await startMainTurn(host)
+    emitPartialResponse(host, turnId)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop main' }))
+    await waitFor(() => expect(host.interrupt).toHaveBeenCalledTimes(1))
+    emitUserInterruption(host, turnId)
+
+    await within(document.querySelector<HTMLElement>('.transcript')!).findByText('Turn interrupted by the user.')
+    expect(host.sendTurn).toHaveBeenCalledTimes(1)
+    expectTranscriptOrder('Partial response from turn A', 'Turn interrupted by the user.')
+  })
+
+  it('re-reads a follow-up queued while rate-limit usage refresh is pending', async () => {
+    const pendingUsage = deferred<ProviderUsageResult[]>()
+    seedConversation({ providerAccountBindings: { claude: 'claude-a' } })
+    const host = renderApp(undefined, { providerAccountsUsage: () => pendingUsage.promise })
+    const turnId = await startMainTurn(host)
+    expect(host.sendTurn.mock.calls[0][0].providerAccount?.accountId).toBe('claude-a')
+    emitPartialResponse(host, turnId)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop main' }))
+    await waitFor(() => expect(host.interrupt).toHaveBeenCalledTimes(1))
+    emitUserInterruption(host, turnId, 'rate_limit')
+    await waitFor(() => expect(host.providerAccountsUsage).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Queue main' }))
+    await act(async () => {})
+    pendingUsage.resolve([])
+    await act(async () => {})
+
+    await within(document.querySelector<HTMLElement>('.transcript')!).findByText('Turn interrupted by the user.')
+    await waitFor(() => expect(host.sendTurn).toHaveBeenCalledTimes(2))
+    expectTranscriptOrder(
+      'Partial response from turn A',
+      'Turn interrupted by the user.',
+      'Queued follow-up',
+    )
   })
 })
 
