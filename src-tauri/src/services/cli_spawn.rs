@@ -204,8 +204,13 @@ pub fn runtime_available() -> bool {
 }
 
 pub fn runtime_missing_error() -> String {
-    "O CLI do Verboo ainda não está pronto. O app baixa e verifica o CLI oficial na primeira inicialização; confira sua conexão e tente novamente. O restante do app continua disponível."
-        .to_string()
+    const GENERIC: &str = "O CLI do Verboo ainda não está pronto. O app baixa e verifica o CLI oficial na primeira inicialização; confira sua conexão e tente novamente. O restante do app continua disponível.";
+    match crate::services::bootstrap_diag::last() {
+        Some(detail) if !detail.is_empty() && !GENERIC.contains(&detail) => {
+            format!("{GENERIC} ({detail})")
+        }
+        _ => GENERIC.to_string(),
+    }
 }
 
 pub fn check_runtime_available() -> Result<(), String> {
@@ -374,11 +379,64 @@ mod tests {
 
     #[test]
     fn missing_error_is_typed_and_does_not_request_a_system_node_install() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
         let message = runtime_missing_error();
         assert!(!message.contains("os error"));
         assert!(!message.contains("npm i -g"));
         assert!(!message.contains("Instale o Node"));
         assert!(message.contains("primeira inicialização"));
+        assert!(!message.contains("HTTP 403"));
+    }
+
+    #[test]
+    fn missing_error_appends_last_bootstrap_detail_when_present() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record(
+            "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip",
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(message.contains("HTTP 403"), "{message}");
+        assert!(message.contains("nodejs.org"), "{message}");
+        crate::services::bootstrap_diag::reset();
+    }
+
+    #[test]
+    fn missing_error_does_not_append_expired_bootstrap_detail() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record_aged(
+            "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip",
+            std::time::Duration::from_secs(61),
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(!message.contains("HTTP 403"), "{message}");
+        crate::services::bootstrap_diag::reset();
+    }
+
+    #[test]
+    fn missing_error_redacts_tokens_from_attached_bootstrap_detail() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record(
+            "download failed token=super-secret-token from https://example.test/file",
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(message.contains("[redacted]"), "{message}");
+        assert!(!message.contains("super-secret-token"), "{message}");
+        crate::services::bootstrap_diag::reset();
     }
 
     #[test]

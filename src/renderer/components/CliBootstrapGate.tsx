@@ -6,6 +6,18 @@ import { useI18n } from '../i18n'
 
 export type CliBootstrapGatePhase = 'checking' | 'installing' | 'error' | 'success'
 
+const OPAQUE_BOOTSTRAP_CODES = new Set(['runtime_install_failed', 'cli_initialization_failed'])
+
+function isOpaqueBootstrapCode(error: string): boolean {
+  let cause = error.trim()
+  for (;;) {
+    const next = cause.replace(/^(CLI|App):\s+/, '').trim()
+    if (next === cause) break
+    cause = next
+  }
+  return OPAQUE_BOOTSTRAP_CODES.has(cause)
+}
+
 /** The gate CARD alone — no fullscreen wrapper. Reused by the post-login
  *  overlay (CliBootstrapGate) and embedded on the login surface, so both
  *  presentations share one markup and one animation source. `actions` render
@@ -32,9 +44,7 @@ export function CliBootstrapCard({
     : phase === 'checking'
       ? 'cliBootstrap.checking'
       : `cliBootstrap.${stage}.${phase}`
-  const errorDetail = error && !error.includes('runtime_install_failed') && !error.includes('cli_initialization_failed')
-    ? error
-    : undefined
+  const errorDetail = error && !isOpaqueBootstrapCode(error) ? error : undefined
 
   return (
     <div className={`cli-bootstrap-card cli-bootstrap-card--${phase}`}>

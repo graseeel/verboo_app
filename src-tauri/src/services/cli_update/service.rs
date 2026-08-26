@@ -480,6 +480,7 @@ impl CliUpdateService {
     }
 
     fn mark_runtime_ready(&self, version: String) {
+        crate::services::bootstrap_diag::clear();
         let mut state = self.lock_state();
         state.snapshot.status = CliUpdateStatus::Idle;
         state.snapshot.current_version = Some(version);
@@ -639,6 +640,8 @@ impl CliUpdateService {
     }
 
     fn fail(&self, error: String, bootstrap: bool) {
+        let error = crate::services::bootstrap_diag::sanitize(&error);
+        crate::services::bootstrap_diag::record(&error);
         let mut state = self.lock_state();
         state.snapshot.status = if bootstrap {
             CliUpdateStatus::BootstrapError
@@ -818,12 +821,19 @@ mod tests {
 
     #[test]
     fn offline_first_run_is_retryable_and_selects_no_runtime() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
         let app_data = tempfile::tempdir().unwrap();
         let source = Arc::new(FixtureSource {
             manifest: Vec::new(),
             signature: String::new(),
             archive: None,
-            error: Some("offline".to_string()),
+            error: Some(
+                "CLI download failed: HTTP 403 from https://github.com/verbeux-ai/code/releases/latest/download/verboo-cli-darwin-arm64.tar.gz"
+                    .to_string(),
+            ),
         });
         let service = service(
             app_data.path(),
@@ -831,10 +841,19 @@ mod tests {
             Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
             source,
         );
-        assert!(service.bootstrap_if_missing().is_err());
+        let error = service.bootstrap_if_missing().unwrap_err();
+        assert!(error.contains("HTTP 403"), "{error}");
+        assert!(error.contains("github.com"), "{error}");
         assert_eq!(service.snapshot().status, CliUpdateStatus::BootstrapError);
-        assert_eq!(service.snapshot().error.as_deref(), Some("offline"));
+        assert_eq!(service.snapshot().error.as_deref(), Some(error.as_str()));
+        assert!(
+            crate::services::bootstrap_diag::last()
+                .as_deref()
+                .is_some_and(|last| last.contains("HTTP 403")),
+            "CLI fail() must record the real error for the login path"
+        );
         assert!(service.store().current().unwrap().is_none());
+        crate::services::bootstrap_diag::reset();
     }
 
     #[cfg(unix)]

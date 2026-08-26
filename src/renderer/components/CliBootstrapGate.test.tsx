@@ -48,6 +48,78 @@ describe('CliBootstrapGate', () => {
     expect(onRetry).toHaveBeenCalledOnce()
   })
 
+  it('shows the real Node download cause next to the friendly copy', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't prepare Verboo")
+    expect(alert).toHaveTextContent('Check your connection and try again')
+    const detail = document.querySelector('.cli-bootstrap-error-detail')
+    expect(detail).toHaveTextContent('HTTP 403')
+    expect(detail).toHaveTextContent('nodejs.org')
+  })
+
+  it('hides exact opaque bootstrap codes after the CLI prefix', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't prepare Verboo")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toBeNull()
+  })
+
+  it('hides a double-prefixed opaque bootstrap code', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: CLI: runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't prepare Verboo")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toBeNull()
+  })
+
+  it('still shows a real diagnostic that mentions an opaque code token', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="cli"
+          error="CLI: receipt rejected; previous status was runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't install the Verboo CLI")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toHaveTextContent('receipt rejected')
+  })
+
   it('confirms that the CLI is ready before the gate disappears', () => {
     render(
       <I18nProvider language="en-US">
