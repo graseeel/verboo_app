@@ -1,4 +1,4 @@
-import { ArrowUp, Mic, MicOff, Paperclip, Target, X } from 'lucide-react'
+import { ArrowUp, Mic, MicOff, Paperclip, Square, Target, X } from 'lucide-react'
 import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentMeta, CustomSlashCommand, SkillSummary, Annotation } from '../../../shared/types'
@@ -43,6 +43,7 @@ type ComposerProps = {
   onDropFiles: (paths: string[], files: File[]) => void
   onRemoveAttachment: (path: string) => void
   onSubmit: (message: string) => void
+  onStop?: () => void
   onPasteFiles: (paths: string[], files: File[]) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   onPetCommand: () => void
@@ -82,6 +83,7 @@ export function Composer({
   onDropFiles,
   onRemoveAttachment,
   onSubmit,
+  onStop,
   onPasteFiles,
   onGoalCommand,
   onPetCommand,
@@ -99,6 +101,7 @@ export function Composer({
   onEditAnnotationComment,
 }: ComposerProps) {
   const { t, language } = useI18n()
+  const stopMode = busy && Boolean(onStop)
   const [internalValue, setInternalValue] = useState('')
   const value = externalValue ?? internalValue
   const setValue = onValueChange ?? setInternalValue
@@ -931,15 +934,21 @@ export function Composer({
         <div className="composer-tools right">
           {rightToolbar}
           <button
-            className="send-button"
-            type="submit"
+            className={`send-button${stopMode ? ' is-stop' : ''}`}
+            type={stopMode ? 'button' : 'submit'}
+            onClick={stopMode ? onStop : undefined}
             // F3: chip de anotação também habilita o envio (mesma regra do
-            // submit acima) — sem isto o botão ficaria morto com anotação e
-            // texto vazio, contradizendo o comportamento exigido.
-            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation' || attachment.kind === 'simulator-annotation') && annotations.length === 0)}
-            title={busy ? t('composer.queue') : t('composer.send')}
+            // submit acima) quando idle. Durante um turno, o controle vira
+            // uma ação de parada independente do conteúdo do campo.
+            // Intencional: stop continua habilitado se as demais ações forem
+            // bloqueadas, pois um processo já em execução ainda deve parar.
+            disabled={!stopMode && (disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation' || attachment.kind === 'simulator-annotation') && annotations.length === 0))}
+            aria-label={stopMode ? t('composer.stop') : t('composer.send')}
+            title={stopMode ? t('composer.stop') : t('composer.send')}
           >
-            <ArrowUp size={17} />
+            {stopMode
+              ? <Square size={13} fill="currentColor" aria-hidden="true" data-testid="composer-stop-icon" />
+              : <ArrowUp size={17} />}
           </button>
         </div>
       </div>

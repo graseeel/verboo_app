@@ -233,6 +233,7 @@ const SIDEBAR_MAX_WIDTH = 420
 const SIDEBAR_COMPACT_WIDTH = 72
 const BOTTOM_STICK_THRESHOLD = 72
 const SCROLL_SETTLE_MS = 360
+const STOP_BUTTON_RELEASE_DELAY_MS = 500
 const DEFAULT_USER_SETTINGS: UserSettings = {
   language: 'en-US',
   theme: 'system',
@@ -529,6 +530,9 @@ export function App() {
   const [runningTurnByConversation, setRunningTurnByConversation] = useState<Record<string, string>>({})
   const runningTurnByConversationRef = useRef<Record<string, string>>({})
   const runningConversations = useMemo(() => new Set(Object.keys(runningTurnByConversation)), [runningTurnByConversation])
+  const [stopLockedConversations, setStopLockedConversations] = useState<Set<string>>(() => new Set())
+  const stopTurnLocksRef = useRef(new Map<string, string>())
+  const stopTurnUnlockTimersRef = useRef(new Map<string, number>())
   const activeTurnId = activeConversationId ? runningTurnByConversation[activeConversationId] : undefined
   const anyRunningTurnId = Object.values(runningTurnByConversation)[0]
   const [performanceWarningDismissed, setPerformanceWarningDismissed] = useState(false)
@@ -1507,6 +1511,11 @@ export function App() {
     sideChatRef.current = sideChat
   }, [sideChat])
 
+  useEffect(() => () => {
+    for (const timer of stopTurnUnlockTimersRef.current.values()) window.clearTimeout(timer)
+    stopTurnUnlockTimersRef.current.clear()
+  }, [])
+
   // Escape may only act on a conversation that is still rendered in the lane
   // that last received focus. Navigation can leave a previous conversation
   // running in the background, so keeping its focus ref would make Esc stop
@@ -1726,7 +1735,14 @@ export function App() {
       if (now - lastEscapeAt.current <= 1300) {
         lastEscapeAt.current = 0
         if (targetConversationId === activeConversationIdRef.current) goalAbortRef.current?.abort()
-        void interruptForUser(targetConversationId)
+        const turnId = runningTurnByConversationRef.current[targetConversationId]
+        // Esc×2 intentionally bypasses the button's short lock so the
+        // existing keyboard interrupt remains immediate and lane-targeted.
+        void interruptForUser(targetConversationId).then(interrupted => {
+          if (!interrupted && turnId && runningTurnByConversationRef.current[targetConversationId] === turnId) {
+            toast(t('composer.stopFailed'), 'error')
+          }
+        })
         // User ESC×2 is deliberate: dismiss the question wizard entirely
         // (not just minimize). The auto-interrupt from presentTurnQuestions
         // does NOT go through this handler — that path must keep the wizard
@@ -3583,6 +3599,56 @@ export function App() {
     const interrupted = await window.verboo.interrupt(conversationId).catch(() => false)
     if (!interrupted && turnId) userInterruptedTurnsRef.current.delete(turnId)
     return interrupted
+  }
+
+  async function stopConversationForUser(conversationId: string): Promise<void> {
+    // Capture the turn identity synchronously with the click. The lock is
+    // stop-only: Esc, automatic question interrupts and video cancel keep
+    // their existing interruptForUser behavior.
+    const turnId = runningTurnByConversationRef.current[conversationId]
+    if (!turnId || runningTurnByConversationRef.current[conversationId] !== turnId) return
+
+    const lockedTurnId = stopTurnLocksRef.current.get(conversationId)
+    if (lockedTurnId === turnId) return
+    if (lockedTurnId) {
+      const unlockTimer = stopTurnUnlockTimersRef.current.get(conversationId)
+      if (unlockTimer !== undefined) {
+        window.clearTimeout(unlockTimer)
+        stopTurnUnlockTimersRef.current.delete(conversationId)
+      }
+      stopTurnLocksRef.current.delete(conversationId)
+    }
+
+    stopTurnLocksRef.current.set(conversationId, turnId)
+    setStopLockedConversations(current => {
+      const next = new Set(current)
+      next.add(conversationId)
+      return next
+    })
+
+    try {
+      const interrupted = await interruptForUser(conversationId)
+      if (!interrupted && runningTurnByConversationRef.current[conversationId] === turnId) {
+        toast(t('composer.stopFailed'), 'error')
+      }
+    } finally {
+      // Product decision: stopping does not remove queued follow-ups. The
+      // short lock blocks repeats for the same turn and transient-idle submit;
+      // a click after A hands over to B is re-armed by the branch above.
+      if (stopTurnLocksRef.current.get(conversationId) !== turnId) return
+      const timer = window.setTimeout(() => {
+        stopTurnUnlockTimersRef.current.delete(conversationId)
+        if (stopTurnLocksRef.current.get(conversationId) !== turnId) return
+        stopTurnLocksRef.current.delete(conversationId)
+        setStopLockedConversations(current => {
+          if (!current.has(conversationId)) return current
+          const next = new Set(current)
+          next.delete(conversationId)
+          return next
+        })
+      }, STOP_BUTTON_RELEASE_DELAY_MS)
+      stopTurnUnlockTimersRef.current.set(conversationId, timer)
+    }
   }
 
   function clearPermissionPromptForTurn(turnId: string) {
@@ -6765,9 +6831,14 @@ export function App() {
         )}
         <SideChatSurface
           sideChat={sideChat}
-          busy={sideChat ? runningConversations.has(sideChat.conversation.id) : false}
+          busy={sideChat
+            ? runningConversations.has(sideChat.conversation.id) || stopLockedConversations.has(sideChat.conversation.id)
+            : false}
           disabled={cliAgentActionsBlocked}
           onSubmit={message => { void sendSideChatMessage(message) }}
+          onStop={() => {
+            if (sideChat) void stopConversationForUser(sideChat.conversation.id)
+          }}
           onClose={closeSideChat}
           onFocusConversation={() => {
             focusedConversationLaneRef.current = 'side'
@@ -7143,6 +7214,9 @@ export function App() {
             onPasteFiles={attachPastedFiles}
             onRemoveAttachment={removeAttachment}
             onSubmit={sendMessage}
+            onStop={() => {
+              if (activeConversationId) void stopConversationForUser(activeConversationId)
+            }}
             onGoalCommand={handleGoalCommand}
             queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId && item.queueVisibility !== 'internal')}
             onQueueSendNow={queueItemId => { void interjectMessage(queueItemId) }}
@@ -7163,7 +7237,9 @@ export function App() {
             }
             value={composerValue}
             onValueChange={setComposerValue}
-            busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
+            busy={activeConversationId
+              ? runningConversations.has(activeConversationId) || stopLockedConversations.has(activeConversationId)
+              : false}
             leftToolbar={
               <AccessSelector
                 value={accessMode}
