@@ -6780,6 +6780,7 @@ export function App() {
                 onPetToggle={togglePet}
                 onPetSizeChange={updatePetSize}
                 browserAvailable={browserAvailable}
+                platform={config.platform}
                 onOpenDashboard={() => window.verboo.openDashboard()}
                 onRefreshProfile={refreshProfile}
                 onManagePlan={() => window.verboo.openSubscriptions()}

@@ -97,6 +97,7 @@ function buildProps(overrides: Partial<SettingsViewProps> = {}): SettingsViewPro
       stableChannelAvailable: true,
     },
     workingDirectory: '/tmp',
+    platform: 'darwin',
     onPetToggle: () => {},
     onPetSizeChange: () => {},
     onOpenDashboard: () => {},
@@ -373,6 +374,50 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     expect(screen.getByRole('button', { name: 'Segurança' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Provedores' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Integrações' })).toBeInTheDocument()
+  })
+})
+
+describe('SettingsView → tray copy per platform (issue #91)', () => {
+  // The tray icon exists on Win/Linux (system tray), but the title text is
+  // macOS-only (`TrayIcon::set_title` is cfg-gated in lib.rs) — so "Expand
+  // MenuBar text" must not render outside darwin, and the visibility toggle
+  // must name the system tray instead of the macOS menu bar.
+  it.each(['linux', 'win32'] as const)('on %s: system tray copy, no macOS-only controls', platform => {
+    renderSettings(buildProps({ platform }))
+
+    expect(screen.getByRole('button', { name: /^Show in system tray/ })).toBeInTheDocument()
+    expect(screen.getByText('Keep Verboo in the system tray when the main window is closed.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Show in menu bar/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Expand MenuBar text/ })).not.toBeInTheDocument()
+  })
+
+  it('on darwin: keeps the macOS menu bar copy and the Expand MenuBar text toggle', () => {
+    renderSettings(buildProps({ platform: 'darwin' }))
+
+    expect(screen.getByRole('button', { name: /^Show in menu bar/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Expand MenuBar text/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Show in system tray/ })).not.toBeInTheDocument()
+  })
+
+  it('on linux in pt-BR: bandeja do sistema copy, nenhuma referência à MenuBar', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <ToastProvider>
+          <SettingsView {...buildProps({ platform: 'linux' })} />
+        </ToastProvider>
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: /^Mostrar na bandeja do sistema/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /barra de menu|MenuBar/i })).not.toBeInTheDocument()
+  })
+
+  it('the tray toggle still fires the settings change on linux', () => {
+    const onUserSettingsChange = vi.fn(async () => {})
+    renderSettings(buildProps({ platform: 'linux', onUserSettingsChange }))
+
+    fireEvent.click(screen.getByRole('button', { name: /^Show in system tray/ }))
+    expect(onUserSettingsChange).toHaveBeenCalledWith({ showInMenuBar: false })
   })
 })
 

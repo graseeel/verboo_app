@@ -58,6 +58,7 @@ export type SettingsViewProps = {
   activeTab: SettingsTab
   userSettings: UserSettings
   browserAvailable: boolean
+  platform: NodeJS.Platform
   petEnabled: boolean
   petSize: number
   profile: ProfileResult
@@ -109,6 +110,7 @@ export function SettingsView({
   activeTab,
   userSettings,
   browserAvailable,
+  platform,
   petEnabled,
   petSize,
   profile,
@@ -144,6 +146,9 @@ export function SettingsView({
   onClose,
 }: SettingsViewProps) {
   const { language, t } = useI18n()
+  // Tray title text is macOS-only (Rust cfg-gates `TrayIcon::set_title`);
+  // on Win/Linux the icon lives in the system tray instead (issue #91).
+  const isMacOS = platform === 'darwin'
   const { toast } = useToast()
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
@@ -377,18 +382,20 @@ export function SettingsView({
 
             <section className="settings-panel">
               <SettingToggle
-                title={t('settings.showMenuBar')}
-                body={t('settings.showMenuBarBody')}
+                title={t(isMacOS ? 'settings.showMenuBar' : 'settings.showTray')}
+                body={t(isMacOS ? 'settings.showMenuBarBody' : 'settings.showTrayBody')}
                 checked={userSettings.showInMenuBar}
                 onChange={showInMenuBar => onUserSettingsChange({ showInMenuBar })}
               />
-              <SettingToggle
-                title={t('settings.showMenuBarText')}
-                body={t('settings.showMenuBarTextBody')}
-                checked={userSettings.showMenuBarText}
-                disabled={!userSettings.showInMenuBar}
-                onChange={showMenuBarText => onUserSettingsChange({ showMenuBarText })}
-              />
+              {isMacOS && (
+                <SettingToggle
+                  title={t('settings.showMenuBarText')}
+                  body={t('settings.showMenuBarTextBody')}
+                  checked={userSettings.showMenuBarText}
+                  disabled={!userSettings.showInMenuBar}
+                  onChange={showMenuBarText => onUserSettingsChange({ showMenuBarText })}
+                />
+              )}
               <SettingToggle
                 title={t('settings.preventSleep')}
                 body={t('settings.preventSleepBody')}
