@@ -226,7 +226,9 @@ jobs:
             libtool \
             nasm \
             zlib1g-dev \
-            xvfb
+            xvfb \
+            squashfs-tools \
+            desktop-file-utils
 
       - name: Install npm dependencies
         run: npm ci
@@ -596,6 +598,106 @@ jobs:
               cargo +1.89.0 tauri signer sign "$PACKAGES"
             done
           fi
+
+      # Issue #80: linuxdeploy packs ubuntu-22.04 libdbus-1.so.3 (1.14.x) into
+      # the AppImage. AppRun's LD_LIBRARY_PATH then makes system dbus-launch
+      # (e.g. Debian 13, dbus 1.16.2) fail with missing LIBDBUS_PRIVATE_1.16.2,
+      # which takes Secret Service down. Strip only that SONAME + its symlinks
+      # so the app uses the system's libdbus. Re-sign: updater sig is on the file.
+      - name: Strip bundled libdbus from AppImage and re-sign
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Pinned appimagetool 1.9.0 (not "continuous") so the packer does
+          # not float under the release job. SHA-256 of the official
+          # x86_64 asset (12632352 bytes), confirmed by independent download
+          # + shasum -a 256 + openssl dgst -sha256.
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: 46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
+          test -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing"; exit 1; }
+
+          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+          APPIMAGE_DIR="$BUNDLE_ROOT/appimage"
+          APPIMAGES=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' | sort -u)
+          APPIMAGE_COUNT=$(printf '%s\n' "$APPIMAGES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$APPIMAGE_COUNT" != "1" ]; then
+            echo "::error::Expected one AppImage to strip, found $APPIMAGE_COUNT"
+            printf '%s\n' "$APPIMAGES"
+            exit 1
+          fi
+          APPIMAGE=$(printf '%s\n' "$APPIMAGES" | sed '/^$/d' | head -1)
+          echo "Stripping libdbus from: $APPIMAGE"
+
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          cp -f "$APPIMAGE" "$WORK/payload.AppImage"
+          chmod +x "$WORK/payload.AppImage"
+
+          # AppImage extract without FUSE (GitHub-hosted runners).
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          (
+            cd "$WORK"
+            if ! ./payload.AppImage --appimage-extract; then
+              echo " --appimage-extract failed; falling back to unsquashfs"
+              OFFSET=$(LC_ALL=C grep -abo --max-count=1 'hsqs' payload.AppImage | head -1 | cut -d: -f1)
+              test -n "${OFFSET:-}" || { echo "::error::Could not locate squashfs offset in AppImage"; exit 1; }
+              unsquashfs -o "$OFFSET" -d squashfs-root payload.AppImage
+            fi
+          )
+          test -d "$WORK/squashfs-root" || { echo "::error::AppImage extract produced no squashfs-root"; exit 1; }
+
+          SONAME_HITS=$(find "$WORK/squashfs-root" -name 'libdbus-1.so.3' -print)
+          if [ -z "$SONAME_HITS" ]; then
+            echo "::error::libdbus-1.so.3 not found inside AppImage (bundler may have stopped packing it). Refusing to ship an unstripped AppImage."
+            echo "dbus-related files present:"
+            find "$WORK/squashfs-root" -iname '*dbus*' -print || true
+            exit 1
+          fi
+
+          echo "Removing bundled libdbus-1 (SONAME + associated symlinks only):"
+          REMOVED_ANY=0
+          while IFS= read -r -d '' lib; do
+            echo "  $lib"
+            ls -l "$lib"
+            rm -f "$lib"
+            REMOVED_ANY=1
+          done < <(find "$WORK/squashfs-root" \( -name 'libdbus-1.so' -o -name 'libdbus-1.so.3' -o -name 'libdbus-1.so.3.*' \) -print0)
+
+          if [ "$REMOVED_ANY" != "1" ]; then
+            echo "::error::libdbus-1.so.3 was found but nothing was removed"
+            exit 1
+          fi
+
+          STILL_THERE=$(find "$WORK/squashfs-root" -name 'libdbus-1.so.3' -print)
+          if [ -n "$STILL_THERE" ]; then
+            echo "::error::libdbus-1.so.3 still present after strip:"
+            printf '%s\n' "$STILL_THERE"
+            exit 1
+          fi
+
+          echo "Downloading appimagetool from $APPIMAGETOOL_URL"
+          test -n "${APPIMAGETOOL_SHA256:-}" || { echo "::error::APPIMAGETOOL_SHA256 is missing"; exit 1; }
+          curl -fsSL -o "$WORK/appimagetool.AppImage" "$APPIMAGETOOL_URL"
+          if ! echo "${APPIMAGETOOL_SHA256}  $WORK/appimagetool.AppImage" | sha256sum -c -; then
+            echo "::error::appimagetool SHA-256 mismatch; refusing to execute an unverified packer (signing secrets are in env)"
+            exit 1
+          fi
+          chmod +x "$WORK/appimagetool.AppImage"
+
+          ARCH=x86_64 "$WORK/appimagetool.AppImage" --no-appstream "$WORK/squashfs-root" "$WORK/stripped.AppImage"
+          test -s "$WORK/stripped.AppImage" || { echo "::error::appimagetool produced an empty AppImage"; exit 1; }
+
+          cp -f "$WORK/stripped.AppImage" "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          rm -f "${APPIMAGE}.sig"
+          cargo +1.89.0 tauri signer sign "$APPIMAGE"
+          test -s "${APPIMAGE}.sig" || { echo "::error::Re-sign produced a missing or empty updater signature"; exit 1; }
+          echo "Stripped and re-signed AppImage: $APPIMAGE"
 
       - name: Create signed macOS DMG with bounded retry
         if: runner.os == 'macOS'
