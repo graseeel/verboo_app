@@ -1298,6 +1298,7 @@ export type CliTerminalFailure = {
   exitCode: number | null
   sessionId?: string
   recoveryReady: boolean
+  technicalDetail?: string
 }
 
 export type AgentEvent =

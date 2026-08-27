@@ -1338,7 +1338,7 @@ impl TurnService {
         };
 
         let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
-        let runtime_label = spawn.runtime.to_string();
+        let runtime = spawn.runtime.clone();
         let working_dir_label = working_directory.clone();
         let mut cmd = spawn.command;
         cmd.current_dir(&working_directory)
@@ -1496,7 +1496,7 @@ impl TurnService {
             let _token_file = _token_file;
             let _sleep_guard = sleep_guard;
             let child_handle = child_handle;
-            let runtime_label = runtime_label;
+            let runtime = runtime;
             let working_dir_label = working_dir_label;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
@@ -1744,8 +1744,10 @@ impl TurnService {
                 Some(code) => format!("exit={code}"),
                 None => "signal".to_string(),
             };
-            let diagnosis =
-                format!("({exit_display}, runtime={runtime_label}, cwd={working_dir_label})");
+            let diagnosis = visible_cli_diagnosis(&exit_display, &runtime);
+            let technical_diagnosis =
+                technical_cli_diagnosis(&exit_display, &runtime, &working_dir_label);
+            eprintln!("[turn_service] cli diagnosis {technical_diagnosis}");
             if let Some(mut failure) = terminal_failure_from_outcome(
                 assistant_error.as_ref(),
                 result_snapshot.as_ref(),
@@ -1753,6 +1755,7 @@ impl TurnService {
                 stderr_text.as_deref(),
                 &diagnosis,
             ) {
+                failure.technical_detail = Some(technical_diagnosis);
                 if failure.category == "authentication_failed" {
                     failure.recovery_ready = injected_oauth_token
                         .as_deref()
@@ -1913,6 +1916,23 @@ struct CliTerminalFailure {
     exit_code: Option<i32>,
     session_id: Option<String>,
     recovery_ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    technical_detail: Option<String>,
+}
+
+fn visible_cli_diagnosis(
+    exit_display: &str,
+    runtime: &crate::services::cli_spawn::CliRuntime,
+) -> String {
+    format!("({exit_display}, runtime={})", runtime.short_label())
+}
+
+fn technical_cli_diagnosis(
+    exit_display: &str,
+    runtime: &crate::services::cli_spawn::CliRuntime,
+    working_dir: &str,
+) -> String {
+    format!("({exit_display}, runtime={runtime}, cwd={working_dir})")
 }
 
 fn is_assistant_error_payload(payload: &serde_json::Value) -> bool {
@@ -2021,6 +2041,7 @@ fn terminal_failure_from_outcome(
         exit_code,
         session_id,
         recovery_ready: false,
+        technical_detail: None,
     })
 }
 
@@ -2030,6 +2051,8 @@ fn infer_terminal_failure_category(normalized: &str) -> &'static str {
         || normalized.contains("invalid or expired token")
         || normalized.contains("oauth session expired")
         || normalized.contains("api error: 401")
+        || normalized.contains("não autenticado no verboo")
+        || normalized.contains("api key inválida ou expirada")
     {
         "authentication_failed"
     } else if normalized.contains("too many tokens")
@@ -4416,6 +4439,38 @@ mod tests {
         assert_eq!(failure.category, "process_error");
         assert!(failure.message.contains("provider process crashed"));
         assert!(failure.message.contains("exit=2"));
+    }
+
+    #[test]
+    fn visible_diagnosis_omits_runtime_paths_and_cwd() {
+        let runtime = crate::services::cli_spawn::CliRuntime::InstalledNode {
+            node_path: std::path::PathBuf::from("/internal/bin/node"),
+            cli_mjs_path: std::path::PathBuf::from("/internal/cli.mjs"),
+            version: "0.15.17".into(),
+        };
+        let visible = visible_cli_diagnosis("exit=1", &runtime);
+        assert!(visible.contains("exit=1"), "{visible}");
+        assert!(!visible.contains("/internal"), "{visible}");
+        assert!(!visible.contains("cwd="), "{visible}");
+        let technical = technical_cli_diagnosis("exit=1", &runtime, "/Users/me/project");
+        assert!(technical.contains("/internal/bin/node"), "{technical}");
+        assert!(technical.contains("cwd=/Users/me/project"), "{technical}");
+    }
+
+    #[test]
+    fn terminal_failure_classifies_portuguese_headless_unauthenticated() {
+        let failure = terminal_failure_from_outcome(
+            None,
+            None,
+            Some(1),
+            Some("Não autenticado no Verboo. Execute `verboo /login` em um terminal interativo antes de usar o modo headless."),
+            "(exit=1, runtime=installed-node)",
+        )
+        .expect("headless CLI auth gate is a terminal failure");
+        assert_eq!(failure.category, "authentication_failed");
+        assert!(failure.message.contains("Não autenticado no Verboo"));
+        assert!(failure.message.contains("exit=1"));
+        assert!(!failure.message.contains("cwd="));
     }
 
     #[test]

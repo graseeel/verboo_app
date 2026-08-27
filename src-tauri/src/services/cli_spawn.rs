@@ -30,6 +30,19 @@ pub enum CliRuntime {
     Missing,
 }
 
+impl CliRuntime {
+    /// User-visible runtime tag. Full `Display` keeps node/cli paths for logs.
+    pub fn short_label(&self) -> String {
+        match self {
+            Self::InstalledNode { version, .. } => {
+                format!("installed-node(version={version})")
+            }
+            Self::DevelopmentOverride { .. } => "development-override".to_string(),
+            Self::Missing => "missing".to_string(),
+        }
+    }
+}
+
 impl fmt::Display for CliRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -247,6 +260,7 @@ pub fn apply_creation_flags(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::services::cli_update::contract::DesktopTarget;
@@ -443,6 +457,32 @@ mod tests {
     fn cli_env_disables_the_upstream_autoupdater() {
         assert!(CliSpawn::cli_env_entries()
             .contains(&("DISABLE_AUTOUPDATER".to_string(), "1".to_string())));
+    }
+
+    #[test]
+    fn short_label_omits_node_and_cli_paths() {
+        let runtime = CliRuntime::InstalledNode {
+            node_path: PathBuf::from("/secret/bin/node"),
+            cli_mjs_path: PathBuf::from("/secret/cli/dist/cli.mjs"),
+            version: "0.15.17".into(),
+        };
+        let short = runtime.short_label();
+        assert_eq!(short, "installed-node(version=0.15.17)");
+        assert!(!short.contains("/secret"), "{short}");
+        let full = runtime.to_string();
+        assert!(full.contains("/secret/bin/node"), "{full}");
+        assert!(full.contains("/secret/cli/dist/cli.mjs"), "{full}");
+    }
+
+    #[test]
+    fn short_label_for_dev_override_and_missing_omits_paths() {
+        let runtime = CliRuntime::DevelopmentOverride {
+            node_path: PathBuf::from("/tmp/node"),
+            cli_mjs_path: PathBuf::from("/tmp/cli.mjs"),
+        };
+        assert_eq!(runtime.short_label(), "development-override");
+        assert!(runtime.to_string().contains("/tmp/node"));
+        assert_eq!(CliRuntime::Missing.short_label(), "missing");
     }
 }
 

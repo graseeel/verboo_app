@@ -18,6 +18,7 @@ describe('CLI authentication failure recovery', () => {
   it('recognizes structured and legacy authentication failures', () => {
     expect(isAuthenticationFailure(recoverableFailure, recoverableFailure.message)).toBe(true)
     expect(isAuthenticationFailure(undefined, 'Failed to authenticate: OAuth session expired')).toBe(true)
+    expect(isAuthenticationFailure(undefined, 'Não autenticado no Verboo. Execute `verboo /login` em um terminal interativo antes de usar o modo headless.')).toBe(true)
     expect(isAuthenticationFailure(undefined, 'API Error: 529 overloaded')).toBe(false)
   })
 
