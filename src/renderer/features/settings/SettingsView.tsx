@@ -264,7 +264,7 @@ export function SettingsView({
                   <Shield size={18} />
                   <span>
                     <strong>{option.title}</strong>
-                    <small>{option.id === 'full' && !userSettings.fullAccessEnabled ? t('access.fullLocked') : option.body}</small>
+                    <small>{option.body}</small>
                   </span>
                   {userSettings.defaultAccessMode === option.id && <Check size={18} />}
                 </button>

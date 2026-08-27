@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
@@ -307,6 +307,35 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     expect(screen.getByRole('button', { name: 'Enable free mode' })).toBeInTheDocument()
     expect(screen.getByText('npm test')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+  })
+
+  it.each([
+    [
+      'en-US' as const,
+      'Free mode',
+      'Run without new approvals in trusted workspaces',
+      'Enable it in Settings > Security to unlock this mode.',
+    ],
+    [
+      'pt-BR' as const,
+      'Modo livre',
+      'Executar sem novas aprovações em workspaces confiáveis',
+      'Ative em Configurações > Segurança para liberar este modo.',
+    ],
+  ])('uses the normal Free mode description instead of the circular hint in Security (%s)', (
+    language,
+    title,
+    description,
+    circularHint,
+  ) => {
+    render(<SettingsTestView
+      language={language}
+      props={buildProps({ activeTab: 'security' as SettingsViewProps['activeTab'] })}
+    />)
+
+    const freeModeRow = screen.getByRole('button', { name: new RegExp(`^${title}`) })
+    expect(within(freeModeRow).getByText(description)).toBeInTheDocument()
+    expect(within(freeModeRow).queryByText(circularHint)).not.toBeInTheDocument()
   })
 
   it('renders Integrations with Chrome, video understanding, custom commands, and browser options', async () => {

@@ -272,7 +272,7 @@ describe('App settings shortcuts', () => {
 
     fireEvent.click(avatar)
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument())
 
@@ -295,16 +295,38 @@ describe('App settings shortcuts', () => {
     expect(screen.getByLabelText('Screen recording in progress')).toBeInTheDocument()
   })
 
-  it('routes the avatar Settings shortcut to Security', async () => {
+  it('opens the avatar Settings shortcut on General by default', async () => {
     fireEvent.click(await renderApp())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
-    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
+  })
+
+  it('opens command-palette Settings on the initial General tab', async () => {
+    await renderApp()
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
+  })
+
+  it('preserves the selected tab when Settings is reopened generically', async () => {
+    fireEvent.click(await renderApp())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    expect(await screen.findByRole('heading', { name: 'Account', level: 1 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Ada/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Account', level: 1 })).toBeInTheDocument()
   })
 
   it('routes the locked Free mode shortcut to Security', async () => {
     await renderApp()
     fireEvent.click(screen.getByRole('button', { name: 'Ask for approval' }))
+    expect(screen.getByText('Enable it in Settings > Security to unlock this mode.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Free mode/ }))
 
     expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()

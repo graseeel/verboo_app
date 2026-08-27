@@ -420,7 +420,7 @@ export function App() {
   const [profileLoading, setProfileLoading] = useState(false)
   const profileRequestGenerationRef = useRef(0)
   const [activeView, setActiveView] = useState<AppView>('chat')
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [entryUnlocked, setEntryUnlocked] = useState(false)
@@ -6640,7 +6640,6 @@ export function App() {
               peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
               onOpenSettings={() => {
-                setSettingsTab('security')
                 setActiveView('settings')
               }}
               onOpenSearch={() => setPaletteOpen(true)}
