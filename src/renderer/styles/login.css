@@ -426,7 +426,7 @@
 .api-login-row,
 .api-key-form {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
@@ -457,7 +457,11 @@
 }
 
 .api-login-row button:disabled,
-.api-key-form button:disabled,
+.api-key-form button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .continue-link {
   width: 100%;
   margin-top: 18px;
