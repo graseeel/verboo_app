@@ -1041,6 +1041,7 @@ const enUS: Record<string, string> = {
 
   'settings.avatarTitle': 'Profile picture',
   'settings.avatarUpload': 'Upload photo',
+  'settings.avatarNoFile': 'No file selected',
   'settings.avatarChoosePreset': 'Choose an icon',
   'settings.avatarReset': 'Reset to initials',
   'settings.avatarUploadErrorSize': 'Image too large. Maximum 10 MB.',
@@ -2590,6 +2591,7 @@ const ptBR: Record<string, string> = {
 
   'settings.avatarTitle': 'Foto de perfil',
   'settings.avatarUpload': 'Enviar foto',
+  'settings.avatarNoFile': 'Nenhum arquivo selecionado',
   'settings.avatarChoosePreset': 'Escolher um ícone',
   'settings.avatarReset': 'Voltar para iniciais',
   'settings.avatarUploadErrorSize': 'Imagem muito grande. Máximo 10 MB.',
