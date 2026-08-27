@@ -103,6 +103,7 @@ import { CommandPalette, paletteIcons, type PaletteAction } from './components/C
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { credentialStoreI18nKey, invokeErrorText } from './features/auth/credentialStoreMessage'
+import { retryValidateAccessUntilUnlocked } from './features/auth/completeCliLogin'
 import { VERBOO_PROVIDER, dedupModels, providerAccountName, providerDisplayName } from './features/models/providerCatalog'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
@@ -6536,8 +6537,10 @@ export function App() {
             // verified) — the event's status snapshot is just a fast
             // hint, never the unlock authority. authChecking shows the
             // "validating" progress on the login screen meanwhile.
+            // Two short retries cover a durable secret-tool/file write
+            // that is not readable on the first listModels.
             if (event.status) setCliAuth(event.status)
-            return validateAccess(true)
+            return retryValidateAccessUntilUnlocked(() => validateAccess(true))
           }}
           cliBootstrap={loginCliBootstrap}
           onCliBootstrapRetry={() => { void runCliBootstrap() }}

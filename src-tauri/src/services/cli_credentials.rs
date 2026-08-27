@@ -595,8 +595,14 @@ fn log_windows_credential_diagnostics(stage: &str, detail: &str) {
     eprintln!("[verboo:credentials:win] {stage}: {detail}");
 }
 
-/// Returns the current username for DPAPI entropy. On Windows:
-/// `%USERNAME%`. On Unix (for testing): `$USER` / `$LOGNAME`.
+/// Returns the current username for DPAPI entropy and the Linux secret-tool
+/// account. On Windows: `%USERNAME%` only (DPAPI entropy must stay stable).
+/// On Unix: `$USER` / `$LOGNAME`, then — on Linux, and in `cargo test` so
+/// the Linux path is exercisable here — the real OS account, matching CLI
+/// `getUsername()` (`process.env.USER || userInfo().username`).
+///
+/// macOS production keychain does **not** call this function
+/// (`read_keychain_blob` / `write_keychain_blob` read USER/LOGNAME inline).
 fn current_username() -> Option<String> {
     if cfg!(target_os = "windows") {
         std::env::var("USERNAME").ok().filter(|s| !s.trim().is_empty())
@@ -605,7 +611,65 @@ fn current_username() -> Option<String> {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                #[cfg(any(target_os = "linux", test))]
+                {
+                    os_username()
+                }
+                #[cfg(not(any(target_os = "linux", test)))]
+                {
+                    None
+                }
+            })
     }
+}
+
+/// Node `os.userInfo().username` on Unix is `getpwuid`. No new crate.
+#[cfg(all(unix, any(target_os = "linux", test)))]
+fn os_username() -> Option<String> {
+    let uid = unsafe { libc::geteuid() };
+    let mut size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    if size <= 0 {
+        size = 4096;
+    }
+    let mut buf = vec![0u8; size as usize];
+    loop {
+        let mut pwd = unsafe { std::mem::zeroed::<libc::passwd>() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut pwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE {
+            let next = buf.len().saturating_mul(2).max(4096);
+            if next == buf.len() {
+                return None;
+            }
+            buf.resize(next, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() || pwd.pw_name.is_null() {
+            return None;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }
+            .to_str()
+            .ok()?
+            .trim();
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name.to_string());
+    }
+}
+
+#[cfg(all(not(unix), test))]
+fn os_username() -> Option<String> {
+    None
 }
 
 /// Builds the PowerShell script for DPAPI `ProtectedData.Unprotect` (read
@@ -1663,5 +1727,74 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    struct UnixUserEnvGuard {
+        user: Option<String>,
+        logname: Option<String>,
+    }
+
+    impl UnixUserEnvGuard {
+        fn capture() -> Self {
+            Self {
+                user: std::env::var("USER").ok(),
+                logname: std::env::var("LOGNAME").ok(),
+            }
+        }
+    }
+
+    impl Drop for UnixUserEnvGuard {
+        fn drop(&mut self) {
+            match self.user.as_deref() {
+                Some(value) => std::env::set_var("USER", value),
+                None => std::env::remove_var("USER"),
+            }
+            match self.logname.as_deref() {
+                Some(value) => std::env::set_var("LOGNAME", value),
+                None => std::env::remove_var("LOGNAME"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn id_un() -> String {
+        let output = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .expect("id -un");
+        assert!(output.status.success(), "id -un failed");
+        String::from_utf8(output.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn current_username_falls_back_to_os_when_user_and_logname_are_unset() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let _env = UnixUserEnvGuard::capture();
+        std::env::remove_var("USER");
+        std::env::remove_var("LOGNAME");
+        let expected = id_un();
+        assert!(
+            !expected.is_empty(),
+            "id -un must yield the real account the CLI writes to secret-tool"
+        );
+        assert_eq!(current_username().as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn current_username_prefers_env_over_os() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let _env = UnixUserEnvGuard::capture();
+        if cfg!(windows) {
+            std::env::set_var("USERNAME", "from-env-user");
+            assert_eq!(current_username().as_deref(), Some("from-env-user"));
+            return;
+        }
+        std::env::set_var("USER", "from-env-user");
+        std::env::remove_var("LOGNAME");
+        assert_eq!(current_username().as_deref(), Some("from-env-user"));
     }
 }

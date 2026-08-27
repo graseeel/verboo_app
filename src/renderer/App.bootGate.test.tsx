@@ -294,7 +294,9 @@ describe('App login — session-invalid boot and revalidation state', () => {
 
     emitLoginEvent({ kind: 'complete', ok: true, status: { loggedIn: true } })
 
-    const alert = await screen.findByRole('alert')
+    // onLoginComplete retries validateAccess twice (500ms + 1500ms) before
+    // LoginScreen can fail the user action and paint the alert.
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 })
     expect(alert.textContent).toContain('Could not complete CLI sign-in.')
     expect(screen.queryByText('No valid Verboo session was found.')).toBeNull()
   })
