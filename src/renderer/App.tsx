@@ -418,11 +418,14 @@ export function App() {
   const [providerRiskNotice, setProviderRiskNotice] = useState<{ provider: string; message: string } | undefined>(undefined)
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
   const [profileLoading, setProfileLoading] = useState(false)
+  const profileRequestGenerationRef = useRef(0)
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [entryUnlocked, setEntryUnlocked] = useState(false)
+  const entryUnlockedRef = useRef(entryUnlocked)
+  entryUnlockedRef.current = entryUnlocked
   const [authChecking, setAuthChecking] = useState(true)
   // PA-37g: structured auth error — the stable `kind` discriminates the
   // empty state ('no-session') from real failures; `message` is display-only.
@@ -1641,11 +1644,7 @@ export function App() {
   }, [questionPromptTurnId])
 
   useEffect(() => {
-    return window.verboo.onRefreshDataRequest(() => {
-      void refreshModels(true)
-      void refreshProfile()
-      void validateAccess(true)
-    })
+    return window.verboo.onRefreshDataRequest(() => void validateAccess(true))
   }, [])
 
   useEffect(() => {
@@ -2187,14 +2186,20 @@ export function App() {
     return validateAccess(true)
   }
 
-  async function refreshProfile() {
+  const refreshProfile = useCallback(async () => {
+    const generation = ++profileRequestGenerationRef.current
     setProfileLoading(true)
     try {
-      setProfile(await window.verboo.getProfile())
+      const nextProfile = await window.verboo.getProfile()
+      if (profileRequestGenerationRef.current === generation) setProfile(nextProfile)
+    } catch (error) {
+      if (profileRequestGenerationRef.current === generation) {
+        setProfile({ status: 'error', error: invokeErrorText(error) })
+      }
     } finally {
-      setProfileLoading(false)
+      if (profileRequestGenerationRef.current === generation) setProfileLoading(false)
     }
-  }
+  }, [])
 
   async function startCliLogin(flowId?: number) {
     // A1: non-blocking — the Rust command spawns the CLI and returns in
@@ -2210,6 +2215,8 @@ export function App() {
   }
 
   async function logout() {
+    profileRequestGenerationRef.current += 1
+    setProfileLoading(false)
     setAuthChecking(true)
     try {
       const result = await window.verboo.logout()
@@ -2236,6 +2243,9 @@ export function App() {
     setAuthChecking(true)
     setAuthError(undefined)
     setAuthErrorDetail(undefined)
+    const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
+    const profileRefreshStarted = entryUnlockedRef.current || Boolean(rememberedSession)
+    if (profileRefreshStarted) void refreshProfile()
 
     try {
       const [credentialStatus, cliStatus, modelDiscovery] = await Promise.all([
@@ -2257,18 +2267,18 @@ export function App() {
       setEntryUnlocked(unlocked)
       if (unlocked) {
         writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, dedupedDiscovery)
-        await refreshProfile()
+        if (!profileRefreshStarted) void refreshProfile()
         return true
       }
 
-      const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
       if (rememberedSession && !isAuthoritativelySignedOut(credentialStatus, cliStatus)) {
         setEntryUnlocked(true)
         setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
-        void refreshProfile()
         return true
       }
 
+      profileRequestGenerationRef.current += 1
+      setProfileLoading(false)
       if (!allowRememberedSession) forgetRememberedAuthSession()
       setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
       return false

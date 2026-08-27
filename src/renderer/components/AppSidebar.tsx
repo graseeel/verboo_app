@@ -415,7 +415,13 @@ export function AppSidebar({
             <AvatarIcon settings={avatarSettings} name={profileName} className="account-avatar" />
             <span>
               <strong>{profileName}</strong>
-              <small>{profile.plan?.name ?? (cliAuth.loggedIn ? t('sidebar.cliConnected') : profile.status === 'unauthenticated' ? t('sidebar.noApiKey') : t('sidebar.planUnavailable'))}</small>
+              <small>
+                {profile.plan?.name ?? (
+                  profile.status === 'unauthenticated' && !cliAuth.loggedIn
+                    ? t('sidebar.noApiKey')
+                    : t('profile.planUnavailable')
+                )}
+              </small>
             </span>
           </span>
           <span className="account-brand">

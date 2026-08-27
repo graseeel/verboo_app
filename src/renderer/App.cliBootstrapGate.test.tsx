@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   CliAuthStatus,
   CredentialStatus,
+  ModelDiscoveryResult,
+  ProfileResult,
   UserSettings,
   UpdateSnapshot,
   WhatsNewAcknowledgeResult,
@@ -80,7 +82,27 @@ const pendingWhatsNew = {
 } satisfies WhatsNewStatus
 
 let updateListener: ((snapshot: UpdateSnapshot) => void) | undefined
+let refreshDataListener: (() => void) | undefined
 let bridge: ReturnType<typeof createBridge>
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(resolvePromise => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+function prepareRememberedSessionWithPendingModels() {
+  const pendingModels = deferred<ModelDiscoveryResult>()
+  window.localStorage.setItem('verboo:last-verified-auth', JSON.stringify({ verifiedAt: Date.now() }))
+  bridge.getUpdateStatus.mockResolvedValue({
+    status: 'idle',
+    channel: 'beta',
+    currentVersion: '0.7.0-beta',
+    cliBootstrapRequired: false,
+  })
+  bridge.listModels.mockReturnValue(pendingModels.promise)
+  return pendingModels
+}
 
 function createBridge() {
   const unsubscribe = () => {}
@@ -95,17 +117,18 @@ function createBridge() {
     getCliAuthStatus: vi.fn<() => Promise<CliAuthStatus>>(
       async () => ({ loggedIn: true, email: 'ada@example.test' }),
     ),
-    listModels: vi.fn(async () => ({
+    listModels: vi.fn<() => Promise<ModelDiscoveryResult>>(async () => ({
       models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
       source: 'api-key',
       stale: false,
     })),
-    getProfile: vi.fn(async () => ({
+    getProfile: vi.fn<() => Promise<ProfileResult>>(async () => ({
       status: 'ready',
       user: { name: 'Ada' },
       summary: { totalTokens: 1, tokensInTotal: 1, tokensOutTotal: 0, reqTotal: 1 },
       plan: { name: 'Pro', status: 'active' },
     })),
+    logout: vi.fn(async () => ({ ok: true, status: { loggedIn: false } })),
     pluginList: vi.fn(async () => []),
     pluginSkills: vi.fn(async () => []),
     getWhatsNewStatus: vi.fn<() => Promise<WhatsNewStatus | undefined>>(async () => undefined),
@@ -120,7 +143,10 @@ function createBridge() {
     }),
     onAgentEvent: vi.fn(() => unsubscribe),
     onVideoOcrRequest: vi.fn(() => unsubscribe),
-    onRefreshDataRequest: vi.fn(() => unsubscribe),
+    onRefreshDataRequest: vi.fn((callback: () => void) => {
+      refreshDataListener = callback
+      return unsubscribe
+    }),
     onTerminalData: vi.fn(() => unsubscribe),
     onTerminalExit: vi.fn(() => unsubscribe),
     onProviderLoginEvent: vi.fn(() => unsubscribe),
@@ -140,6 +166,7 @@ function createBridge() {
 beforeEach(() => {
   window.localStorage.clear()
   updateListener = undefined
+  refreshDataListener = undefined
   bridge = createBridge()
   ;(window as unknown as { verboo: unknown }).verboo = bridge
   vi.stubGlobal('ResizeObserver', TestResizeObserver)
@@ -164,6 +191,146 @@ afterEach(() => {
 })
 
 describe('App first CLI installation gate', () => {
+  it('refreshes the sidebar plan after remembered-session unlock without waiting for model discovery', async () => {
+    const pendingModels = prepareRememberedSessionWithPendingModels()
+    bridge.getProfile.mockResolvedValue({
+      status: 'ready',
+      user: { name: 'upset' },
+      summary: { totalTokens: 1, tokensInTotal: 1, tokensOutTotal: 0, reqTotal: 1 },
+      plan: { name: 'Ultra', status: 'active' },
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('Ultra')).toBeVisible()
+    expect(screen.getByText('upset')).toBeVisible()
+    expect(bridge.getProfile).toHaveBeenCalledTimes(1)
+    expect(bridge.listModels).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingModels.resolve({
+        models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
+        source: 'api-key',
+        stale: false,
+      })
+    })
+    await waitFor(() => expect(bridge.getProfile).toHaveBeenCalledTimes(1))
+
+    act(() => refreshDataListener?.())
+    await waitFor(() => expect(bridge.getProfile).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows the Account unavailable copy when the post-unlock profile refresh fails', async () => {
+    const pendingModels = prepareRememberedSessionWithPendingModels()
+    bridge.getProfile.mockRejectedValue(new Error('profile unavailable'))
+
+    render(<App />)
+
+    await act(async () => {
+      pendingModels.resolve({
+        models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
+        source: 'api-key',
+        stale: false,
+      })
+    })
+    expect(await screen.findByText('ada@example.test')).toBeVisible()
+    expect(await screen.findByText('Plan unavailable')).toBeVisible()
+    expect(bridge.getProfile).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a deferred remembered-session profile invalidated after logout', async () => {
+    prepareRememberedSessionWithPendingModels()
+    const pendingProfile = deferred<ProfileResult>()
+    bridge.getProfile.mockReturnValue(pendingProfile.promise)
+
+    render(<App />)
+
+    await waitFor(() => expect(bridge.getProfile).toHaveBeenCalledTimes(1))
+    fireEvent.click(await screen.findByRole('button', { name: /Profile/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(await screen.findByRole('heading', { name: 'Sign in to Verboo Code' })).toBeVisible()
+
+    await act(async () => {
+      pendingProfile.resolve({
+        status: 'ready',
+        user: { name: 'Previous user', email: 'previous@example.test' },
+        summary: { totalTokens: 1, tokensInTotal: 1, tokensOutTotal: 0, reqTotal: 1 },
+        plan: { name: 'Ultra', status: 'active' },
+      })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Report issue' }))
+
+    expect(screen.getByLabelText('Reply contact')).toHaveValue('')
+  })
+
+  it('discards a deferred remembered-session profile when validation rejects access', async () => {
+    window.localStorage.setItem('verboo:last-verified-auth', JSON.stringify({ verifiedAt: Date.now() }))
+    bridge.getUpdateStatus.mockResolvedValue({
+      status: 'idle',
+      channel: 'beta',
+      currentVersion: '0.7.0-beta',
+      cliBootstrapRequired: false,
+    })
+    bridge.getCredentialStatus.mockResolvedValue({ hasApiKey: false })
+    bridge.getCliAuthStatus.mockResolvedValue({ loggedIn: false })
+    bridge.listModels.mockResolvedValue({
+      models: [],
+      source: 'none',
+      stale: false,
+      error: 'No authenticated provider',
+    })
+    const pendingProfile = deferred<ProfileResult>()
+    bridge.getProfile.mockReturnValue(pendingProfile.promise)
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Sign in to Verboo Code' })).toBeVisible()
+    await waitFor(() => expect(bridge.getProfile).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      pendingProfile.resolve({
+        status: 'ready',
+        user: { name: 'Previous user', email: 'previous@example.test' },
+        summary: { totalTokens: 1, tokensInTotal: 1, tokensOutTotal: 0, reqTotal: 1 },
+        plan: { name: 'Ultra', status: 'active' },
+      })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Report issue' }))
+
+    expect(screen.getByLabelText('Reply contact')).toHaveValue('')
+  })
+
+  it('refreshes profile immediately for an unlocked API-key session without remembered auth', async () => {
+    bridge.getUpdateStatus.mockResolvedValue({
+      status: 'idle',
+      channel: 'beta',
+      currentVersion: '0.7.0-beta',
+      cliBootstrapRequired: false,
+    })
+    bridge.getUserSettings.mockResolvedValue({ ...settings, staySignedIn: false })
+
+    render(<App />)
+
+    expect(await screen.findByText('Pro')).toBeVisible()
+    await waitFor(() => expect(bridge.getProfile).toHaveBeenCalledTimes(1))
+    bridge.getProfile.mockClear()
+    const pendingModels = deferred<ModelDiscoveryResult>()
+    bridge.listModels.mockReturnValue(pendingModels.promise)
+
+    await act(async () => {
+      refreshDataListener?.()
+      await Promise.resolve()
+    })
+
+    expect(bridge.getProfile).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      pendingModels.resolve({
+        models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
+        source: 'api-key',
+        stale: false,
+      })
+    })
+  })
+
   it('starts bootstrap, blocks prompts, keeps Settings usable, then unlocks after verified success', async () => {
     render(<App />)
 
