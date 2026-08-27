@@ -312,16 +312,23 @@ fn normalize_summary(value: &Value) -> Option<ProfileUsageSummary> {
         .or_else(|| number_value(total.get("tokensOut")))
         .or_else(|| number_value(total.get("outputTokens")))
         .or_else(|| number_value(total.get("output_tokens")));
-    let total_tokens = number_value(total.get("totalTokens"))
-        .or_else(|| number_value(total.get("tokensTotal")))
-        .or_else(|| number_value(total.get("tokens")))
-        .or_else(|| {
-            if tokens_in_total.is_some() || tokens_out_total.is_some() {
-                Some(tokens_in_total.unwrap_or(0) + tokens_out_total.unwrap_or(0))
-            } else {
-                None
-            }
-        });
+    // Issue #93: o `totalTokens` cru da API pode replicar o input (Total =
+    // Input, Output ignorado). Com input e output conhecidos, o total é a
+    // soma das partes; o campo cru só vale quando falta o breakdown.
+    let total_tokens = if tokens_in_total.is_some() && tokens_out_total.is_some() {
+        Some(tokens_in_total.unwrap_or(0) + tokens_out_total.unwrap_or(0))
+    } else {
+        number_value(total.get("totalTokens"))
+            .or_else(|| number_value(total.get("tokensTotal")))
+            .or_else(|| number_value(total.get("tokens")))
+            .or_else(|| {
+                if tokens_in_total.is_some() || tokens_out_total.is_some() {
+                    Some(tokens_in_total.unwrap_or(0) + tokens_out_total.unwrap_or(0))
+                } else {
+                    None
+                }
+            })
+    };
     let req_total = number_value(total.get("reqTotal"))
         .or_else(|| number_value(total.get("requests")))
         .or_else(|| number_value(total.get("requestCount")))
@@ -632,6 +639,46 @@ mod tests {
         assert_eq!(s.tokens_out_total, Some(2000));
         assert_eq!(s.total_tokens, Some(3000));
         assert_eq!(s.req_total, Some(50));
+    }
+
+    #[test]
+    fn normalize_summary_total_is_in_plus_out_when_both_present() {
+        // Issue #93: a API da conta pode devolver `totalTokens` replicando o
+        // input (Total 4.9B = Input 4.9B, Output 26.4M ignorado). Quando
+        // input e output são conhecidos, o total exibido deve ser a soma.
+        let v = json!({
+            "total": {
+                "tokensInTotal": 100,
+                "tokensOutTotal": 7,
+                "totalTokens": 100,
+                "reqTotal": 3
+            }
+        });
+        let s = normalize_summary(&v).unwrap();
+        assert_eq!(s.tokens_in_total, Some(100));
+        assert_eq!(s.tokens_out_total, Some(7));
+        assert_eq!(s.total_tokens, Some(107));
+    }
+
+    #[test]
+    fn normalize_summary_falls_back_to_raw_total_without_breakdown() {
+        // Payload sem breakdown: o campo cru continua sendo a fonte do total.
+        let v = json!({"total": {"totalTokens": 3000, "reqTotal": 9}});
+        let s = normalize_summary(&v).unwrap();
+        assert_eq!(s.tokens_in_total, None);
+        assert_eq!(s.tokens_out_total, None);
+        assert_eq!(s.total_tokens, Some(3000));
+        assert_eq!(s.req_total, Some(9));
+    }
+
+    #[test]
+    fn normalize_summary_unilateral_input_sums_with_missing_output() {
+        // Só input conhecido, sem totalTokens cru: total = input + 0.
+        let v = json!({"total": {"tokensInTotal": 100}});
+        let s = normalize_summary(&v).unwrap();
+        assert_eq!(s.tokens_in_total, Some(100));
+        assert_eq!(s.tokens_out_total, None);
+        assert_eq!(s.total_tokens, Some(100));
     }
 
     #[test]
