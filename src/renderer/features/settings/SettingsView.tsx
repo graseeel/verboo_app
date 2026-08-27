@@ -46,6 +46,7 @@ import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
 import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
+import { credentialStoreI18nKey, invokeErrorText } from '../auth/credentialStoreMessage'
 import type { ProviderAccountsController } from './useProviderAccounts'
 import type { ExternalProviderId } from '../../../shared/types'
 
@@ -188,8 +189,10 @@ export function SettingsView({
       await onSaveApiKey(apiKey)
       setApiKey('')
       toast(t('toast.apiKeySaved'))
-    } catch {
-      toast(t('toast.apiKeyInvalid'), 'error')
+    } catch (error) {
+      const text = invokeErrorText(error)
+      const storeKey = credentialStoreI18nKey(text)
+      toast(t(storeKey ?? 'toast.apiKeyInvalid'), 'error')
     } finally {
       setSaving(false)
     }
@@ -610,6 +613,9 @@ export function SettingsView({
                   {saving ? t('common.saving') : t('common.save')}
                 </button>
               </div>
+              {credentialStoreI18nKey(credentials.warning) && (
+                <p className="settings-warning">{t(credentialStoreI18nKey(credentials.warning)!)}</p>
+              )}
               {modelResult.error && <p className="settings-warning">{modelSettingsMessage(modelResult.error, t)}</p>}
               <SettingToggle
                 title={t('login.staySignedIn')}

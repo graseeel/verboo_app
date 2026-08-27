@@ -391,21 +391,36 @@ fn write_file_blob(blob: &Value) -> bool {
     let Some(path) = cli_credentials_file_path() else {
         return false;
     };
+    write_file_blob_to(&path, blob)
+}
+
+/// Path-injected write so tests can prove a missing `~/.verboo` is created
+/// (issue #83 ENOENT). Used on Linux and as the Windows DPAPI fallback.
+fn write_file_blob_to(path: &std::path::Path, blob: &Value) -> bool {
     let Ok(json) = serde_json::to_string_pretty(blob) else {
         return false;
     };
     let Some(parent) = path.parent() else {
         return false;
     };
-    let _ = std::fs::create_dir_all(parent);
-
-    if std::fs::write(&path, json).is_err() {
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!(
+            "[verboo:cli-creds] plaintext parent dir create FAILED ({}): {e}",
+            parent.display()
+        );
+        return false;
+    }
+    if let Err(e) = std::fs::write(path, json) {
+        eprintln!(
+            "[verboo:cli-creds] plaintext file write FAILED ({}): {e}",
+            path.display()
+        );
         return false;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     true
 }
@@ -1630,5 +1645,23 @@ mod tests {
             ["lookup", "service", "Verboo Code-credentials", "account", "dev"]
         );
         assert_eq!(blob["verbooOauth"]["accessToken"], "token");
+    }
+
+    #[test]
+    fn plaintext_write_creates_missing_parent_dir_and_0600_file() {
+        let home = tempfile::TempDir::new().unwrap();
+        let config_home = home.path().join(".verboo");
+        assert!(!config_home.exists(), "HOME must start without ~/.verboo");
+        let path = config_home.join(".credentials.json");
+        let blob = serde_json::json!({"verbooOauth":{"accessToken":"tok"}});
+        assert!(write_file_blob_to(&path, &blob));
+        assert!(config_home.is_dir(), "plaintext write must create ~/.verboo");
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 }

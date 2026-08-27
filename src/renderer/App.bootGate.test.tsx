@@ -353,6 +353,29 @@ describe('T5: a rejected Rust command surfaces a banner and never sticks the log
     expect(screen.getByText('Mostrar detalhes técnicos')).toBeTruthy()
     expect(screen.queryByText('Verificando sessão local do Verboo...')).toBeNull()
   })
+
+  it('pt-BR: getCredentialStatus rejecting with secret_service_unavailable uses the full i18n headline, never the raw code', async () => {
+    settingsStore = { ...baseSettings(), language: 'pt-BR' }
+    const bridge = createLockedBridge()
+    bridge.getCredentialStatus = vi.fn(async () => {
+      throw new Error('secret_service_unavailable')
+    })
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    render(<App />)
+
+    const retry = await screen.findByRole('button', { name: /Já autentiquei/ })
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(retry)
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: /Já autentiquei/ }) as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('coleção Default')
+    expect(alert.textContent).not.toContain('secret_service_unavailable')
+    expect(alert.textContent).not.toContain('Não foi possível verificar sua sessão do Verboo.')
+    expect(alert.querySelector('details')).toBeNull()
+  })
 })
 
 describe('healthy CLI bootstrap on the login surface (win32/darwin/linux)', () => {

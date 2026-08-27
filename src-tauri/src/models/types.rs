@@ -570,6 +570,11 @@ pub struct AppConfig {
 pub struct CredentialStatus {
     pub has_api_key: bool,
     pub api_key_hint: Option<String>,
+    /// Stable IPC code (`secret_service_file_fallback` /
+    /// `secret_service_unavailable`). The renderer localizes it; never a
+    /// mixed PT/EN sentence. Absent on macOS/Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

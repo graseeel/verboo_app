@@ -402,3 +402,35 @@ describe('SettingsView → T11: aba Provedores (ordem do dono — provedores sae
     expect(onProviderConnect).toHaveBeenCalledWith('codex')
   })
 })
+
+describe('SettingsView → Secret Service IPC codes (issue #83)', () => {
+  it('save reject maps to the i18n toast and credentials.warning renders the fallback note', async () => {
+    const onSaveApiKey = vi.fn(() => Promise.reject(new Error('secret_service_unavailable')))
+    render(
+      <SettingsTestView
+        language="pt-BR"
+        props={buildProps({
+          activeTab: 'account' as SettingsViewProps['activeTab'],
+          credentials: {
+            hasApiKey: true,
+            apiKeyHint: 'vbk_…key1',
+            warning: 'secret_service_file_fallback',
+          },
+          onSaveApiKey,
+        })}
+      />,
+    )
+
+    const warning = document.querySelector('.settings-warning')
+    expect(warning?.textContent).toContain('arquivo local')
+    expect(warning?.textContent).not.toContain('secret_service_file_fallback')
+
+    fireEvent.change(screen.getByLabelText('Chave API'), { target: { value: 'vbk_test_key_long' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Salvar$/ }))
+
+    const toast = await screen.findByRole('status')
+    expect(toast.textContent).toContain('coleção Default')
+    expect(toast.textContent).not.toContain('secret_service_unavailable')
+    expect(toast.textContent).not.toContain('Não foi possível validar a API key')
+  })
+})

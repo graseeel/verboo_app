@@ -102,6 +102,7 @@ import { CliBootstrapGate } from './components/CliBootstrapGate'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
+import { credentialStoreI18nKey, invokeErrorText } from './features/auth/credentialStoreMessage'
 import { VERBOO_PROVIDER, dedupModels, providerAccountName, providerDisplayName } from './features/models/providerCatalog'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
@@ -2278,8 +2279,13 @@ export function App() {
       // Surface a friendly headline and stash the raw cause behind a
       // details toggle. Never re-throw: the caller (checkExistingAuth)
       // owns the status-message lifecycle.
-      setAuthError({ kind: 'error', message: translate('login.sessionCheckFailed') })
-      setAuthErrorDetail(error instanceof Error ? error.message : String(error))
+      const text = invokeErrorText(error) ?? String(error)
+      const storeKey = credentialStoreI18nKey(text)
+      setAuthError({
+        kind: 'error',
+        message: storeKey ? translate(storeKey) : translate('login.sessionCheckFailed'),
+      })
+      setAuthErrorDetail(storeKey ? undefined : (error instanceof Error ? error.message : String(error)))
       return false
     } finally {
       setAuthChecking(false)

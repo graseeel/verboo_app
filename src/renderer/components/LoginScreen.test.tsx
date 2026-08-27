@@ -670,6 +670,32 @@ describe('LoginScreen — PA-37 state rules (empty state, one error, swap)', () 
     expect(screen.getByLabelText(/Chave de API Verboo/)).toBeTruthy()
   })
 
+  it('a Secret Service IPC code shows the full pt-BR actionable message, never mixed PT/EN details', async () => {
+    const props = makeProps({
+      onSaveApiKey: vi.fn(() => Promise.reject(new Error('secret_service_unavailable'))),
+    })
+    renderLogin(props)
+
+    fireEvent.click(screen.getByRole('button', { name: /Usar chave de API/ }))
+    fireEvent.change(screen.getByLabelText(/Chave de API Verboo/), { target: { value: 'vk_test_123' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Salvar$/ }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('coleção Default')
+    expect(alert.textContent).not.toContain('Falha ao')
+    expect(alert.textContent).not.toContain('Secret Service')
+    expect(alert.textContent).not.toContain('no result found')
+    expect(alert.querySelector('details')).toBeNull()
+  })
+
+  it('file-fallback warning on credentials is a localized note, not a mixed error', () => {
+    renderLogin(makeProps({
+      credentials: { hasApiKey: true, apiKeyHint: 'vbk_…key1', warning: 'secret_service_file_fallback' },
+    }))
+    expect(screen.getByRole('status').textContent).toContain('arquivo local')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('an API key save returning false shows persistent localized feedback', async () => {
     renderLogin(makeProps({
       onSaveApiKey: vi.fn(() => Promise.resolve(false)),

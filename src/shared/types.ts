@@ -859,6 +859,8 @@ export type TokenRateSnapshot = {
 export type CredentialStatus = {
   hasApiKey: boolean
   apiKeyHint?: string
+  /** Stable code from Rust (`secret_service_file_fallback` / `secret_service_unavailable`). */
+  warning?: string
 }
 
 export type CliAuthStatus = {

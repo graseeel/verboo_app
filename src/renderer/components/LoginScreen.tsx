@@ -7,6 +7,7 @@ import wordmarkUrl from '../../../assets/branding/verboo-wordmark.png'
 import { LanguageSelector } from '../features/language/LanguageSelector'
 import { useI18n } from '../i18n'
 import { CliBootstrapCard } from './CliBootstrapGate'
+import { credentialStoreI18nKey, invokeErrorText } from '../features/auth/credentialStoreMessage'
 
 /** authoritative CLI bootstrap state as seen by THIS surface. While
  *  it is not 'ready', CLI login actions are latched (the runtime may not
@@ -348,12 +349,7 @@ export function LoginScreen({
 
   function failUserAction(id: number | undefined, source: UserAuthAction, error?: unknown) {
     if (id === undefined) return
-    const detail =
-      typeof error === 'string'
-        ? error
-        : error instanceof Error
-          ? error.message
-          : undefined
+    const detail = invokeErrorText(error)
     setUserAction(current => current?.id === id ? { id, source, phase: 'failed', detail } : current)
   }
 
@@ -533,12 +529,17 @@ export function LoginScreen({
       ? authError.message
       : undefined
   const failedUserAction = userAction?.phase === 'failed' ? userAction : undefined
+  const actionStoreKey = credentialStoreI18nKey(failedUserAction?.detail)
   const userActionHeadline = failedUserAction
     ? failedUserAction.source === 'cli-login'
       ? t('login.cliLoginFailed')
       : failedUserAction.source === 'api-key'
-        ? t('login.apiKeyInvalid')
-        : t('login.sessionCheckFailed')
+        ? (actionStoreKey ? t(actionStoreKey) : t('login.apiKeyInvalid'))
+        : actionStoreKey
+          ? t(actionStoreKey)
+          : authError?.kind === 'error'
+            ? authError.message
+            : t('login.sessionCheckFailed')
     : undefined
   // PA-47: the modelResult.error fallback (raw first-failure text) must
   // NEVER paint while a passive verification is in flight (`checking`) —
@@ -562,7 +563,7 @@ export function LoginScreen({
       ? {
           key: `action:${failedUserAction.id}`,
           headline: userActionHeadline,
-          detail: failedUserAction.detail ?? (authError?.kind === 'error' ? authErrorDetail : undefined),
+          detail: actionStoreKey ? undefined : (failedUserAction.detail ?? (authError?.kind === 'error' ? authErrorDetail : undefined)),
           retry: failedUserAction.source === 'api-key'
             ? undefined
             : failedUserAction.source === 'cli-login'
@@ -602,6 +603,9 @@ export function LoginScreen({
 
         {/* PA-37: the empty state is a neutral note — NEVER a red banner. */}
         {emptyStateNote && <p className="login-empty">{emptyStateNote}</p>}
+        {credentialStoreI18nKey(credentials.warning) && (
+          <p className="login-note" role="status">{t(credentialStoreI18nKey(credentials.warning)!)}</p>
+        )}
 
         {/* PA-37/A1: ONE real failure at a time, inline above the primary,
             with a retry. The raw technical cause lives behind a details
