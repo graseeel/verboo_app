@@ -954,6 +954,60 @@ describe('BrowserPanel', () => {
     expect(invoke).not.toHaveBeenCalledWith('browser_tab_create', expect.anything())
     expect(invoke).not.toHaveBeenCalledWith('browser_tab_navigate', expect.anything())
   })
+
+  function untitledBlankSession(): BrowserSessionSnapshot {
+    const session = sessionWithTabs('tab-a', 'tab-a')
+    Object.assign(session.tabs[0], { url: 'about:blank', title: '' })
+    return session
+  }
+
+  it('labels an untitled about:blank tab as New tab, not blank', () => {
+    const session = untitledBlankSession()
+    renderPanel({ session, activeTab: session.tabs[0] })
+    expect(screen.getByRole('tab', { name: 'New tab' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'blank' })).not.toBeInTheDocument()
+  })
+
+  it('labels an untitled about:blank tab as Nova aba in pt-BR', () => {
+    const session = untitledBlankSession()
+    render(
+      <I18nProvider language="pt-BR">
+        <div className="app-layout">
+          <BrowserPanel
+            browserOpen
+            browserWidth={680}
+            annotationMode="idle"
+            onSetWidth={() => {}}
+            onClose={() => {}}
+            onTogglePencil={() => {}}
+            onToggleArrow={() => {}}
+            onAddAnnotation={() => {}}
+            onNavigationHandled={() => {}}
+            onReloadSnapshot={() => {}}
+            onReloadHandled={() => {}}
+            minWidth={520}
+            maxWidth={864}
+            session={session}
+            activeTab={session.tabs[0]}
+            onCreateTab={() => Promise.resolve(session)}
+            onActivateTab={() => {}}
+            onNavigateTab={() => Promise.resolve(session)}
+            onCloseTab={() => {}}
+          />
+        </div>
+      </I18nProvider>,
+    )
+    expect(screen.getByRole('tab', { name: 'Nova aba' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'blank' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a document title on about:blank instead of the new-tab label', () => {
+    const session = untitledBlankSession()
+    Object.assign(session.tabs[0], { title: 'Start page' })
+    renderPanel({ session, activeTab: session.tabs[0] })
+    expect(screen.getByRole('tab', { name: 'Start page' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'New tab' })).not.toBeInTheDocument()
+  })
 })
 
 // T4 (field report: "I have no idea what that little cursor does") — the

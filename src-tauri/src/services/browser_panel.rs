@@ -3697,4 +3697,66 @@ mod tests {
         assert!(!setup.contains("start_runtime_smoke"));
         assert!(source.contains("tauri::RunEvent::MainEventsCleared"));
     }
+
+    /// Issue #87: Tauri's Linux `WindowChild` always `build_gtk`s into
+    /// `default_vbox` (`GtkBox`). Wry only honors `set_bounds` under
+    /// `GtkFixed` (`is_in_fixed_parent`). This host cannot instantiate
+    /// WebKitGTK, so the seam is the vendored source contract — same
+    /// pattern as `windows_browser_tabs_keep_the_webview2_environment_on_the_ui_thread`.
+    ///
+    /// Limit: this does not prove allocation on a real `.deb`. Field gate
+    /// in the impact map still applies.
+    #[test]
+    fn linux_child_webview_in_populated_gtk_box_uses_overlay_fixed() {
+        let source = include_str!("../../vendor/wry/src/webkitgtk/mod.rs").replace("\r\n", "\n");
+        let start = source
+            .find("const BOUNDS_OVERLAY_NAME")
+            .expect("named overlay const");
+        let end = source[start..]
+            .find("\n  fn attach_ipc_handler")
+            .map(|offset| start + offset)
+            .expect("add_to_container end");
+        let add = &source[start..end];
+
+        assert!(
+            add.contains("gtk::Overlay"),
+            "a second webview in GtkBox must overlay, not pack_start-split the main webview"
+        );
+        assert!(
+            add.contains("gtk::Fixed") && add.contains("wry-bounds-fixed"),
+            "child webviews must live under a named GtkFixed so set_bounds applies"
+        );
+        assert!(
+            add.contains("set_overlay_pass_through"),
+            "the Fixed overlay must pass events through empty space to the main webview"
+        );
+        assert!(
+            add.contains("ensure_bounds_fixed") && add.contains("put_in_fixed"),
+            "the GtkBox child path must put into GtkFixed so is_in_fixed_parent is true"
+        );
+        assert!(
+            add.contains("put_in_fixed(&fixed, webview, attributes);\n      true"),
+            "the GtkBox child path must return true so set_bounds gates on is_in_fixed_parent"
+        );
+        assert!(
+            add.contains("pack_start(webview, true, true, 0);\n        return false;"),
+            "the empty-box path must return false (window-content webview, not bounds-fixed)"
+        );
+
+        let bounds_start = source.find("pub fn set_bounds").expect("set_bounds");
+        let bounds_end = source[bounds_start..]
+            .find("\n  #[cfg(feature = \"x11\")]\n  fn set_visible_x11")
+            .or_else(|| source[bounds_start..].find("\n  fn set_visible_x11"))
+            .map(|offset| bounds_start + offset)
+            .expect("set_bounds end");
+        let set_bounds = &source[bounds_start..bounds_end];
+        let fixed_apply = set_bounds
+            .split("if self.is_in_fixed_parent")
+            .nth(1)
+            .expect("set_bounds must still gate on is_in_fixed_parent");
+        assert!(
+            fixed_apply.contains("move_"),
+            "set_bounds must gtk_fixed_move so the next parent allocate keeps x/y"
+        );
+    }
 }

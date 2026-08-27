@@ -671,7 +671,7 @@ export function BrowserPanel({
       {/* Tab bar */}
       <div className="browser-tabs" role="tablist" aria-label={t('browser.tabs')}>
         {session.tabs.map(tab => {
-          const tabLabel = browserTabLabel(tab.url, tab.title)
+          const tabLabel = browserTabLabel(tab.url, tab.title, t('browser.newTab'))
           const isEvicted = tab.evicted
           const evictedHint = isEvicted ? t('browser.evictedTabHint') : undefined
           return (
@@ -847,10 +847,13 @@ function normalizeBrowserUrl(rawValue: string): string | null {
   }
 }
 
-function browserTabLabel(url: string, title?: string): string {
+function browserTabLabel(url: string, title: string | undefined, blankLabel: string): string {
   if (title) return title
   try {
     const parsed = new URL(url)
+    if (parsed.protocol === 'about:' && parsed.pathname.replace(/^\//, '') === 'blank') {
+      return blankLabel
+    }
     return parsed.hostname || parsed.pathname || parsed.protocol.replace(':', '')
   } catch {
     return url
