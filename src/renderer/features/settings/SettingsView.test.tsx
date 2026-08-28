@@ -5,7 +5,7 @@ import { I18nProvider } from '../../i18n'
 import { ToastProvider } from '../../components/Toast'
 import { SettingsView } from './SettingsView'
 import type { SettingsViewProps } from './SettingsView'
-import type { ProviderAuthStatus, UserSettings } from '../../../shared/types'
+import type { ProviderAuthStatus, UpdateSnapshot, UserSettings } from '../../../shared/types'
 
 /**
  * SettingsView render test — the sound master switch. The user ordered
@@ -506,5 +506,134 @@ describe('SettingsView → Secret Service IPC codes (issue #83)', () => {
     expect(toast.textContent).toContain('coleção Default')
     expect(toast.textContent).not.toContain('secret_service_unavailable')
     expect(toast.textContent).not.toContain('Não foi possível validar a API key')
+  })
+})
+
+describe('SettingsView → update check feedback (issue #94)', () => {
+  // Bug: clicking "Check for updates" showed NOTHING — no spinner, no
+  // perceivable result (the final text was byte-identical to the pre-click
+  // one), and a rejected invoke stayed silent. These tests pin the visible
+  // state machine: checking / up-to-date / error / new version, plus the
+  // channel copy on a beta build.
+  const snap = (over: Partial<UpdateSnapshot>): UpdateSnapshot => ({
+    status: 'not-available',
+    channel: 'stable',
+    currentVersion: '0.6.2',
+    stableChannelAvailable: true,
+    ...over,
+  })
+
+  const buildUpdateProps = (
+    channel: UserSettings['updates']['channel'],
+    overrides: Partial<SettingsViewProps> = {},
+  ): SettingsViewProps => {
+    const props = buildProps(overrides)
+    return {
+      ...props,
+      userSettings: {
+        ...props.userSettings,
+        updates: { ...props.userSettings.updates, channel },
+      },
+    }
+  }
+
+  it('checking: button gets a spinner, disables, and the status line announces the check', () => {
+    renderSettings(buildProps({ updateSnapshot: snap({ status: 'checking' }) }))
+
+    const button = screen.getByRole('button', { name: 'Checking...' })
+    expect(button).toBeDisabled()
+    expect(button.querySelector('.t-spin')).not.toBeNull()
+    expect(screen.getByText('Checking GitHub Releases...')).toBeInTheDocument()
+  })
+
+  it('up-to-date: the result is PERCEIVABLE — the last-checked time appears under the summary', () => {
+    renderSettings(buildProps({
+      updateSnapshot: snap({ status: 'not-available', lastCheckedAt: Date.UTC(2026, 7, 27, 12, 0) }),
+    }))
+
+    expect(screen.getByText('Version 0.6.2 is current.')).toBeInTheDocument()
+    expect(screen.getByText(/Last checked:/)).toBeInTheDocument()
+  })
+
+  it('error (network/404): the generic label AND the raw reason both render', () => {
+    renderSettings(buildProps({
+      updateSnapshot: snap({ status: 'error', error: 'HTTP 404 from updater endpoint' }),
+    }))
+
+    expect(screen.getByText('Could not check for updates.')).toBeInTheDocument()
+    expect(screen.getByText('HTTP 404 from updater endpoint')).toHaveClass('settings-warning')
+  })
+
+  it('new version: shows the available version and the download action', () => {
+    renderSettings(buildProps({
+      updateSnapshot: snap({ status: 'available', availableVersion: '0.7.0', target: 'app' }),
+    }))
+
+    expect(screen.getByText('Version 0.7.0 is available.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download update' })).toBeInTheDocument()
+  })
+
+  it('a rejected check invoke is NEVER silent — the reason reaches the updates section', async () => {
+    const onCheckForUpdates = vi.fn(() => Promise.reject(new Error('network unreachable')))
+    renderSettings(buildProps({ onCheckForUpdates }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    expect(await screen.findByText(/Could not check for updates\./)).toBeInTheDocument()
+    expect(await screen.findByText(/network unreachable/)).toHaveClass('settings-warning')
+  })
+
+  it('a fresh snapshot after a rejected check clears the stale error and unlocks checking', async () => {
+    let rerender!: ReturnType<typeof renderSettings>['rerender']
+    const onCheckForUpdates = vi.fn(() => {
+      rerender(<SettingsTestView props={buildProps({
+        updateSnapshot: snap({ status: 'checking' }),
+        onCheckForUpdates,
+      })} />)
+      return Promise.reject(new Error('IPC unavailable'))
+    })
+    const view = renderSettings(buildProps({ onCheckForUpdates }))
+    rerender = view.rerender
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    expect(await screen.findByText(/IPC unavailable/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Checking...' })).toBeDisabled()
+
+    rerender(<SettingsTestView props={buildProps({
+      updateSnapshot: snap({ status: 'not-available', lastCheckedAt: Date.UTC(2026, 7, 27, 12, 1) }),
+      onCheckForUpdates,
+    })} />)
+
+    await waitFor(() => expect(screen.queryByText(/IPC unavailable/)).toBeNull())
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeEnabled()
+  })
+
+  it.each([
+    ['en-US' as const, 'This is a Beta build — Stable unlocks when the first stable release ships.'],
+    ['pt-BR' as const, 'Este build é Beta — o canal Estável é liberado quando a primeira versão estável for lançada.'],
+  ])('channel copy acknowledges the beta build instead of the confusing placeholder (%s)', (language, copy) => {
+    render(<SettingsTestView
+      language={language}
+      props={buildUpdateProps('beta', {
+        updateSnapshot: snap({ channel: 'beta', stableChannelAvailable: false }),
+      })}
+    />)
+
+    expect(screen.getByText(copy)).toBeInTheDocument()
+  })
+
+  it('does not label a Stable-channel user as a Beta build when Stable availability is false', () => {
+    renderSettings(buildUpdateProps('stable', {
+      updateSnapshot: snap({ stableChannelAvailable: false }),
+    }))
+
+    expect(screen.queryByText('This is a Beta build — Stable unlocks when the first stable release ships.')).toBeNull()
+  })
+
+  it('does not show Beta-channel availability copy before the first update snapshot exists', () => {
+    renderSettings(buildUpdateProps('beta', { updateSnapshot: undefined }))
+
+    expect(screen.queryByText('This is a Beta build — Stable unlocks when the first stable release ships.')).toBeNull()
   })
 })

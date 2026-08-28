@@ -8,6 +8,7 @@ import {
   Ghost,
   KeyRound,
   Languages,
+  Loader2,
   Moon,
   Palette,
   RefreshCcw,
@@ -152,6 +153,9 @@ export function SettingsView({
   const { toast } = useToast()
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
+  // Issue #94: a rejected check_for_updates invoke never reaches the snapshot
+  // stream — without local state the failure would be silent.
+  const [updateCheckError, setUpdateCheckError] = useState<string | undefined>(undefined)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: ComponentType<{ size?: number }> }> = [
@@ -187,6 +191,10 @@ export function SettingsView({
   useEffect(() => {
     setCustomDraft(userSettings.customInstructions)
   }, [userSettings.customInstructions])
+
+  useEffect(() => {
+    setUpdateCheckError(undefined)
+  }, [updateSnapshot])
 
   async function submitApiKey() {
     setSaving(true)
@@ -521,7 +529,7 @@ export function SettingsView({
                     {t('updates.beta')}
                   </ChoiceChip>
                 </div>
-                {!updateSnapshot?.stableChannelAvailable && (
+                {userSettings.updates.channel !== 'stable' && updateSnapshot?.stableChannelAvailable === false && (
                   <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-muted)' }}>
                     {t('updates.stableDisabled')}
                   </p>
@@ -531,10 +539,22 @@ export function SettingsView({
                 <div className="settings-action-row">
                   <button
                     className="button button-sm button-secondary"
-                    onClick={() => onCheckForUpdates(true)}
+                    onClick={() => {
+                      setUpdateCheckError(undefined)
+                      void onCheckForUpdates(true).catch((error: unknown) => {
+                        setUpdateCheckError(error instanceof Error ? error.message : String(error))
+                      })
+                    }}
                     disabled={updateSnapshot?.status === 'checking'}
                   >
-                    {updateSnapshot?.status === 'checking' ? t('updates.checking') : t('updates.check')}
+                    {updateSnapshot?.status === 'checking' ? (
+                      <>
+                        <Loader2 size={14} className="t-spin" />
+                        {t('updates.checking')}
+                      </>
+                    ) : (
+                      t('updates.check')
+                    )}
                   </button>
                   {updateSnapshot?.status === 'available' && updateSnapshot.channel === userSettings.updates.channel && (
                     <button className="button button-sm" onClick={() => onDownloadUpdate()}>
@@ -560,13 +580,24 @@ export function SettingsView({
                     {updateSummary(updateSnapshot, t)}
                   </p>
                 )}
+                {updateSnapshot && updateSnapshot.status !== 'idle' && updateSnapshot.status !== 'unsupported'
+                  && updateSnapshot.lastCheckedAt != null && (
+                  <p className="settings-hint" style={{ marginTop: 2, marginBottom: 2 }}>
+                    {t('updates.lastChecked', { time: formatDateTime(updateSnapshot.lastCheckedAt, language) })}
+                  </p>
+                )}
+                {updateCheckError && (
+                  <p className="settings-warning">
+                    {t('updates.statusError')} {updateCheckError}
+                  </p>
+                )}
                 {updateSnapshot?.status === 'downloading' && updateSnapshot.percent != null && (
                   <div className="update-progress" style={{ marginTop: 6 }}>
                     <span style={{ width: `${updateSnapshot.percent}%` }} />
                   </div>
                 )}
                 {updateSnapshot?.error && (
-                  <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-danger)' }}>
+                  <p className="settings-warning">
                     {updateSnapshot.error}
                   </p>
                 )}
