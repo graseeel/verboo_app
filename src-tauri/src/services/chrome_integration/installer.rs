@@ -266,18 +266,10 @@ impl ChromeIntegrationService {
             if self.paths.helper_path() != record.helper_path && self.paths.helper_path().exists() {
                 return Err("chrome_helper_conflict".into());
             }
-        } else {
-            // When there's no installation record, allow the helper and
-            // manifest to exist if they were left over from a previous
-            // configuration. They will be overwritten during configure().
-            // Only block if a different extension ID owns the manifest.
-            if self.paths.helper_path().exists() {
-                return Err("chrome_helper_conflict".into());
-            }
-            if self.paths.manifest_path().exists() {
-                return Err("chrome_manifest_conflict".into());
-            }
         }
+        // No record of this installation: leftover helper/manifest at the
+        // managed paths are residuals. Explicit Configure/Repair adopts them
+        // atomically. Ownership is the record, not a heuristic on the file.
         let (mcp_state, _) = cli_mcp::inspect(
             self.cli.as_ref(),
             &self.paths,
@@ -402,10 +394,14 @@ impl ChromeIntegrationService {
                 ChromeComponentState::Invalid | ChromeComponentState::Outdated
             )
         });
+        let residual_without_record = record.is_none()
+            && (self.paths.helper_path().exists() || self.paths.manifest_path().exists());
         let error_code = if conflict {
             Some("chrome_integration_conflict".into())
         } else if mcp == ChromeComponentState::Invalid {
             Some("chrome_mcp_invalid".into())
+        } else if residual_without_record {
+            Some("chrome_integration_record_missing".into())
         } else {
             None
         };
