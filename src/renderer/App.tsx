@@ -5150,7 +5150,12 @@ export function App() {
   async function attachFiles() {
     const batch = attachmentQueueRef.current.reserve()
     try {
-      const attachments = await window.verboo.pickFiles()
+      const attachments = await window.verboo.pickFiles({
+        title: t('dialogs.attachFilesTitle'),
+        imagesFilter: t('dialogs.imagesFilter'),
+        videosFilter: t('dialogs.videosFilter'),
+        allFilesFilter: t('dialogs.allFilesFilter'),
+      })
       completeAttachmentBatch(batch, attachments)
     } catch (error) {
       failAttachmentBatch(batch)
@@ -5382,13 +5387,13 @@ export function App() {
   }
 
   async function openProjectFolder() {
-    const path = await window.verboo.pickFolder()
+    const path = await window.verboo.pickFolder(t('dialogs.selectFolderTitle'))
     if (!path) return
     selectProjectPath(path)
   }
 
   async function createProjectFolder() {
-    const path = await window.verboo.createProjectFolder()
+    const path = await window.verboo.createProjectFolder(t('dialogs.createProjectParentTitle'))
     if (!path) return
     selectProjectPath(path)
   }

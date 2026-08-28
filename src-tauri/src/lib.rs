@@ -958,17 +958,24 @@ fn evaluate_goal(
 #[tauri::command]
 async fn pick_files(
     app: tauri::AppHandle,
+    title: String,
+    images_filter: String,
+    videos_filter: String,
+    all_files_filter: String,
 ) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
     use tauri_plugin_dialog::DialogExt;
     let paths = app
         .dialog()
         .file()
+        // macOS renders this as the NSOpenPanel message because its title bar is not
+        // configurable; Linux and Windows render it as the dialog title.
+        .set_title(title)
         .add_filter(
-            "Images",
+            images_filter,
             &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"],
         )
-        .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
-        .add_filter("All files", &["*"])
+        .add_filter(videos_filter, &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
+        .add_filter(all_files_filter, &["*"])
         .blocking_pick_files();
     let paths = paths.unwrap_or_default();
     let path_strings: Vec<String> = paths
@@ -1102,12 +1109,12 @@ fn save_avatar_blob(base64: String, mime: String, app: tauri::AppHandle) -> Resu
 }
 
 #[tauri::command]
-async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_folder(app: tauri::AppHandle, title: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let folder = app
         .dialog()
         .file()
-        .set_title("Selecionar pasta")
+        .set_title(title)
         .blocking_pick_folder();
     Ok(folder
         .and_then(|p| p.into_path().ok())
@@ -1115,12 +1122,15 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn create_project_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn create_project_folder(
+    app: tauri::AppHandle,
+    title: String,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let parent = app
         .dialog()
         .file()
-        .set_title("Selecionar pasta pai para o novo projeto")
+        .set_title(title)
         .blocking_pick_folder();
     let Some(parent_path) = parent.and_then(|p| p.into_path().ok()) else {
         return Ok(None);
@@ -2845,6 +2855,38 @@ pub fn run() {
 
 #[cfg(test)]
 mod platform_contract_tests {
+    #[test]
+    fn native_dialog_labels_are_supplied_by_the_renderer() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("production source before tests");
+
+        assert!(
+            production.matches(".set_title(title)").count() >= 3,
+            "every native file/folder dialog must use its renderer-supplied title"
+        );
+        for supplied_filter in ["images_filter", "videos_filter", "all_files_filter"] {
+            assert!(
+                production.matches(supplied_filter).count() >= 2,
+                "native dialog filter must use its renderer-supplied label: {supplied_filter}"
+            );
+        }
+        let forbidden_labels = [
+            ["Selecionar", " pasta"].concat(),
+            ["\"", "Imag", "es", "\""].concat(),
+            ["\"", "Vid", "eos", "\""].concat(),
+            ["\"", "All", " files", "\""].concat(),
+        ];
+        for forbidden in forbidden_labels {
+            assert!(
+                !production.contains(&forbidden),
+                "native dialog copy must not be hardcoded in Rust: {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn ios_simulator_runtime_is_registered_only_on_macos() {
         let source = include_str!("lib.rs").replace("\r\n", "\n");

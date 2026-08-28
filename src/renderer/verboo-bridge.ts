@@ -141,6 +141,13 @@ export type GitWindowsInstallResult = {
   log: string
 }
 
+export type NativeFileDialogLabels = {
+  title: string
+  imagesFilter: string
+  videosFilter: string
+  allFilesFilter: string
+}
+
 // The API object (matches preload/index.ts VerbooDesktopApi).
 const api = {
   getConfig: () => invoke<AppConfig>('get_config'),
@@ -337,7 +344,7 @@ const api = {
     content: string,
   ) => invoke<void>('write_project_instruction_file', { workingDirectory, name, content }),
 
-  pickFiles: () => invoke<AttachmentMeta[]>('pick_files'),
+  pickFiles: (labels: NativeFileDialogLabels) => invoke<AttachmentMeta[]>('pick_files', labels),
   inspectFiles: (paths: string[]) => invoke<AttachmentMeta[]>('inspect_files', { paths }),
   inspectDroppedFiles: (_files: File[]) => {
     // Tauri has no webUtils.getPathForFile; consume cached drop paths instead
@@ -364,7 +371,7 @@ const api = {
     invoke<AttachmentMeta>('finish_pasted_file_upload', input),
   abortPastedFileUpload: (input: { uploadId: string }) =>
     invoke<void>('abort_pasted_file_upload', input),
-  pickFolder: () => invoke<string | undefined>('pick_folder'),
+  pickFolder: (title: string) => invoke<string | undefined>('pick_folder', { title }),
   // Authorize one validated image/video in Tauri's asset protocol. This keeps
   // arbitrary attachment paths displayable without granting the webview a
   // blanket $HOME/** file scope.
@@ -372,7 +379,7 @@ const api = {
     invoke<string>('allow_media_preview_file', { path }),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
-  createProjectFolder: () => invoke<string | undefined>('create_project_folder'),
+  createProjectFolder: (title: string) => invoke<string | undefined>('create_project_folder', { title }),
   // Save an avatar image (base64) to the app data dir. Returns the absolute
   // path of the saved file. Accepted MIME: image/png, image/jpeg, image/webp.
   // Max 10MB. Old avatars with different extensions are removed.

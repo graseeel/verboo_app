@@ -152,3 +152,35 @@ describe('Settings navigation copy', () => {
     }
   })
 })
+
+describe('native dialog copy (issue #96)', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'dialogs.attachFilesTitle': 'Select files to attach',
+        'dialogs.selectFolderTitle': 'Select folder',
+        'dialogs.createProjectParentTitle': 'Select a parent folder for the new project',
+        'dialogs.imagesFilter': 'Images',
+        'dialogs.videosFilter': 'Videos',
+        'dialogs.allFilesFilter': 'All files',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'dialogs.attachFilesTitle': 'Selecionar arquivos para anexar',
+        'dialogs.selectFolderTitle': 'Selecionar pasta',
+        'dialogs.createProjectParentTitle': 'Selecionar pasta pai para o novo projeto',
+        'dialogs.imagesFilter': 'Imagens',
+        'dialogs.videosFilter': 'Vídeos',
+        'dialogs.allFilesFilter': 'Todos os arquivos',
+      },
+    },
+  ])('provides every producer-controlled native dialog label in $language', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
+  })
+})

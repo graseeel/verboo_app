@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 type ComposerProps = {
   leftToolbar?: ReactNode
+  onAttachFiles: () => void
 }
 
 type PluginsViewProps = {
@@ -31,7 +32,12 @@ type PluginsViewProps = {
 }
 
 vi.mock('./features/composer/Composer', () => ({
-  Composer: ({ leftToolbar }: ComposerProps) => <div data-testid="composer-stub">{leftToolbar}</div>,
+  Composer: ({ leftToolbar, onAttachFiles }: ComposerProps) => (
+    <div data-testid="composer-stub">
+      {leftToolbar}
+      <button type="button" onClick={onAttachFiles}>Attach file</button>
+    </div>
+  ),
 }))
 
 vi.mock('./features/models/ModelSelector', () => ({
@@ -377,5 +383,33 @@ describe('App settings shortcuts', () => {
     await renderApp()
 
     expect(screen.queryByRole('button', { name: /Archived chats/ })).not.toBeInTheDocument()
+  })
+
+  it('passes the English UI locale into every producer-controlled native dialog label', async () => {
+    const pickFiles = vi.fn(async () => [])
+    const pickFolder = vi.fn(async () => undefined)
+    const createProjectFolder = vi.fn(async () => undefined)
+    const bridge = createBridge()
+    bridge.pickFiles = pickFiles
+    bridge.pickFolder = pickFolder
+    bridge.createProjectFolder = createProjectFolder
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    await renderApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
+    expect(pickFiles).toHaveBeenCalledWith({
+      title: 'Select files to attach',
+      imagesFilter: 'Images',
+      videosFilter: 'Videos',
+      allFilesFilter: 'All files',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    expect(pickFolder).toHaveBeenCalledWith('Select folder')
+
+    fireEvent.click(screen.getByRole('button', { name: 'No project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
+    expect(createProjectFolder).toHaveBeenCalledWith('Select a parent folder for the new project')
   })
 })

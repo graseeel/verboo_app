@@ -89,6 +89,13 @@ const enUS: Record<string, string> = {
   'login.sessionInvalid': 'No valid Verboo session was found.',
   'login.sessionCheckFailed': 'Could not verify your Verboo session.',
 
+  'dialogs.attachFilesTitle': 'Select files to attach',
+  'dialogs.selectFolderTitle': 'Select folder',
+  'dialogs.createProjectParentTitle': 'Select a parent folder for the new project',
+  'dialogs.imagesFilter': 'Images',
+  'dialogs.videosFilter': 'Videos',
+  'dialogs.allFilesFilter': 'All files',
+
   'sidebar.nav': 'Main navigation',
   'sidebar.newChat': 'New chat',
   'sidebar.search': 'Search',
@@ -1691,6 +1698,13 @@ const ptBR: Record<string, string> = {
   'login.sessionValid': 'Sessão Verboo validada.',
   'login.sessionInvalid': 'Nenhuma sessão Verboo válida foi encontrada.',
   'login.sessionCheckFailed': 'Não foi possível verificar sua sessão do Verboo.',
+
+  'dialogs.attachFilesTitle': 'Selecionar arquivos para anexar',
+  'dialogs.selectFolderTitle': 'Selecionar pasta',
+  'dialogs.createProjectParentTitle': 'Selecionar pasta pai para o novo projeto',
+  'dialogs.imagesFilter': 'Imagens',
+  'dialogs.videosFilter': 'Vídeos',
+  'dialogs.allFilesFilter': 'Todos os arquivos',
 
   'sidebar.nav': 'Navegação principal',
   'sidebar.newChat': 'Novo chat',

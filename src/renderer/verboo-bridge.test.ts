@@ -290,6 +290,32 @@ describe('verboo-bridge — API shape', () => {
     }
   })
 
+  it('forwards localized native-dialog labels to the matching Tauri commands', async () => {
+    expect(api).toBeDefined()
+    vi.mocked(invoke).mockClear()
+    const workspace = api as VerbooDesktopApi
+
+    await workspace.pickFiles({
+      title: 'Selecionar arquivos para anexar',
+      imagesFilter: 'Imagens',
+      videosFilter: 'Vídeos',
+      allFilesFilter: 'Todos os arquivos',
+    })
+    await workspace.pickFolder('Selecionar pasta')
+    await workspace.createProjectFolder('Selecionar pasta pai para o novo projeto')
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['pick_files', {
+        title: 'Selecionar arquivos para anexar',
+        imagesFilter: 'Imagens',
+        videosFilter: 'Vídeos',
+        allFilesFilter: 'Todos os arquivos',
+      }],
+      ['pick_folder', { title: 'Selecionar pasta' }],
+      ['create_project_folder', { title: 'Selecionar pasta pai para o novo projeto' }],
+    ])
+  })
+
   it('exposes every event subscription method', () => {
     expect(api).toBeDefined()
     const required = [
