@@ -445,6 +445,7 @@ export function App() {
   })
   const providerCatalogRecoveryGenerationRef = useRef(0)
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
+  const selectedModelRef = useRef(selectedModel)
   const [providerModelBlocker, setProviderModelBlocker] = useState<ProviderModelBlocker | undefined>()
   const providerModelValidationGeneration = useRef(0)
   const [providerAccountMissing, setProviderAccountMissing] = useState<{
@@ -1180,6 +1181,10 @@ export function App() {
         try { window.localStorage.removeItem(EFFORT_BY_MODEL_KEY) } catch { /* noop */ }
       }
       setSelectedModel(settings.lastSelectedModelId)
+      // Sync the ref NOW (same idiom as goalRef below): validateAccess runs
+      // before the next commit, so the effect-based mirror would still read
+      // undefined when the startup reconciliation decides on a migration.
+      selectedModelRef.current = settings.lastSelectedModelId
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
       setConfigLoaded(true)
@@ -1588,6 +1593,10 @@ export function App() {
     userSettingsRef.current = userSettings
   }, [userSettings])
 
+  useEffect(() => {
+    selectedModelRef.current = selectedModel
+  }, [selectedModel])
+
   useLayoutEffect(() => {
     if (shouldShowLogin || activeView !== 'chat' || !hasConversation || !workspaceRef.current) return undefined
 
@@ -1897,9 +1906,15 @@ export function App() {
     const result = await window.verboo.listModels(forceRefresh)
     const deduped = { ...result, models: dedupModels(result.models) }
     setModelResult(deduped)
-    setSelectedModel(current => {
-      return resolveSelectedModel(deduped.models, current, userSettingsRef.current.lastSelectedModelId)
-    })
+    // The settings write stays OUT of the state updater (G-C5 rule): the
+    // updater recomputes the pure decision with the freshest `current`,
+    // while the ref-based decision only drives the migration persist.
+    const persistedModelId = userSettingsRef.current.lastSelectedModelId
+    const persistDecision = reconcileSelectedModel(deduped, selectedModelRef.current, persistedModelId)
+    setSelectedModel(current => reconcileSelectedModel(deduped, current, persistedModelId).modelId)
+    if (persistDecision.persistModelId && persistDecision.persistModelId !== persistedModelId) {
+      void updateUserSettings({ lastSelectedModelId: persistDecision.persistModelId })
+    }
     return deduped
   }
 
@@ -2259,9 +2274,12 @@ export function App() {
       setModelResult(dedupedDiscovery)
       // F4: provider auth is non-critical — fire-and-forget, never gates entry.
       void reloadProviderAuth()
-      setSelectedModel(current => {
-        return resolveSelectedModel(dedupedDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
-      })
+      const persistedModelId = userSettingsRef.current.lastSelectedModelId
+      const persistDecision = reconcileSelectedModel(dedupedDiscovery, selectedModelRef.current, persistedModelId)
+      setSelectedModel(current => reconcileSelectedModel(dedupedDiscovery, current, persistedModelId).modelId)
+      if (persistDecision.persistModelId && persistDecision.persistModelId !== persistedModelId) {
+        void updateUserSettings({ lastSelectedModelId: persistDecision.persistModelId })
+      }
 
       const unlocked = isVerifiedModelDiscovery(dedupedDiscovery)
       setEntryUnlocked(unlocked)
@@ -7576,6 +7594,47 @@ function resolveSelectedModel(
   // The persisted choice gets the same protection at startup under a degraded
   // catalog. models[0] only when no explicit selection exists (first paint).
   return currentModelId ?? preferredModelId ?? models[0]?.id
+}
+
+/** Base of a model id: the segment after the last '/'. The leading prefix is
+ *  the account's PLAN namespace ("max/", "ultra/", … — an open set, new plans
+ *  keep appearing), so reconciliation must never name one; comparing bases is
+ *  the plan-agnostic way to match an old-generation id against the catalog. */
+function modelIdBase(id: string): string {
+  const slash = id.lastIndexOf('/')
+  return slash === -1 ? id : id.slice(slash + 1)
+}
+
+/** Issue #103: reconcile a RETAINED selection (one the catalog no longer
+ *  lists) against an AUTHORITATIVE catalog for the account's own provider.
+ *  Only verboo entries (no `provider` field) are candidates: provider
+ *  catalogs attach per refresh and degrade silently, so a missing provider
+ *  id proves nothing.
+ *
+ *  - exact match → keep (no reconciliation);
+ *  - exactly ONE verboo catalog id shares the id base → adopt that canonical
+ *    id (migration); the caller persists it;
+ *  - MORE THAN ONE plan carries the same base → ambiguous: never guess —
+ *    clear the selection (the user picks again) and persist nothing;
+ *  - ZERO candidates → the id may belong to a provider segment missing from
+ *    a silently degraded snapshot → retain.
+ *
+ *  Degraded snapshots (stale/cache/empty — isVerifiedModelDiscovery) NEVER
+ *  reconcile: the retention pinned by App.providerModelSelect.test.tsx stays
+ *  intact. */
+function reconcileSelectedModel(
+  result: ModelDiscoveryResult,
+  currentModelId: string | undefined,
+  preferredModelId: string | undefined,
+): { modelId: string | undefined; persistModelId?: string } {
+  const resolved = resolveSelectedModel(result.models, currentModelId, preferredModelId)
+  if (!resolved || !isVerifiedModelDiscovery(result)) return { modelId: resolved }
+  if (result.models.some(model => model.id === resolved)) return { modelId: resolved }
+  const base = modelIdBase(resolved)
+  const candidates = result.models.filter(model => !model.provider && modelIdBase(model.id) === base)
+  if (candidates.length === 1) return { modelId: candidates[0].id, persistModelId: candidates[0].id }
+  if (candidates.length > 1) return { modelId: undefined }
+  return { modelId: resolved }
 }
 
 /** The CLI emits `{"type":"system","subtype":"api_retry","attempt":N,
