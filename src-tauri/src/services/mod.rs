@@ -58,4 +58,5 @@ pub mod update_coordinator;
 pub mod video;
 pub mod vision_fallback_service;
 pub mod whats_new_service;
+pub mod window_geometry;
 pub mod workspace_files_service;

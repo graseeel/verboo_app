@@ -2580,6 +2580,7 @@ pub fn run() {
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                services::window_geometry::clamp_main_window_to_work_area(&window);
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
