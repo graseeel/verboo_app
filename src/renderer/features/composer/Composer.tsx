@@ -1,5 +1,5 @@
 import { ArrowUp, Mic, MicOff, Paperclip, Square, Target, X } from 'lucide-react'
-import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentPropsWithoutRef, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentMeta, CustomSlashCommand, SkillSummary, Annotation } from '../../../shared/types'
 import { useI18n } from '../../i18n'
@@ -66,6 +66,36 @@ type ComposerProps = {
   annotations?: Annotation[]
   onRemoveAnnotation?: (annotationId: string) => void
   onEditAnnotationComment?: (annotationId: string, comment: string | null) => void
+}
+
+function AttachmentChipButton({ onClick, ...buttonProps }: ComponentPropsWithoutRef<'button'>) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  useLayoutEffect(() => {
+    const button = buttonRef.current
+    if (!button) return
+
+    if (buttonProps.title === undefined) {
+      button.removeAttribute('title')
+    } else {
+      button.setAttribute('title', buttonProps.title)
+    }
+
+    return () => button.removeAttribute('title')
+  }, [buttonProps.title])
+
+  return (
+    <button
+      {...buttonProps}
+      ref={buttonRef}
+      onClick={event => {
+        // Browser-managed title tooltips do not receive mouseleave when their
+        // hovered node disappears, so dismiss the tooltip before unmounting it.
+        event.currentTarget.removeAttribute('title')
+        onClick?.(event)
+      }}
+    />
+  )
 }
 
 export function Composer({
@@ -829,7 +859,7 @@ export function Composer({
                 ? `${simulatorAnnotation?.kind === 'element' ? t('simulator.annotationElement') : t('simulator.annotationArea')} · ${simulatorAnnotation?.element?.label || simulatorAnnotation?.element?.role || simulatorAnnotation?.device.name || attachment.name}`
               : attachment.name
             return (
-              <button
+              <AttachmentChipButton
                 key={attachment.path}
                 className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}${isAnnotation ? ' attachment-annotation' : ''}`}
                 type="button"
@@ -864,7 +894,7 @@ export function Composer({
                   </span>
                 )}
                 <X size={12} />
-              </button>
+              </AttachmentChipButton>
             )
           })}
         </div>

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import type { Annotation, AttachmentMeta, SkillSummary } from '../../../shared/types'
 
 // jsdom lacks matchMedia — Composer reads it at module-eval time for
@@ -60,8 +61,8 @@ const pluginSkill: SkillSummary = {
   pluginName: 'superpowers',
 }
 
-function renderComposer(overrides: Partial<ComposerProps> = {}) {
-  const props: ComposerProps = {
+function createComposerProps(overrides: Partial<ComposerProps> = {}) {
+  return {
     disabled: false,
     skills: [baseSkill, pluginSkill],
     tokenSkills: [],
@@ -79,7 +80,66 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
     rightToolbar: null,
     ...overrides,
   } as ComposerProps
+}
+
+function renderComposer(overrides: Partial<ComposerProps> = {}) {
+  const props = createComposerProps(overrides)
   return { ...render(<Composer {...props} />), props }
+}
+
+// jsdom neither paints the browser-managed `title` tooltip nor dispatches a
+// mouseout when React removes the hovered node. Model only that UA lifecycle so
+// the regression assertion stays on the resulting tooltip DOM, not a handler.
+function installNativeTitleTooltipFixture() {
+  let tooltip: HTMLDivElement | undefined
+  let titleObserver: MutationObserver | undefined
+
+  function hideTooltip() {
+    titleObserver?.disconnect()
+    titleObserver = undefined
+    tooltip?.remove()
+    tooltip = undefined
+  }
+
+  function showTooltip(event: MouseEvent) {
+    const trigger = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[title]')
+      : null
+    const title = trigger?.getAttribute('title')
+    if (!trigger || !title) return
+
+    hideTooltip()
+    tooltip = document.createElement('div')
+    tooltip.setAttribute('role', 'tooltip')
+    tooltip.textContent = title
+    document.body.appendChild(tooltip)
+    titleObserver = new MutationObserver(() => {
+      if (!trigger.hasAttribute('title')) hideTooltip()
+    })
+    titleObserver.observe(trigger, { attributes: true, attributeFilter: ['title'] })
+  }
+
+  document.addEventListener('mouseover', showTooltip)
+  document.addEventListener('mouseout', hideTooltip)
+  return () => {
+    document.removeEventListener('mouseover', showTooltip)
+    document.removeEventListener('mouseout', hideTooltip)
+    hideTooltip()
+  }
+}
+
+function renderRemovableAttachment(attachment: AttachmentMeta) {
+  const onRemoveAttachment = vi.fn()
+  const view = renderComposer({ attachments: [attachment], onRemoveAttachment })
+  onRemoveAttachment.mockImplementation(path => {
+    view.rerender(
+      <Composer
+        {...view.props}
+        attachments={view.props.attachments.filter(item => item.path !== path)}
+      />,
+    )
+  })
+  return view
 }
 
 
@@ -165,6 +225,77 @@ describe('video attachment chip', () => {
     expect(chip.textContent).not.toContain('composer.attachmentUnreadable')
     fireEvent.click(chip)
     expect(onRemoveAttachment).toHaveBeenCalledWith('/uploads/clip.mp4')
+  })
+})
+
+describe('attachment chip tooltip lifecycle', () => {
+  it('keeps the native path tooltip title after StrictMode replays layout effects', () => {
+    const attachment: AttachmentMeta = {
+      path: '/workspace/strict.txt',
+      name: 'strict.txt',
+      size: 6,
+      kind: 'file',
+      extractedText: 'strict',
+    }
+
+    render(
+      <StrictMode>
+        <Composer {...createComposerProps({ attachments: [attachment] })} />
+      </StrictMode>,
+    )
+
+    expect(screen.getByRole('button', { name: /strict\.txt/i }))
+      .toHaveAttribute('title', '/workspace/strict.txt')
+  })
+
+  it('dismisses a hovered path tooltip when clicking the chip removes it', async () => {
+    const attachment: AttachmentMeta = {
+      path: '/workspace/notes.txt',
+      name: 'notes.txt',
+      size: 12,
+      kind: 'file',
+      extractedText: 'notes',
+    }
+    renderRemovableAttachment(attachment)
+    const uninstallTooltipFixture = installNativeTitleTooltipFixture()
+
+    try {
+      const chip = screen.getByRole('button', { name: /notes\.txt/i })
+      fireEvent.mouseOver(chip)
+      expect(screen.getByRole('tooltip')).toHaveTextContent('/workspace/notes.txt')
+
+      fireEvent.click(chip)
+
+      expect(screen.queryByRole('button', { name: /notes\.txt/i })).not.toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument())
+    } finally {
+      uninstallTooltipFixture()
+    }
+  })
+
+  it('dismisses a hovered path tooltip when the parent unmounts the chip', async () => {
+    const attachment: AttachmentMeta = {
+      path: '/workspace/external.txt',
+      name: 'external.txt',
+      size: 8,
+      kind: 'file',
+      extractedText: 'external',
+    }
+    const view = renderRemovableAttachment(attachment)
+    const uninstallTooltipFixture = installNativeTitleTooltipFixture()
+
+    try {
+      const chip = screen.getByRole('button', { name: /external\.txt/i })
+      fireEvent.mouseOver(chip)
+      expect(screen.getByRole('tooltip')).toHaveTextContent('/workspace/external.txt')
+
+      view.rerender(<Composer {...view.props} attachments={[]} />)
+
+      expect(screen.queryByRole('button', { name: /external\.txt/i })).not.toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument())
+    } finally {
+      uninstallTooltipFixture()
+    }
   })
 })
 
