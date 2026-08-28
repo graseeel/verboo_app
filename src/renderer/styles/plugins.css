@@ -1,6 +1,5 @@
 /* Plugins view — marketplace lines, skeletons, modals.
-   Motion: transform + opacity only (no transition: all). Stagger max 8 lines.
-   Reduced-motion: opacity-only. */
+   Async catalog rows stay base-visible; motion is reserved for transient UI. */
 
 .plugins-view {
   display: flex;
@@ -41,7 +40,7 @@
 }
 
 /* Codex-style pills: two buttons in a row, active = solid bg, inactive =
-   transparent. Crossfade 120ms opacity-only on tab content swap. */
+   transparent. */
 .plugins-tabs {
   display: flex;
   gap: 4px;
@@ -71,17 +70,6 @@
 .plugins-tab.is-active {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-/* Tab content crossfade — 120ms opacity-only. Applied to the wrapper of
-   each tab's content so the swap feels smooth, not jarring. */
-.plugins-tab-content {
-  animation: plugins-tab-fade 120ms ease-out;
-}
-
-@keyframes plugins-tab-fade {
-  from { opacity: 0; }
-  to   { opacity: 1; }
 }
 
 .plugin-skill-group-header {
@@ -383,7 +371,7 @@
   gap: 4px 16px;
 }
 
-/* Grid items (the wrapper divs with animationDelay) must have min-width: 0
+/* Grid item wrappers must have min-width: 0
    so the flex children inside can truncate. Without this, long descriptions
    blow out the column width and the grid collapses to 1 col + overflows. */
 .plugins-lines > * {
@@ -416,7 +404,6 @@
   min-width: 0;
   overflow: hidden;
   transition: background-color 120ms var(--dropdown-ease);
-  animation: plugin-card-enter 200ms var(--dropdown-ease) both;
 }
 
 .plugin-line:hover {
@@ -1628,11 +1615,6 @@
   background: var(--bg-hover);
 }
 
-@keyframes plugin-card-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
 @keyframes plugin-menu-pop {
   from { opacity: 0; transform: scale(0.96); }
   to   { opacity: 1; transform: scale(1); }
@@ -1659,17 +1641,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plugin-line,
   .plugins-restart-banner,
   .plugin-detail,
   .plugin-detail-hero {
     animation: plugins-fade-in 80ms ease-out both !important;
   }
   .plugin-card-menu {
-    animation: plugins-fade-in 80ms ease-out !important;
-  }
-  /* Tab crossfade: opacity-only 80ms under reduced-motion. */
-  .plugins-tab-content {
     animation: plugins-fade-in 80ms ease-out !important;
   }
   .plugin-detail-hero-mesh {

@@ -275,6 +275,12 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
     })
   }
 
+  function switchTab(nextTab: 'plugins' | 'skills') {
+    if (nextTab === activeTab) return
+    setActiveTab(nextTab)
+    setQuery('')
+  }
+
   async function handleToggle(plugin: Plugin, enabled: boolean) {
     setBusy(plugin.id, true)
     try {
@@ -478,7 +484,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
           role="tab"
           aria-selected={activeTab === 'plugins'}
           className={`plugins-tab ${activeTab === 'plugins' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('plugins')}
+          onClick={() => switchTab('plugins')}
         >
           {t('plugins.tabs.plugins')}
         </button>
@@ -487,7 +493,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
           role="tab"
           aria-selected={activeTab === 'skills'}
           className={`plugins-tab ${activeTab === 'skills' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('skills')}
+          onClick={() => switchTab('skills')}
         >
           {t('plugins.tabs.skills')}
         </button>
@@ -509,7 +515,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
 
       {/* Plugins tab */}
       {activeTab === 'plugins' && (
-      <div className="plugins-tab-content">
+      <div>
       <section className="plugins-official-section">
         <p className="plugins-section-label">{t('plugins.chrome.section')}</p>
         <OfficialChromeIntegrationCard onManage={onManageChromeIntegration} />
@@ -569,8 +575,8 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
                 {t('plugins.installed')} ({filteredInstalled.length})
               </p>
               <div className="plugins-lines">
-                {filteredInstalled.map((plugin, i) => (
-                  <div key={plugin.id} style={{ animationDelay: `${i * 40}ms` }}>
+                {filteredInstalled.map(plugin => (
+                  <div key={plugin.id}>
                     <InstalledPluginCard
                       plugin={plugin}
                       onToggle={enabled => void handleToggle(plugin, enabled)}
@@ -591,7 +597,11 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
           {availableLoading ? (
             <>
               <p className="plugins-section-label">{t('plugins.featured')}</p>
-              <div className="plugins-lines">
+              <div
+                className="plugins-lines"
+                role="status"
+                aria-label={t('plugins.loadingCatalog')}
+              >
                 {Array.from({ length: 6 }).map((_, i) => (
                   <PluginSkeletonCard key={i} delay={i * 60} />
                 ))}
@@ -610,7 +620,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
             normalizedQuery && installed.length > 0 ? null : (
               <div className="plugins-empty">
                 <div className="plugins-empty-icon"><Blocks size={24} /></div>
-                <p className="plugins-empty-title">{t('plugins.loadingCatalog')}</p>
+                <p className="plugins-empty-title">{t('plugins.emptyTitle')}</p>
                 <p className="plugins-empty-body">{t('plugins.empty')}</p>
               </div>
             )
@@ -625,8 +635,8 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
                     {groupKey}
                   </p>
                   <div className="plugins-lines">
-                    {visible.map((plugin, i) => (
-                      <div key={plugin.pluginId} style={{ animationDelay: `${i * 40}ms` }}>
+                    {visible.map(plugin => (
+                      <div key={plugin.pluginId}>
                         <AvailablePluginCard
                           plugin={plugin}
                           onInstall={() => void handleInstallOneClick(plugin)}
@@ -665,7 +675,7 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
 
       {/* Skills tab */}
       {activeTab === 'skills' && (
-      <div className="plugins-tab-content">
+      <div>
         {skillsLoading ? (
           <div className="plugins-lines">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -677,15 +687,15 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
             <div className="plugins-empty-icon"><Zap size={24} /></div>
             <p className="plugins-empty-title">{t('plugins.skillsEmptyTitle')}</p>
             <p className="plugins-empty-body">{t('plugins.skillsEmptyBody')}</p>
-            <button type="button" className="ghost-button" onClick={() => setActiveTab('plugins')}>
+            <button type="button" className="ghost-button" onClick={() => switchTab('plugins')}>
               {t('plugins.skillsEmptyCta')}
             </button>
           </div>
         ) : (
           <>
             <div className="plugins-lines">
-              {(skillsExpanded ? flatSkills : flatSkills.slice(0, SECTION_CAP)).map(({ skill, pluginName }, i) => (
-                <div key={skill.skillPath} style={{ animationDelay: `${i * 40}ms` }}>
+              {(skillsExpanded ? flatSkills : flatSkills.slice(0, SECTION_CAP)).map(({ skill, pluginName }) => (
+                <div key={skill.skillPath}>
                   <div className="plugin-line plugin-line--skill" role="button" tabIndex={0}>
                     <div className="plugin-skill-icon plugin-skill-icon--line" aria-hidden="true">
                       <Zap size={16} />
