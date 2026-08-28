@@ -236,6 +236,15 @@ const SIDEBAR_COMPACT_WIDTH = 72
 const BOTTOM_STICK_THRESHOLD = 72
 const SCROLL_SETTLE_MS = 360
 const STOP_BUTTON_RELEASE_DELAY_MS = 500
+const PROVIDER_LOGIN_CONFIRMATION_ERROR = 'provider_login_confirmation_failed'
+
+function providerLoginErrorMessage(message: string | undefined, t: Translator): string {
+  if (message === PROVIDER_LOGIN_CONFIRMATION_ERROR) {
+    return t('settings.provider.confirmationError')
+  }
+  return message ?? t('settings.provider.loginError')
+}
+
 const DEFAULT_USER_SETTINGS: UserSettings = {
   language: 'en-US',
   theme: 'system',
@@ -1256,7 +1265,7 @@ export function App() {
         void providerAccountsRef.current.reloadAccounts()
         toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
       } else if (event.state === 'error') {
-        toast(event.message ?? t('settings.provider.connectError', { message: '' }), 'error')
+        toast(providerLoginErrorMessage(event.message, t), 'error')
       }
     })
     // The bridge returns a cleanup fn; anything else (incomplete test mock)

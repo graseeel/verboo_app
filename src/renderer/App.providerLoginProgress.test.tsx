@@ -259,6 +259,31 @@ describe('App provider card — live progress during the login flow', () => {
     expect(screen.queryByText(/Finish signing in in the browser/)).toBeNull()
   })
 
+  it.each([
+    ['en-US', 'Settings', 'Providers', 'Could not confirm the provider login. Try again.'],
+    ['pt-BR', 'Configurações', 'Provedores', 'Não foi possível confirmar o login do provedor. Tente novamente.'],
+  ] as const)(
+    '%s locale: a stable confirmation failure renders localized copy, never the IPC code',
+    async (language, settingsLabel, providersLabel, expectedMessage) => {
+      settingsLanguage = language
+      render(<ToastProvider><App /></ToastProvider>)
+      fireEvent.click(await screen.findByRole('button', { name: /Ada/ }))
+      fireEvent.click(screen.getByRole('button', { name: settingsLabel }))
+      fireEvent.click(await screen.findByRole('button', { name: providersLabel }))
+      await screen.findByText('Codex')
+      await waitFor(() => expect(providerLoginForward).toBeDefined())
+
+      fireLoginEvent({
+        provider: 'codex',
+        state: 'error',
+        message: 'provider_login_confirmation_failed',
+      })
+
+      expect(await screen.findByText(expectedMessage)).toBeInTheDocument()
+      expect(screen.queryByText(/provider_login_confirmation_failed|provider_protocol_error/)).toBeNull()
+    },
+  )
+
   it('risk_notice keeps the card in progress; cancelling via the dialog returns it to Conectar', async () => {
     authList = [{ provider: 'claude', connected: false }]
     render(<App />)
