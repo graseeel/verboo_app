@@ -123,6 +123,42 @@ pub fn inject_api_key(token: Option<&str>, command: &mut Command) -> Option<Toke
     Some(TokenGuard)
 }
 
+/// Configures auth env for a TURN spawn carrying BOTH credentials when both
+/// exist (issue #104, field macOS, CLI 0.15.18).
+///
+/// `token` is the `resolve_token` winner and is injected exactly as
+/// `inject_api_key` does — OAuth keeps precedence via `CLAUDE_CODE_OAUTH_TOKEN`.
+/// When OAuth won, the app-stored `vbk_` API key rides along as
+/// `ANTHROPIC_API_KEY`: if the server rejects the OAuth session, the CLI's
+/// post-401 fallback (PR #43) reads that env and the turn survives without a
+/// second spawn. Without OAuth the behavior is unchanged (key only, already
+/// handled by `inject_api_key`). `resolve_token`/`resolve_account_credential`
+/// are untouched — their #102 contracts stay intact.
+pub fn inject_turn_credentials(
+    token: Option<&str>,
+    api_key: Option<&str>,
+    command: &mut Command,
+) -> Option<TokenGuard> {
+    let guard = inject_api_key(token, command);
+    let oauth_won = token
+        .map(str::trim)
+        .map(|value| !value.is_empty() && !value.starts_with("vbk_"))
+        .unwrap_or(false);
+    if oauth_won {
+        if let Some(key) = api_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty() && key.starts_with("vbk_"))
+        {
+            eprintln!(
+                "[verboo:auth-token] also injecting saved API key for CLI fallback ({} chars)",
+                key.len()
+            );
+            command.env("ANTHROPIC_API_KEY", key);
+        }
+    }
+    guard
+}
+
 /// Ensures the child inherits identity vars the CLI/keychain expect when the
 /// parent is a GUI app (Dock launches often strip a full login shell env).
 pub fn augment_identity_env(command: &mut Command) {
@@ -171,5 +207,97 @@ mod tests {
         let mut cmd = Command::new("echo");
         crate::services::cli_spawn::apply_creation_flags(&mut cmd);
         assert!(inject_api_key(Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"), &mut cmd).is_some());
+    }
+
+    /// Reads an env var EXPLICITLY set on the command. `get_envs` only reports
+    /// vars set via `env()` — an inherited parent `ANTHROPIC_API_KEY` never
+    /// shows up here, which isolates the app-injected env in these tests.
+    fn explicit_env(command: &Command, name: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == name)
+            .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    // Issue #104 (field, macOS, CLI 0.15.18): with a saved vbk_ AND a stored
+    // OAuth session, the turn spawn injected ONLY CLAUDE_CODE_OAUTH_TOKEN; when
+    // the server rejects that OAuth the CLI's post-401 fallback reads
+    // ANTHROPIC_API_KEY, finds nothing, and the turn dies as unauthenticated.
+    #[test]
+    fn oauth_and_vbk_inject_both_envs() {
+        let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        let guard = inject_turn_credentials(
+            Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"),
+            Some("vbk_test_key_12345"),
+            &mut cmd,
+        );
+        assert!(guard.is_some());
+        // OAuth keeps precedence…
+        assert_eq!(
+            explicit_env(&cmd, "CLAUDE_CODE_OAUTH_TOKEN").as_deref(),
+            Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"),
+        );
+        // …and the vbk_ rides along for the CLI fallback.
+        assert_eq!(
+            explicit_env(&cmd, "ANTHROPIC_API_KEY").as_deref(),
+            Some("vbk_test_key_12345"),
+        );
+    }
+
+    #[test]
+    fn oauth_only_does_not_inject_app_api_key() {
+        let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        let guard = inject_turn_credentials(
+            Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"),
+            None,
+            &mut cmd,
+        );
+        assert!(guard.is_some());
+        assert_eq!(
+            explicit_env(&cmd, "CLAUDE_CODE_OAUTH_TOKEN").as_deref(),
+            Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"),
+        );
+        assert_eq!(explicit_env(&cmd, "ANTHROPIC_API_KEY"), None);
+    }
+
+    #[test]
+    fn oauth_only_ignores_non_vbk_api_key() {
+        let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        let guard = inject_turn_credentials(
+            Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"),
+            Some("sk-ant-something-else"),
+            &mut cmd,
+        );
+        assert!(guard.is_some());
+        assert_eq!(explicit_env(&cmd, "ANTHROPIC_API_KEY"), None);
+    }
+
+    #[test]
+    fn vbk_only_keeps_current_behavior() {
+        let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        let guard = inject_turn_credentials(
+            Some("vbk_test_key_12345"),
+            Some("vbk_test_key_12345"),
+            &mut cmd,
+        );
+        assert!(guard.is_some());
+        assert_eq!(
+            explicit_env(&cmd, "ANTHROPIC_API_KEY").as_deref(),
+            Some("vbk_test_key_12345"),
+        );
+        assert_eq!(explicit_env(&cmd, "CLAUDE_CODE_OAUTH_TOKEN"), None);
+    }
+
+    #[test]
+    fn no_credentials_inject_nothing() {
+        let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        assert!(inject_turn_credentials(None, None, &mut cmd).is_none());
+        assert_eq!(explicit_env(&cmd, "CLAUDE_CODE_OAUTH_TOKEN"), None);
+        assert_eq!(explicit_env(&cmd, "ANTHROPIC_API_KEY"), None);
     }
 }

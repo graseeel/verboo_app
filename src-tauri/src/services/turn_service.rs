@@ -10,7 +10,7 @@ use crate::models::types::{
     AttachmentMeta, CliMediaCapabilities, EventType, LanguageCode, ModelReasoning, PersonalityMode,
     RuntimeActivity, RuntimeStatus, RuntimeStatusKind, UserSettings,
 };
-use crate::services::auth_token::{inject_api_key, resolve_token};
+use crate::services::auth_token::{inject_turn_credentials, resolve_token};
 use crate::services::cli_subagent_transcript::CliSubagentTranscriptFollower;
 use crate::services::credentials_store::CredentialsStore;
 use crate::services::prevent_sleep::PreventSleepGuard;
@@ -1328,6 +1328,21 @@ impl TurnService {
             .as_deref()
             .filter(|value| !value.trim().is_empty() && !value.trim().starts_with("vbk_"))
             .map(str::to_string);
+        // Issue #104: when OAuth wins, the saved vbk_ must still reach the
+        // child as ANTHROPIC_API_KEY — the CLI 0.15.18 post-401 fallback reads
+        // it. Read it ONLY in that case, so the vbk_-only path keeps its
+        // current behavior (and avoids an extra credential-store read).
+        let fallback_api_key = if injected_oauth_token.is_some() {
+            match credentials.get_api_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("[verboo:auth-token] failed to read API key for the turn fallback: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let sleep_guard = match settings.as_ref() {
             Some(store) => store
@@ -1354,7 +1369,7 @@ impl TurnService {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(crate::services::child_signal::process_creation_flags());
         }
-        let _token_file = inject_api_key(token.as_deref(), &mut cmd);
+        let _token_file = inject_turn_credentials(token.as_deref(), fallback_api_key.as_deref(), &mut cmd);
         crate::services::auth_token::augment_identity_env(&mut cmd);
 
         // Effort transport: inject `CLAUDE_CODE_EFFORT_LEVEL=<level>` for
