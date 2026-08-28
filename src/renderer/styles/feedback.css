@@ -4,15 +4,17 @@
 
 .feedback-modal {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 40px));
+  max-height: min(760px, calc(100vh - 48px));
+  max-height: min(760px, calc(100dvh - 48px));
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
   box-shadow: var(--shadow);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .feedback-header {
@@ -57,12 +59,20 @@
 
 .feedback-form {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 14px;
+  min-height: 0;
 }
 
 .feedback-field-group {
   display: grid;
   gap: 14px;
+}
+
+.feedback-scroll-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .feedback-field {

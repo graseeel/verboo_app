@@ -1528,7 +1528,7 @@ const enUS: Record<string, string> = {
   'profile.unavailable': 'Unavailable',
 
   'feedback.title': 'Help and feedback',
-  'feedback.subtitle': 'Describe the issue or suggestion. If Supabase fails, we will open a pre-filled GitHub issue.',
+  'feedback.subtitle': 'Describe the issue or suggestion. If sending fails, we will open a pre-filled GitHub issue.',
   'feedback.close': 'Close feedback',
   'feedback.type': 'Type',
   'feedback.typeHelp': 'Helps route the submission to the right flow.',
@@ -1550,8 +1550,8 @@ const enUS: Record<string, string> = {
   'feedback.sending': 'Sending',
   'feedback.sentSupabase': 'Feedback sent.',
   'feedback.mailFallback': 'A pre-filled GitHub issue was opened as a fallback.',
-  'feedback.issueUnconfigured': 'Supabase is not configured in this build. A pre-filled GitHub issue was opened.',
-  'feedback.issueFailed': 'Could not send via Supabase. A pre-filled GitHub issue was opened as a fallback.',
+  'feedback.issueUnconfigured': 'Feedback submission is unavailable in this build. A pre-filled GitHub issue was opened.',
+  'feedback.issueFailed': 'Could not use the main feedback channel. A pre-filled GitHub issue was opened as a fallback.',
   'feedback.submitWarning': 'The main feedback channel failed. Use the opened GitHub issue as a fallback if needed.',
   'feedback.titleError': 'Enter a title with at least 3 characters.',
   'feedback.descriptionError': 'Describe the issue or suggestion with at least 12 characters.',
@@ -3087,7 +3087,7 @@ const ptBR: Record<string, string> = {
   'profile.unavailable': 'Indisponível',
 
   'feedback.title': 'Ajuda e feedback',
-  'feedback.subtitle': 'Descreva o problema ou sugestão. Se o Supabase falhar, abriremos uma issue pré-preenchida no GitHub.',
+  'feedback.subtitle': 'Descreva o problema ou sugestão. Se o envio falhar, abriremos uma issue pré-preenchida no GitHub.',
   'feedback.close': 'Fechar feedback',
   'feedback.type': 'Tipo',
   'feedback.typeHelp': 'Ajuda a direcionar o envio para o fluxo correto.',
@@ -3109,8 +3109,8 @@ const ptBR: Record<string, string> = {
   'feedback.sending': 'Enviando',
   'feedback.sentSupabase': 'Feedback enviado.',
   'feedback.mailFallback': 'Uma issue pré-preenchida foi aberta no GitHub como alternativa.',
-  'feedback.issueUnconfigured': 'Supabase não está configurado neste build. Uma issue pré-preenchida foi aberta no GitHub.',
-  'feedback.issueFailed': 'Não foi possível enviar pelo Supabase. Uma issue pré-preenchida foi aberta no GitHub como fallback.',
+  'feedback.issueUnconfigured': 'O envio de feedback não está disponível neste build. Uma issue pré-preenchida foi aberta no GitHub.',
+  'feedback.issueFailed': 'Não foi possível usar o canal principal de feedback. Uma issue pré-preenchida foi aberta no GitHub como alternativa.',
   'feedback.submitWarning': 'O canal principal de feedback falhou. Use a issue aberta no GitHub como alternativa, se necessário.',
   'feedback.titleError': 'Informe um título com pelo menos 3 caracteres.',
   'feedback.descriptionError': 'Descreva o problema ou sugestão com pelo menos 12 caracteres.',
@@ -3210,6 +3210,10 @@ export function useI18n(): I18nContextValue {
 export function createTranslator(language: LanguageCode): Translator {
   const dictionary = dictionaries[language] ?? dictionaries['en-US']
   return (key, values) => interpolate(dictionary[key] ?? enUS[key] ?? key, values)
+}
+
+export function getTranslationKeys(language: LanguageCode): string[] {
+  return Object.keys(dictionaries[language] ?? dictionaries['en-US'])
 }
 
 export function formatCompactNumber(value: number, language: LanguageCode): string {
