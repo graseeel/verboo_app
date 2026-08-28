@@ -13,12 +13,17 @@ const readyProfile: ProfileResult = {
   plan: { name: 'Pro', status: 'active' },
 }
 
-function renderProfile(language: 'en-US' | 'pt-BR' = 'en-US') {
+const apiKeyOnlyProfile: ProfileResult = { status: 'api-key-only' }
+
+function renderProfile(
+  language: 'en-US' | 'pt-BR' = 'en-US',
+  profile: ProfileResult = readyProfile,
+) {
   return render(
     <I18nProvider language={language}>
       <ToastProvider>
         <ProfileView
-          profile={readyProfile}
+          profile={profile}
           loading={false}
           avatarSettings={{ kind: 'preset', presetId: 'cat', presetColor: '#6B7280' }}
           onRefresh={() => {}}
@@ -105,5 +110,35 @@ describe('ProfileView → avatar upload control (issue #92)', () => {
     fireEvent.change(input, { target: { files: [file] } })
 
     expect(valueReset).toHaveBeenCalledWith('')
+  })
+})
+
+describe('ProfileView → inference API key without account OAuth (issue #102)', () => {
+  it('explains the account login requirement in English without empty account placeholders', () => {
+    renderProfile('en-US', apiKeyOnlyProfile)
+
+    expect(screen.getByText('API key ready for inference')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Plan and usage details require an account login. Sign in to Verboo through the CLI, then refresh this page.',
+    )).toBeInTheDocument()
+    expect(screen.queryByText(
+      'Configure or update the API key below to load usage and plan details.',
+    )).not.toBeInTheDocument()
+    expect(screen.queryAllByText('Unavailable')).toHaveLength(0)
+    expect(screen.queryByText('Plan unavailable')).not.toBeInTheDocument()
+  })
+
+  it('explains the account login requirement in Portuguese without empty account placeholders', () => {
+    renderProfile('pt-BR', apiKeyOnlyProfile)
+
+    expect(screen.getByText('Chave de API pronta para inferência')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Detalhes do plano e do consumo exigem login na conta. Entre no Verboo pelo CLI e atualize esta página.',
+    )).toBeInTheDocument()
+    expect(screen.queryByText(
+      'Configure ou atualize a chave de API abaixo para carregar o consumo e os detalhes do plano.',
+    )).not.toBeInTheDocument()
+    expect(screen.queryAllByText('Indisponível')).toHaveLength(0)
+    expect(screen.queryByText('Plano indisponível')).not.toBeInTheDocument()
   })
 })

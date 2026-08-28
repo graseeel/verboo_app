@@ -471,6 +471,8 @@ pub enum GoalReasonId {
 pub enum ProfileStatus {
     Ready,
     Unauthenticated,
+    #[serde(rename = "api-key-only")]
+    ApiKeyOnly,
     Error,
 }
 

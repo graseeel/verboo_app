@@ -3,6 +3,56 @@ use std::process::Command;
 use crate::services::cli_credentials;
 use crate::services::credentials_store::CredentialsStore;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountCredential {
+    OAuth(String),
+    ApiKeyOnly,
+    Unauthenticated,
+}
+
+pub(crate) fn account_credential_from_sources(
+    oauth_token: Option<&str>,
+    api_key: Option<&str>,
+) -> AccountCredential {
+    if let Some(token) = oauth_token.map(str::trim).filter(|token| !token.is_empty()) {
+        return AccountCredential::OAuth(token.to_string());
+    }
+    if let Some(key) = api_key.map(str::trim).filter(|key| key.starts_with("vbk_")) {
+        eprintln!(
+            "[verboo:auth-token] resolved API key for inference ({} chars)",
+            key.len()
+        );
+        return AccountCredential::ApiKeyOnly;
+    }
+    AccountCredential::Unauthenticated
+}
+
+/// Resolves credentials specifically for OAuth-only account endpoints.
+/// Unlike `resolve_token`, this keeps an inference API key as a typed state
+/// instead of returning it as an HTTP bearer.
+pub fn resolve_account_credential(credentials: &CredentialsStore) -> AccountCredential {
+    let oauth_token = cli_credentials::get_access_token();
+    if let AccountCredential::OAuth(token) =
+        account_credential_from_sources(oauth_token.as_deref(), None)
+    {
+        eprintln!(
+            "[verboo:auth-token] resolved CLI OAuth token for account ({} chars)",
+            token.len()
+        );
+        return AccountCredential::OAuth(token);
+    }
+
+    match credentials.get_api_key() {
+        Ok(api_key) => account_credential_from_sources(None, api_key.as_deref()),
+        Err(error) => {
+            eprintln!(
+                "[verboo:auth-token] failed to read API key while resolving account credential: {error}"
+            );
+            AccountCredential::Unauthenticated
+        }
+    }
+}
+
 /// Resolves the best available bearer token for the current user.
 ///
 /// Resolution order (CLI-first):

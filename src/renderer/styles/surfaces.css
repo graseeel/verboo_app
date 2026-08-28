@@ -1065,6 +1065,16 @@
   background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
 }
 
+.profile-api-key-only > div {
+  display: grid;
+  gap: 3px;
+}
+
+.profile-api-key-only span {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
 /* ── Profile page — avatar editor ─────────────────────────── */
 .avatar-editor-panel {
   display: flex; flex-direction: column; gap: 12px;

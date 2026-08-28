@@ -1022,7 +1022,7 @@ export type ProfileUser = {
 }
 
 export type ProfileResult = {
-  status: 'ready' | 'unauthenticated' | 'error'
+  status: 'ready' | 'unauthenticated' | 'api-key-only' | 'error'
   fetchedAt?: number
   user?: ProfileUser
   plan?: ProfilePlan

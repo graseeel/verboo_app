@@ -296,23 +296,24 @@ async fn list_models(
 async fn get_profile(
     _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ProfileResult, String> {
-    // Resolve the bearer token (CLI OAuth first, API key fallback) on a
-    // blocking thread — the CLI token read may hit the keychain, and the
-    // refresh may POST to /oauth/token. The `_credentials` parameter
+    // Resolve the account credential on a blocking thread — the CLI OAuth
+    // read may hit the keychain, and refresh may POST to /oauth/token. An
+    // inference-only API key remains a typed state and never becomes the
+    // bearer for `/api/me*`. The `_credentials` parameter
     // is unused at runtime (we instantiate a fresh `CredentialsStore`
     // inside the spawned task so it can cross the await boundary), but
     // we still declare it so Tauri's command resolver continues to find
     // the dependency in the state graph.
     let credentials_clone = CredentialsStore::new();
-    let token = tokio::task::spawn_blocking(move || {
-        crate::services::auth_token::resolve_token(&credentials_clone)
+    let credential = tokio::task::spawn_blocking(move || {
+        crate::services::auth_token::resolve_account_credential(&credentials_clone)
     })
     .await
     .map_err(|e| format!("Falha ao resolver token: {e}"))?;
     let svc = ProfileService::new();
     // Run the HTTP fetches on a blocking thread — reqwest::blocking panics
     // if called from an async runtime.
-    let result = tokio::task::spawn_blocking(move || svc.get_profile(token.as_deref()))
+    let result = tokio::task::spawn_blocking(move || svc.get_profile(credential))
         .await
         .map_err(|e| format!("Falha ao carregar perfil: {e}"))?;
     Ok(result)

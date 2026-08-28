@@ -93,4 +93,46 @@ describe('AppSidebar', () => {
 
     expect(screen.getByRole('button', { name: /Gabriel/ })).toHaveTextContent(unavailableCopy)
   })
+
+  it.each([
+    ['en-US' as const, 'API key ready for inference', 'Plan unavailable'],
+    ['pt-BR' as const, 'Chave de API pronta para inferência', 'Plano indisponível'],
+  ])(
+    'uses the inference-only account copy in %s instead of an unavailable plan',
+    (language, apiKeyOnlyCopy, unavailableCopy) => {
+      render(
+        <I18nProvider language={language}>
+          <AppSidebar
+            activeView="chat"
+            projects={[]}
+            conversations={[]}
+            profile={{ status: 'api-key-only', user: { name: 'Gabriel' } }}
+            cliAuth={{ loggedIn: false }}
+            onSelectView={vi.fn()}
+            onOpenSettings={vi.fn()}
+            onOpenSearch={vi.fn()}
+            onOpenFeedback={vi.fn()}
+            onLogout={vi.fn()}
+            onNewChat={vi.fn()}
+            onToggleSidebar={vi.fn()}
+            onOpenProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onToggleProject={vi.fn()}
+            onRenameProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onDeleteProject={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            archivedConversations={[]}
+            onRestoreConversation={vi.fn()}
+            onDeleteConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+          />
+        </I18nProvider>,
+      )
+
+      const accountAction = screen.getByRole('button', { name: /Gabriel/ })
+      expect(accountAction).toHaveTextContent(apiKeyOnlyCopy)
+      expect(accountAction).not.toHaveTextContent(unavailableCopy)
+    },
+  )
 })

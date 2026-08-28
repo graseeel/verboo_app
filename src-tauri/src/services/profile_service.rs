@@ -5,27 +5,51 @@ use serde_json::Value;
 use crate::models::types::{
     ProfileActivityDay, ProfilePlan, ProfileResult, ProfileStatus, ProfileUsageSummary, ProfileUser,
 };
+use crate::services::auth_token::AccountCredential;
 
 const API_BASE: &str = "https://code.verboo.ai/api";
 
 /// Mirrors Electron's `ProfileService` (src/main/services/profileService.ts).
 /// Fetches `/me`, `/me/groups`, `/me/subscriptions`, and per-group usage
-/// summaries using the user's API key as Bearer. Returns a normalized
+/// summaries using the user's OAuth credential as Bearer. Returns a normalized
 /// `ProfileResult` for the renderer.
 ///
-/// When `api_key` is None or empty, returns `Unauthenticated` so the renderer
-/// can prompt for login. When all API calls fail, returns `Error`.
-pub struct ProfileService;
+/// An inference-only API key returns `ApiKeyOnly` without any account request.
+/// Missing credentials return `Unauthenticated`; all failed calls return `Error`.
+pub struct ProfileService {
+    api_base: String,
+}
 
 impl ProfileService {
     pub fn new() -> Self {
-        Self
+        Self {
+            api_base: API_BASE.to_string(),
+        }
     }
 
-    pub fn get_profile(&self, api_key: Option<&str>) -> ProfileResult {
-        let key = match api_key {
-            Some(k) if !k.trim().is_empty() => k,
-            _ => {
+    #[cfg(test)]
+    fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into(),
+        }
+    }
+
+    pub fn get_profile(&self, credential: AccountCredential) -> ProfileResult {
+        let oauth_token = match credential {
+            AccountCredential::OAuth(key) if !key.trim().is_empty() => key.trim().to_string(),
+            AccountCredential::ApiKeyOnly => {
+                return ProfileResult {
+                    status: ProfileStatus::ApiKeyOnly,
+                    fetched_at: None,
+                    user: None,
+                    plan: None,
+                    summary: None,
+                    activity: None,
+                    active_days: None,
+                    error: None,
+                };
+            }
+            AccountCredential::OAuth(_) | AccountCredential::Unauthenticated => {
                 return ProfileResult {
                     status: ProfileStatus::Unauthenticated,
                     fetched_at: None,
@@ -59,9 +83,11 @@ impl ProfileService {
         // command runs in a Tauri async context but `get_profile` itself is
         // a sync function — the caller wraps it in `tokio::task::spawn_blocking`
         // if needed.
-        let me = fetch_json(&client, "/me", key).unwrap_or(Value::Null);
-        let groups = fetch_json(&client, "/me/groups", key).unwrap_or(Value::Null);
-        let subscriptions = fetch_json(&client, "/me/subscriptions", key).unwrap_or(Value::Null);
+        let me = fetch_json(&client, &self.api_base, "/me", &oauth_token).unwrap_or(Value::Null);
+        let groups =
+            fetch_json(&client, &self.api_base, "/me/groups", &oauth_token).unwrap_or(Value::Null);
+        let subscriptions = fetch_json(&client, &self.api_base, "/me/subscriptions", &oauth_token)
+            .unwrap_or(Value::Null);
 
         let active_groups = array_from(&groups)
             .into_iter()
@@ -77,7 +103,7 @@ impl ProfileService {
         let mut summaries: Vec<Value> = Vec::new();
         for gid in &group_ids {
             let path = format!("/me/groups/{}/usage/summary?{}", gid, usage_query);
-            if let Ok(v) = fetch_json(&client, &path, key) {
+            if let Ok(v) = fetch_json(&client, &self.api_base, &path, &oauth_token) {
                 summaries.push(v);
             }
         }
@@ -136,11 +162,16 @@ impl Default for ProfileService {
     }
 }
 
-fn fetch_json(client: &Client, path: &str, api_key: &str) -> Result<Value, String> {
-    let url = format!("{API_BASE}{path}");
+fn fetch_json(
+    client: &Client,
+    api_base: &str,
+    path: &str,
+    oauth_token: &str,
+) -> Result<Value, String> {
+    let url = format!("{api_base}{path}");
     let resp = client
         .get(&url)
-        .bearer_auth(api_key)
+        .bearer_auth(oauth_token)
         .header("Accept", "application/json")
         .send()
         .map_err(|e| e.to_string())?;
@@ -508,12 +539,183 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::auth_token::account_credential_from_sources;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    struct RecordingServer {
+        base_url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl RecordingServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test HTTP server");
+            listener
+                .set_nonblocking(true)
+                .expect("make test HTTP server nonblocking");
+            let address = listener.local_addr().expect("read test HTTP address");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_requests = Arc::clone(&requests);
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => record_request(stream, &worker_requests),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("accept test HTTP request: {error}"),
+                    }
+                }
+            });
+
+            Self {
+                base_url: format!("http://{address}"),
+                requests,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn base_url(&self) -> &str {
+            &self.base_url
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .expect("lock recorded requests")
+                .clone()
+        }
+    }
+
+    impl Drop for RecordingServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                worker.join().expect("join test HTTP server");
+            }
+        }
+    }
+
+    fn record_request(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
+        stream
+            .set_nonblocking(false)
+            .expect("make accepted request stream blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set request timeout");
+        let mut raw = Vec::new();
+        let mut chunk = [0_u8; 2048];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    raw.extend_from_slice(&chunk[..read]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => panic!("read test HTTP request: {error}"),
+            }
+        }
+
+        let request = String::from_utf8(raw).expect("test HTTP request is UTF-8");
+        let request_line = request.lines().next().unwrap_or_default().to_string();
+        requests
+            .lock()
+            .expect("record test HTTP request")
+            .push(request);
+
+        let body = if request_line.starts_with("GET /me/groups/group-1/usage/summary?") {
+            r#"{"total":{"tokensInTotal":1,"tokensOutTotal":2,"reqTotal":1}}"#
+        } else if request_line == "GET /me/groups HTTP/1.1" {
+            r#"[{"id":"group-1","status":"active"}]"#
+        } else if request_line == "GET /me/subscriptions HTTP/1.1" {
+            "[]"
+        } else {
+            r#"{"id":"user-1","name":"Test User"}"#
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write test HTTP response");
+    }
+
+    #[test]
+    fn api_key_only_returns_typed_status_without_network_requests() {
+        let server = RecordingServer::start();
+        let service = ProfileService::with_api_base(server.base_url());
+
+        let credential = account_credential_from_sources(None, Some("vbk_valid_for_inference"));
+        let result = service.get_profile(credential);
+
+        assert_eq!(server.requests(), Vec::<String>::new());
+        assert_eq!(result.status, ProfileStatus::ApiKeyOnly);
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize profile result")["status"],
+            "api-key-only"
+        );
+        assert!(result.user.is_none());
+        assert!(result.plan.is_none());
+        assert!(result.summary.is_none());
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn oauth_source_wins_and_authenticates_every_account_request() {
+        let server = RecordingServer::start();
+        let service = ProfileService::with_api_base(server.base_url());
+        let credential = account_credential_from_sources(
+            Some("oauth_account_token"),
+            Some("vbk_inference_token"),
+        );
+
+        let result = service.get_profile(credential);
+
+        assert_eq!(result.status, ProfileStatus::Ready);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 4, "recorded requests: {requests:#?}");
+        let request_lines = requests
+            .iter()
+            .map(|request| request.lines().next().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert!(request_lines.contains(&"GET /me HTTP/1.1"));
+        assert!(request_lines.contains(&"GET /me/groups HTTP/1.1"));
+        assert!(request_lines.contains(&"GET /me/subscriptions HTTP/1.1"));
+        assert!(request_lines
+            .iter()
+            .any(|line| line.starts_with("GET /me/groups/group-1/usage/summary?")));
+        for request in &requests {
+            assert!(request.contains("authorization: Bearer oauth_account_token\r\n"));
+            assert!(!request.contains("vbk_inference_token"));
+        }
+    }
 
     #[test]
     fn no_api_key_returns_unauthenticated() {
         let svc = ProfileService::new();
-        let result = svc.get_profile(None);
+        let result = svc.get_profile(AccountCredential::Unauthenticated);
         assert_eq!(result.status, ProfileStatus::Unauthenticated);
         assert!(result.error.is_some());
     }
@@ -521,7 +723,8 @@ mod tests {
     #[test]
     fn empty_api_key_returns_unauthenticated() {
         let svc = ProfileService::new();
-        let result = svc.get_profile(Some("   "));
+        let credential = account_credential_from_sources(None, Some("   "));
+        let result = svc.get_profile(credential);
         assert_eq!(result.status, ProfileStatus::Unauthenticated);
     }
 

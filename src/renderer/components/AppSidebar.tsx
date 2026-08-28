@@ -417,9 +417,11 @@ export function AppSidebar({
               <strong>{profileName}</strong>
               <small>
                 {profile.plan?.name ?? (
-                  profile.status === 'unauthenticated' && !cliAuth.loggedIn
-                    ? t('sidebar.noApiKey')
-                    : t('profile.planUnavailable')
+                  profile.status === 'api-key-only'
+                    ? t('profile.apiKeyOnlyTitle')
+                    : profile.status === 'unauthenticated' && !cliAuth.loggedIn
+                      ? t('sidebar.noApiKey')
+                      : t('profile.planUnavailable')
                 )}
               </small>
             </span>
