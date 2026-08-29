@@ -518,8 +518,10 @@ mod tests {
             "src/services/android_emulator/mod.rs",
             "src/services/android_emulator/requirements.rs",
             "src/services/android_emulator/session.rs",
+            "src/services/android_emulator/session/boot.rs",
             "src/services/android_emulator/sdk.rs",
             "src/services/android_emulator/setup.rs",
+            "src/services/android_emulator_mcp.rs",
             "src/services/auth_token.rs",
             "src/services/chrome_integration/cli_mcp.rs",
             "src/services/chrome_integration/installer.rs",
@@ -538,6 +540,7 @@ mod tests {
             "src/services/provider_accounts.rs",
             "src/services/provider_catalog.rs",
             "src/services/research_subagent_runner.rs",
+            "src/services/terminal_service.rs",
             "src/services/turn_service.rs",
             "src/services/video/prepare.rs",
             "src/services/video/probe.rs",
@@ -621,8 +624,14 @@ mod tests {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
+                    if path.file_name().and_then(|n| n.to_str()) == Some("tests") {
+                        continue;
+                    }
                     collect_rs_files(&path, out);
                 } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if path.file_stem().and_then(|n| n.to_str()) == Some("tests") {
+                        continue;
+                    }
                     out.push(path);
                 }
             }

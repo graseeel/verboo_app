@@ -1019,49 +1019,66 @@ mod tests {
 
     #[test]
     fn android_and_ios_secret_and_liveness_helpers_stay_byte_identical() {
-        let android = include_str!("android_emulator_bridge.rs");
-        let ios = include_str!("ios_simulator/bridge.rs");
+        let android = include_str!("android_emulator_bridge.rs").replace("\r\n", "\n");
+        let ios = include_str!("ios_simulator/bridge.rs").replace("\r\n", "\n");
         assert_eq!(
             rust_fn_src(
-                android,
+                &android,
                 "fn secrets_match(provided: Option<&str>, expected: &str) -> bool"
             ),
             rust_fn_src(
-                ios,
+                &ios,
                 "fn secrets_match(provided: Option<&str>, expected: &str) -> bool"
             ),
             "secrets_match must stay mirrored across the two MCP bridges"
         );
         assert_eq!(
             rust_fn_src(
-                android,
+                &android,
                 "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool"
             ),
-            rust_fn_src(ios, "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool"),
+            rust_fn_src(&ios, "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool"),
         );
         assert_eq!(
             rust_fn_src(
-                android,
+                &android,
                 "#[cfg(windows)]\nfn process_is_alive(pid: u32) -> bool"
             ),
             rust_fn_src(
-                ios,
+                &ios,
                 "#[cfg(windows)]\nfn process_is_alive(pid: u32) -> bool"
             ),
         );
         assert_eq!(
             rust_fn_src(
-                android,
+                &android,
                 "#[cfg(not(any(unix, windows)))]\nfn process_is_alive(_pid: u32) -> bool"
             ),
             rust_fn_src(
-                ios,
+                &ios,
                 "#[cfg(not(any(unix, windows)))]\nfn process_is_alive(_pid: u32) -> bool"
             ),
         );
     }
 
-    fn rust_fn_src<'a>(source: &'a str, signature: &str) -> &'a str {
+    #[test]
+    fn rust_fn_src_finds_unix_liveness_when_checkout_uses_crlf() {
+        // Windows CI checks out .rs as CRLF unless .gitattributes forces LF.
+        // Signatures in this module are written with `\n`; locate must not
+        // treat that as an implementation drift.
+        let crlf = include_str!("android_emulator_bridge.rs").replace('\n', "\r\n");
+        let body = rust_fn_src(
+            &crlf,
+            "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool",
+        );
+        assert!(
+            body.contains("fn process_is_alive(pid: u32) -> bool"),
+            "CRLF checkout must still yield the unix liveness helper"
+        );
+    }
+
+    fn rust_fn_src(source: &str, signature: &str) -> String {
+        let source = source.replace("\r\n", "\n");
         let start = source
             .find(signature)
             .unwrap_or_else(|| panic!("missing {signature}"));
@@ -1074,7 +1091,7 @@ mod tests {
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return &rest[..open + index + 1];
+                        return rest[..open + index + 1].to_string();
                     }
                 }
                 _ => {}
