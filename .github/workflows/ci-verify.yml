@@ -25,10 +25,19 @@ name: CI Verify
 # bundled_ffmpeg_path and bundled_ffprobe_path tests would fail with
 # ProtectedOrUnreadable on ALL three runners without prep. We prepare
 # sidecars deterministically per OS:
-#   - macOS: evermeet.cx .zip + GPG verificado (chave 0x1A660874)
-#   - Windows: gyan.dev Essential build .zip + SHA-256 verificado
-#   - Linux: apt (pacote Ubuntu 22.04, GPG-assinado)
-# Version pinada ffmpeg 8.1.2. actions/cache evita re-download.
+#   - macOS: evermeet.cx .zip pinado 8.1.2 + GPG (chave 0x1A660874).
+#     URL versionada ainda viva; evermeet nao recicla builds como o BtbN.
+#   - Windows: gyan.dev Essential 8.1.2 .zip + SHA-256 pinado.
+#     Pacote versionado ainda vivo (nao e o alias movel ffmpeg-release-*).
+#   - Linux: BtbN/FFmpeg-Builds, linha n8.1 linux*-gpl (NAO apt: Ubuntu
+#     22.04 entrega ffmpeg 4.4 sem fps_mode >= 5.1). Autobuilds do BtbN
+#     sao reciclados (pin autobuild-2026-08-02-13-17 -> 404 no run
+#     33274196781). O passo resolve o asset em runtime via API de
+#     releases e verifica SHA-256 contra checksums.sha256 da MESMA
+#     release. Fallback: tag `latest` / n8.1-latest. Para atualizar se
+#     a linha n8.1 sumir: ajustar o regex n8.1 no passo Linux.
+# Download failure MUST print "fonte externa do ffmpeg indisponivel"
+# plus the URL. Cache key v2 invalida um possivel tarball 404.
 # Non-media sidecars (verboo-whisper, verboo-in-chrome,
 # verboo-ios-simulator, verboo-android-emulator, computer-use-helper) stay as empty stubs because no
 # cargo test --lib actually executes them (transcribe.rs only resolves the
@@ -300,33 +309,46 @@ jobs:
       # Without this step, bundled_ffmpeg_path / bundled_ffprobe_path
       # would fail with ProtectedOrUnreadable on ALL three runners.
       #
-      # DETERMINISTIC DOWNLOAD policy (A1b-resolved):
-      #   - macOS:  evermeet.cx ffmpeg 8.1.2 + ffprobe 8.1.2, .zip +
-      #             .sig (GPG assinado), chave 0x1A660874. GPG verify
-      #             garante integridade criptográfica.
-      #   - Windows: gyan.dev ffmpeg 8.1.2 Essential build .zip, SHA-256
-      #             verificado contra hash conhecido.
-      #   - Linux:   apt (pacote oficial Ubuntu 22.04), GPG-assinado
-      #             pelo repositório Ubuntu. Exitente via `ffmpeg -version`.
+      # DOWNLOAD policy:
+      #   - macOS:  evermeet.cx ffmpeg/ffprobe 8.1.2 .zip + .sig, GPG
+      #             chave 0x1A660874. Pin versionado (nao recicla).
+      #   - Windows: gyan.dev ffmpeg 8.1.2 Essential .zip, SHA-256
+      #             pinado. Pin versionado (nao recicla).
+      #   - Linux:  BtbN n8.1 linux*-gpl resolvido via API (autobuild
+      #             vigente; fallback latest). SHA-256 de checksums.sha256
+      #             da mesma release. apt 4.4 nao serve (sem fps_mode).
       #
       # A cache (actions/cache@v4) evita baixar ~50MB por runner.
-      # Key por OS+arch para não cruzar plataformas.
+      # Key por OS+arch para não cruzar plataformas. v2: Linux dinamico.
       # ─────────────────────────────────────────────────────────────────
       - name: Cache ffmpeg binaries
         id: cache-ffmpeg
         uses: actions/cache@v4
         with:
           path: .cache/ffmpeg
-          key: ffmpeg-8.1.2-${{ runner.os }}-${{ runner.arch }}
+          key: ffmpeg-8.1-sidecar-v2-${{ runner.os }}-${{ runner.arch }}
 
       - name: Prepare sidecars (macOS)
         # Fonte: evermeet.cx. FFmpeg 8.1.2 universal (x86_64 + arm64).
         # GPG verification: baixa .sig, importa chave 0x1A660874, verifica.
+        # Pin versionado — evermeet nao recicla o arquivo (ainda 200 hoje).
         # O cache (step anterior) restaura .cache/ffmpeg/ se hit.
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          ffmpeg_die() {
+            echo "::error::fonte externa do ffmpeg indisponível: $1"
+            echo "fonte externa do ffmpeg indisponível: $1" >&2
+            exit 1
+          }
+          ffmpeg_curl() {
+            local dest="$1" url="$2"
+            if ! curl -fL --retry 3 --retry-delay 2 -o "$dest" "$url"; then
+              rm -f "$dest"
+              ffmpeg_die "$url"
+            fi
+          }
           TRIPLE="$(rustc -vV | grep '^host:' | sed 's/^host: //')"
           BINDIR="src-tauri/binaries"
           mkdir -p "$BINDIR"
@@ -334,15 +356,18 @@ jobs:
           mkdir -p "$FFCACHE"
           if [ ! -f "$FFCACHE/ffmpeg-8.1.2.zip" ]; then
             echo "download: ffmpeg 8.1.2 + ffprobe 8.1.2 de evermeet.cx"
-            curl -fsSL -o "$FFCACHE/ffmpeg-8.1.2.zip" \
+            ffmpeg_curl "$FFCACHE/ffmpeg-8.1.2.zip" \
               "https://evermeet.cx/ffmpeg/ffmpeg-8.1.2.zip"
-            curl -fsSL -o "$FFCACHE/ffmpeg-8.1.2.zip.sig" \
+            ffmpeg_curl "$FFCACHE/ffmpeg-8.1.2.zip.sig" \
               "https://evermeet.cx/ffmpeg/ffmpeg-8.1.2.zip.sig"
-            curl -fsSL -o "$FFCACHE/ffprobe-8.1.2.zip" \
+            ffmpeg_curl "$FFCACHE/ffprobe-8.1.2.zip" \
               "https://evermeet.cx/ffmpeg/ffprobe-8.1.2.zip"
-            curl -fsSL -o "$FFCACHE/ffprobe-8.1.2.zip.sig" \
+            ffmpeg_curl "$FFCACHE/ffprobe-8.1.2.zip.sig" \
               "https://evermeet.cx/ffmpeg/ffprobe-8.1.2.zip.sig"
-            curl -fsSL "https://evermeet.cx/ffmpeg/0x1A660874.asc" | gpg --import -
+            KEY_URL="https://evermeet.cx/ffmpeg/0x1A660874.asc"
+            if ! curl -fL --retry 3 --retry-delay 2 "$KEY_URL" | gpg --import -; then
+              ffmpeg_die "$KEY_URL"
+            fi
             gpg --verify "$FFCACHE/ffmpeg-8.1.2.zip.sig" "$FFCACHE/ffmpeg-8.1.2.zip"
             gpg --verify "$FFCACHE/ffprobe-8.1.2.zip.sig" "$FFCACHE/ffprobe-8.1.2.zip"
           fi
@@ -360,6 +385,8 @@ jobs:
       - name: Prepare sidecars (Windows)
         # Fonte: gyan.dev. FFmpeg 8.1.2 Essential build x86_64.
         # SHA-256 verification contra hash conhecido e publicado.
+        # Pin versionado — gyan nao recicla o pacote (ainda 200 hoje).
+        # Nao usar ffmpeg-release-essentials.zip (alias movel, hoje 9.0.1).
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -371,9 +398,17 @@ jobs:
           New-Item -ItemType Directory -Force -Path $FFCACHE | Out-Null
           $ZIP = "$FFCACHE\ffmpeg-8.1.2-essentials_build.zip"
           $EXPECTED_HASH = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec"
+          $Uri = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
           if (-not (Test-Path $ZIP)) {
             Write-Host "download: ffmpeg 8.1.2 Essential build de gyan.dev"
-            Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip" -OutFile $ZIP
+            try {
+              Invoke-WebRequest -Uri $Uri -OutFile $ZIP
+            } catch {
+              if (Test-Path $ZIP) { Remove-Item -Force $ZIP }
+              Write-Host "fonte externa do ffmpeg indisponível: $Uri"
+              Write-Error "fonte externa do ffmpeg indisponível: $Uri"
+              exit 1
+            }
             $ACTUAL_HASH = (Get-FileHash -Path $ZIP -Algorithm SHA256).Hash.ToLower()
             if ($ACTUAL_HASH -ne $EXPECTED_HASH) {
               Write-Host "SHA-256 MISMATCH: esperado $EXPECTED_HASH, obtido $ACTUAL_HASH"
@@ -392,38 +427,124 @@ jobs:
           Get-ChildItem $BINDIR
 
       - name: Prepare sidecars (Linux)
-        # Fonte: BtbN/FFmpeg-Builds, release IMUTAVEL autobuild-2026-08-02-13-17
-        # (nao usar a tag 'latest': ela e movel, o conteudo muda a cada
-        # autobuild). Build do branch n8.1.2 — mesma linha do produto que
-        # embute ffmpeg 8.1.2. apt do Ubuntu 22.04 entrega ffmpeg 4.4, que
-        # nao tem fps_mode (>= 5.1) e quebra os testes de video.
-        # SHA-256 verificado contra o checksums.sha256 PUBLICADO na mesma
-        # release (transcrito do arquivo publicado, nao de saida de execucao):
-        #   https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-02-13-17/checksums.sha256
-        #   f34f7ed9b02f54d96f5622393f3a36fc65b3c5b3bb503bb04a3225fde68d71e0  ffmpeg-n8.1.2-34-g9b6c8969e0-linux64-gpl-8.1.tar.xz
+        # Fonte: BtbN/FFmpeg-Builds. Autobuilds sao reciclados — NAO pinar
+        # tag autobuild-YYYY-MM-DD. Resolver em runtime: API de releases,
+        # asset n8.1 linux*-gpl (mesma linha do produto 8.1.x), SHA-256
+        # de checksums.sha256 da mesma release. Fallback: tag latest.
+        # apt Ubuntu 22.04 = ffmpeg 4.4, quebra testes (fps_mode >= 5.1).
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          ffmpeg_die() {
+            echo "::error::fonte externa do ffmpeg indisponível: $1"
+            echo "fonte externa do ffmpeg indisponível: $1" >&2
+            exit 1
+          }
+          ffmpeg_curl() {
+            local dest="$1" url="$2"
+            if ! curl -fL --retry 3 --retry-delay 2 -o "$dest" "$url"; then
+              rm -f "$dest"
+              ffmpeg_die "$url"
+            fi
+          }
           TRIPLE="$(rustc -vV | grep '^host:' | sed 's/^host: //')"
           BINDIR="src-tauri/binaries"
           mkdir -p "$BINDIR"
           FFCACHE=".cache/ffmpeg"
           mkdir -p "$FFCACHE"
-          FFVER="ffmpeg-n8.1.2-34-g9b6c8969e0-linux64-gpl-8.1"
-          TARBALL="$FFCACHE/$FFVER.tar.xz"
-          if [ ! -f "$TARBALL" ]; then
-            echo "download: ffmpeg 8.1.2 (branch n8.1.2) de BtbN/FFmpeg-Builds"
-            curl -fsSL -o "$TARBALL" \
-              "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-02-13-17/$FFVER.tar.xz"
-            ACTUAL_HASH="$(sha256sum "$TARBALL" | awk '{print $1}')"
-            EXPECTED_HASH="f34f7ed9b02f54d96f5622393f3a36fc65b3c5b3bb503bb04a3225fde68d71e0"
+          case "$(uname -m)" in
+            aarch64|arm64) BTBN_ARCH="linuxarm64" ;;
+            *) BTBN_ARCH="linux64" ;;
+          esac
+          shopt -s nullglob
+          CACHED=( "$FFCACHE"/ffmpeg-n8.1*-"${BTBN_ARCH}"-gpl-8.1.tar.xz )
+          TARBALL=""
+          if [ ${#CACHED[@]} -gt 0 ]; then
+            for cand in "${CACHED[@]}"; do
+              sz="$(wc -c < "$cand")"
+              if [ "$sz" -gt 1000000 ]; then
+                TARBALL="$cand"
+                echo "cache hit: $TARBALL ($sz bytes)"
+                break
+              fi
+              echo "cache ignora arquivo pequeno/invalido: $cand ($sz bytes)"
+              rm -f "$cand"
+            done
+          fi
+          if [ -z "$TARBALL" ]; then
+            API_URL="https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=15"
+            echo "resolve: asset n8.1 ${BTBN_ARCH}-gpl via API BtbN"
+            API_ARGS=(-fL --retry 3 --retry-delay 2
+              -H "Accept: application/vnd.github+json"
+              -H "User-Agent: verboo-ci-ffmpeg")
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              API_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+            fi
+            if ! curl "${API_ARGS[@]}" -o "$FFCACHE/btbn-releases.json" "$API_URL"; then
+              rm -f "$FFCACHE/btbn-releases.json"
+              ffmpeg_die "$API_URL"
+            fi
+            RESOLVED="$(python3 - "$FFCACHE/btbn-releases.json" "$BTBN_ARCH" <<'PY'
+          import json, re, sys
+          path, arch = sys.argv[1], sys.argv[2]
+          with open(path, encoding="utf-8") as fh:
+              releases = json.load(fh)
+          pat = re.compile(r"^ffmpeg-n8\.1.*-" + re.escape(arch) + r"-gpl-8\.1\.tar\.xz$")
+
+          def pick(prefer_autobuild):
+              for rel in releases:
+                  if rel.get("draft"):
+                      continue
+                  tag = rel.get("tag_name") or ""
+                  if prefer_autobuild and not tag.startswith("autobuild-"):
+                      continue
+                  if not prefer_autobuild and tag.startswith("autobuild-"):
+                      continue
+                  assets = {a["name"]: a for a in (rel.get("assets") or [])}
+                  names = sorted(n for n in assets if pat.match(n))
+                  if not names:
+                      continue
+                  name = names[0]
+                  csum = assets.get("checksums.sha256") or {}
+                  csum_url = csum.get("browser_download_url") or ""
+                  url = assets[name]["browser_download_url"]
+                  return f"{name}\n{url}\n{csum_url}"
+              return ""
+
+          out = pick(True) or pick(False)
+          if not out:
+              sys.exit(1)
+          sys.stdout.write(out)
+          PY
+            )" || ffmpeg_die "$API_URL (nenhum asset n8.1 ${BTBN_ARCH}-gpl)"
+            ASSET_NAME="$(printf '%s\n' "$RESOLVED" | sed -n '1p')"
+            ASSET_URL="$(printf '%s\n' "$RESOLVED" | sed -n '2p')"
+            CSUM_URL="$(printf '%s\n' "$RESOLVED" | sed -n '3p')"
+            if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ] || [ -z "$CSUM_URL" ]; then
+              ffmpeg_die "$API_URL (asset n8.1 ${BTBN_ARCH}-gpl incompleto)"
+            fi
+            echo "download: $ASSET_NAME"
+            echo "url: $ASSET_URL"
+            TARBALL="$FFCACHE/$ASSET_NAME"
+            PARTIAL="$TARBALL.partial"
+            ffmpeg_curl "$PARTIAL" "$ASSET_URL"
+            ffmpeg_curl "$FFCACHE/checksums.sha256" "$CSUM_URL"
+            EXPECTED_HASH="$(awk -v n="$ASSET_NAME" '$2 == n {print $1; exit}' "$FFCACHE/checksums.sha256")"
+            if [ -z "$EXPECTED_HASH" ]; then
+              rm -f "$PARTIAL"
+              ffmpeg_die "$CSUM_URL (sem SHA-256 para $ASSET_NAME)"
+            fi
+            ACTUAL_HASH="$(sha256sum "$PARTIAL" | awk '{print $1}')"
             if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-              echo "SHA-256 MISMATCH: esperado $EXPECTED_HASH, obtido $ACTUAL_HASH"
+              rm -f "$PARTIAL"
+              echo "SHA-256 MISMATCH: esperado $EXPECTED_HASH, obtido $ACTUAL_HASH" >&2
               exit 1
             fi
             echo "SHA-256 OK: $ACTUAL_HASH"
+            mv -f "$PARTIAL" "$TARBALL"
           fi
+          FFVER="$(basename "$TARBALL" .tar.xz)"
           tar -xJf "$TARBALL" -C "$BINDIR"
           mv -f "$BINDIR/$FFVER/bin/ffmpeg" "$BINDIR/verboo-ffmpeg-${TRIPLE}"
           mv -f "$BINDIR/$FFVER/bin/ffprobe" "$BINDIR/verboo-ffprobe-${TRIPLE}"
