@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::process::{Command, Stdio};
 #[cfg(any(windows, test))]
 use std::time::{Duration, Instant};
@@ -54,12 +54,54 @@ fn default_git_bash_candidates(program_files: Option<&str>) -> Vec<PathBuf> {
 /// freeze: if `where git` hangs, kill it and fall back to local bash.exe
 /// candidates. Keep this well under the 5s test margin and the <1s product
 /// promise on a healthy machine.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const WHERE_GIT_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 
-/// Runs `program args` with a hard deadline. On timeout the child is
-/// killed and the probe reports not-found so callers can fall back.
+/// Polls `poll` until it returns `Some` or `timeout` elapses.
+/// Never spawns a process — the login probe and the pin share this loop.
 #[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum DeadlineProbe {
+    Done { success: bool },
+    TimedOut,
+}
+
+#[cfg(any(windows, test))]
+fn poll_until_deadline(timeout: Duration, mut poll: impl FnMut() -> Option<bool>) -> DeadlineProbe {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(success) = poll() {
+            return DeadlineProbe::Done { success };
+        }
+        if Instant::now() >= deadline {
+            return DeadlineProbe::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Reap without an unbounded `wait()`. A stuck `wait()` after `kill()` is
+/// what can freeze the CI runner for the full job timeout.
+#[cfg(windows)]
+fn reap_child_with_timeout(child: &mut std::process::Child, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// Runs `program args` with a hard deadline. On timeout the child is
+/// killed (bounded reap) and the probe reports not-found so callers
+/// can fall back to local bash.exe candidates.
+#[cfg(windows)]
 fn probe_program_with_timeout(program: &str, args: &[&str], timeout: Duration) -> bool {
     let mut cmd = Command::new(program);
     cmd.args(args)
@@ -70,23 +112,14 @@ fn probe_program_with_timeout(program: &str, args: &[&str], timeout: Duration) -
     let Ok(mut child) = cmd.spawn() else {
         return false;
     };
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
+    match poll_until_deadline(timeout, || {
+        child.try_wait().ok().flatten().map(|s| s.success())
+    }) {
+        DeadlineProbe::Done { success } => success,
+        DeadlineProbe::TimedOut => {
+            let _ = child.kill();
+            reap_child_with_timeout(&mut child, Duration::from_millis(200));
+            false
         }
     }
 }
@@ -342,20 +375,21 @@ mod tests {
 
     #[test]
     fn hanging_where_probe_returns_within_deadline() {
+        // Do not spawn sleep/ping: on CI `kill()` + unbounded `wait()` after
+        // `apply_creation_flags` (Unix setpgid) can freeze the runner for
+        // the full job timeout. The pin is the deadline loop itself.
         let timeout = std::time::Duration::from_millis(300);
         let start = std::time::Instant::now();
-        #[cfg(windows)]
-        let found = probe_program_with_timeout("ping", &["-n", "30", "127.0.0.1"], timeout);
-        #[cfg(not(windows))]
-        let found = probe_program_with_timeout("sleep", &["30"], timeout);
+        let outcome = poll_until_deadline(timeout, || None);
         let elapsed = start.elapsed();
+        assert_eq!(outcome, DeadlineProbe::TimedOut);
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "hanging path probe must return within the deadline, elapsed={elapsed:?}"
         );
         assert!(
-            !found,
-            "a probe that never exits must not be treated as success"
+            elapsed >= timeout,
+            "deadline probe must not return before the timeout, elapsed={elapsed:?}"
         );
     }
 }
