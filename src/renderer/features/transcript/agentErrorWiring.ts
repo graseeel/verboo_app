@@ -30,12 +30,14 @@ export function presentAgentError(
   accountLabel?: string,
 ): TurnErrorPresentation {
   const base = presentTurnError(event, userInterruptedTurns, t('transcript.turnInterrupted'))
+  const correlationId = event.turnId
   // Interruptions keep their own presentation untouched.
-  if (base.presentation === 'interruption') return base
+  if (base.presentation === 'interruption') return { ...base, correlationId }
   if (isCliHeadlessAuthFailure(event.message) || isCliHeadlessAuthFailure(event.payload?.message ?? '')) {
     return {
       text: t('transcript.cliUnauthenticated'),
       technicalDetail: technicalDetailFor(event),
+      correlationId,
     }
   }
   // A recognized provider API error (usage_limit_reached) surfaces as a
@@ -44,6 +46,6 @@ export function presentAgentError(
   // are never the first thing the user reads (field defect).
   const info = parseApiErrorFromBlob(event.message)
   const readable = info && accountLabel ? presentApiErrorMessage(info, accountLabel, t) : undefined
-  if (!readable) return base
-  return { text: readable, technicalDetail: event.message }
+  if (!readable) return { ...base, correlationId }
+  return { text: readable, technicalDetail: event.message, correlationId }
 }

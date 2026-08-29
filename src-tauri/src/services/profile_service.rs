@@ -38,7 +38,7 @@ impl ProfileService {
         let oauth_token = match credential {
             AccountCredential::OAuth(key) if !key.trim().is_empty() => key.trim().to_string(),
             AccountCredential::ApiKeyOnly => {
-                return ProfileResult {
+                let result = ProfileResult {
                     status: ProfileStatus::ApiKeyOnly,
                     fetched_at: None,
                     user: None,
@@ -48,9 +48,11 @@ impl ProfileService {
                     active_days: None,
                     error: None,
                 };
+                emit_profile_refresh(&result, "api-key");
+                return result;
             }
             AccountCredential::OAuth(_) | AccountCredential::Unauthenticated => {
-                return ProfileResult {
+                let result = ProfileResult {
                     status: ProfileStatus::Unauthenticated,
                     fetched_at: None,
                     user: None,
@@ -63,6 +65,8 @@ impl ProfileService {
                             .into(),
                     ),
                 };
+                emit_profile_refresh(&result, "none");
+                return result;
             }
         };
 
@@ -129,7 +133,7 @@ impl ProfileService {
         let subs_empty = array_from(&subscriptions).is_empty();
         let sums_empty = summaries.is_empty();
         if me_empty && groups_empty && subs_empty && sums_empty {
-            return ProfileResult {
+            let result = ProfileResult {
                 status: ProfileStatus::Error,
                 fetched_at: None,
                 user: None,
@@ -141,9 +145,11 @@ impl ProfileService {
                     "Não foi possível carregar dados reais do Verboo com a credencial atual.".into(),
                 ),
             };
+            emit_profile_refresh(&result, "network");
+            return result;
         }
 
-        ProfileResult {
+        let result = ProfileResult {
             status: ProfileStatus::Ready,
             fetched_at: Some(now.timestamp_millis()),
             user,
@@ -152,7 +158,9 @@ impl ProfileService {
             activity: Some(activity),
             active_days: Some(active_days),
             error: None,
-        }
+        };
+        emit_profile_refresh(&result, "network");
+        result
     }
 }
 
@@ -160,6 +168,39 @@ impl Default for ProfileService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn emit_profile_refresh(result: &ProfileResult, origin: &str) {
+    let empty_tokens_out = match &result.summary {
+        None => true,
+        Some(summary) => summary.tokens_out_total.map(|n| n == 0).unwrap_or(true),
+    };
+    let profile_status = match result.status {
+        ProfileStatus::Ready => "ready",
+        ProfileStatus::Unauthenticated => "unauthenticated",
+        ProfileStatus::ApiKeyOnly => "api-key-only",
+        ProfileStatus::Error => "error",
+    };
+    crate::services::diagnostic_log::emit_state(
+        "profile",
+        "profile_refresh",
+        serde_json::json!({
+            "origin": origin,
+            "empty_user": result.user.is_none(),
+            "empty_plan": result.plan.is_none(),
+            "empty_summary": result.summary.is_none(),
+            "empty_activity": result
+                .activity
+                .as_ref()
+                .map(|days| days.is_empty())
+                .unwrap_or(true),
+            "empty_tokens_out": empty_tokens_out,
+            "tokens_in_total": result.summary.as_ref().and_then(|s| s.tokens_in_total),
+            "tokens_out_total": result.summary.as_ref().and_then(|s| s.tokens_out_total),
+            "total_tokens": result.summary.as_ref().and_then(|s| s.total_tokens),
+            "profile_status": profile_status,
+        }),
+    );
 }
 
 fn fetch_json(
@@ -954,5 +995,64 @@ mod tests {
         });
         let days = normalize_activity(&v);
         assert_eq!(days[0].date, "2026-07-01");
+    }
+
+    #[test]
+    fn profile_refresh_logs_incoherent_token_totals() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(
+            dir.path().to_path_buf(),
+            serde_json::json!({ "os": "macos" }),
+        )
+        .unwrap();
+        let result = ProfileResult {
+            status: ProfileStatus::Ready,
+            fetched_at: Some(1),
+            user: Some(ProfileUser {
+                id: Some("user-secret".into()),
+                name: Some("Alice Secret".into()),
+                email: Some("alice@secret.test".into()),
+            }),
+            plan: None,
+            summary: Some(ProfileUsageSummary {
+                tokens_in_total: Some(100),
+                tokens_out_total: Some(7),
+                total_tokens: Some(100),
+                req_total: None,
+            }),
+            activity: None,
+            active_days: None,
+            error: None,
+        };
+        emit_profile_refresh(&result, "network");
+        let raw = std::fs::read_to_string(
+            dir.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        let events: Vec<serde_json::Value> = raw
+            .lines()
+            .filter(|line| line.starts_with('{'))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let refresh = events
+            .iter()
+            .rev()
+            .find(|event| event["code"] == "profile_refresh")
+            .expect("profile_refresh");
+        assert_eq!(refresh["context"]["tokens_in_total"], 100);
+        assert_eq!(refresh["context"]["tokens_out_total"], 7);
+        assert_eq!(refresh["context"]["total_tokens"], 100);
+        assert!(
+            !raw.contains("Alice Secret"),
+            "user name leaked: {raw}"
+        );
+        assert!(
+            !raw.contains("alice@secret.test"),
+            "email leaked: {raw}"
+        );
+        crate::services::diagnostic_log::reset_for_test();
     }
 }

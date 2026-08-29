@@ -219,6 +219,8 @@ describe('verboo-bridge — API shape', () => {
       'listSkills',
       'openUserSkillsFolder',
       'openDiagnosticLogsDir',
+      'diagnosticLogStatus',
+      'diagnosticPackage',
       'getDefaultWorkingDirectory',
       'getBundledCliVersion',
       'chromeIntegrationStatus',
@@ -258,6 +260,21 @@ describe('verboo-bridge — API shape', () => {
     const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
     await bridge.openDiagnosticLogsDir()
     expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(['open_diagnostic_logs_dir'])
+  })
+
+  it('maps diagnosticLogStatus to the Tauri diagnostic_log_status command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.diagnosticLogStatus()
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(['diagnostic_log_status'])
+  })
+
+  it('maps diagnosticPackage to the Tauri diagnostic_package command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.diagnosticPackage(40)
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual([
+      'diagnostic_package',
+      { maxLines: 40 },
+    ])
   })
 
   it('exposes every workspace/files/agent method', () => {

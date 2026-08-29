@@ -239,6 +239,23 @@ pub fn bundled_cli_version() -> Option<String> {
     runtime::current_version()
 }
 
+/// CLI version for `session_start`. Prefers the live runtime, then the
+/// on-disk store pointer — runtime is configured after diagnostic init.
+pub fn installed_cli_version(app_data_dir: &Path) -> Option<String> {
+    crate::services::cli_update::store::CliStore::open(app_data_dir)
+        .ok()?
+        .current()
+        .ok()?
+        .map(|pointer| pointer.version)
+}
+
+pub fn session_cli_version(app_data_dir: &Path) -> String {
+    bundled_cli_version()
+        .or_else(|| installed_cli_version(app_data_dir))
+        .filter(|version| !version.is_empty() && version != "unknown")
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 fn package_version_for_cli(cli_mjs: &Path) -> Option<String> {
     let package = cli_mjs.parent()?.parent()?.join("package.json");
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(package).ok()?).ok()?;
@@ -483,6 +500,30 @@ mod tests {
         assert_eq!(runtime.short_label(), "development-override");
         assert!(runtime.to_string().contains("/tmp/node"));
         assert_eq!(CliRuntime::Missing.short_label(), "missing");
+    }
+
+    fn write_store_current(app_data: &Path, version: &str) {
+        CliStore::open(app_data).unwrap();
+        fs::write(
+            app_data.join("cli").join("current.json"),
+            format!(
+                "{{\n  \"version\": \"{version}\",\n  \"target\": \"aarch64-apple-darwin\",\n  \"manifestDigest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"installedAt\": \"2026-08-29T12:00:00Z\"\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn session_cli_version_reads_store_when_runtime_is_unconfigured() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_environment();
+        let app_data = tempfile::tempdir().unwrap();
+        write_store_current(app_data.path(), "0.15.18");
+        let version = session_cli_version(app_data.path());
+        assert_eq!(version, "0.15.18");
+        assert_ne!(version, "unknown");
     }
 }
 

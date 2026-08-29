@@ -37,7 +37,13 @@ describe('diagnostic logs copy', () => {
       expected: {
         'settings.diagnosticLogs': 'Diagnostic logs',
         'settings.diagnosticLogsBody': 'Local sanitized logs for support. Nothing is sent over the network.',
+        'settings.copyDiagnostics': 'Copy diagnostics',
+        'settings.copyingDiagnostics': 'Copying diagnostics...',
+        'settings.diagnosticCopySuccess': 'Diagnostic package copied.',
+        'settings.diagnosticCopyError': 'Could not copy the diagnostic package.',
+        'settings.diagnosticLogsDegraded': 'Diagnostic logging is degraded. Some recent events may be missing.',
         'settings.openLogsFolder': 'Open logs folder',
+        'transcript.correlationId': 'Correlation ID',
       },
     },
     {
@@ -45,7 +51,13 @@ describe('diagnostic logs copy', () => {
       expected: {
         'settings.diagnosticLogs': 'Logs de diagnóstico',
         'settings.diagnosticLogsBody': 'Logs locais sanitizados para suporte. Nada é enviado pela rede.',
+        'settings.copyDiagnostics': 'Copiar diagnóstico',
+        'settings.copyingDiagnostics': 'Copiando diagnóstico...',
+        'settings.diagnosticCopySuccess': 'Pacote de diagnóstico copiado.',
+        'settings.diagnosticCopyError': 'Não foi possível copiar o pacote de diagnóstico.',
+        'settings.diagnosticLogsDegraded': 'O registro de diagnóstico está degradado. Alguns eventos recentes podem estar ausentes.',
         'settings.openLogsFolder': 'Abrir pasta de logs',
+        'transcript.correlationId': 'Identificador de correlação',
       },
     },
   ])('provides complete translated copy for $language', ({ language, expected }) => {

@@ -413,6 +413,8 @@ export type TranscriptItem = {
   activityDetail?: string
   /** Native diagnostic kept behind a friendly user-facing error summary. */
   errorDetail?: string
+  /** Stable id shared with the local diagnostic event for support lookup. */
+  correlationId?: string
   /** User-requested interruption uses the assistant's quiet transcript treatment. */
   presentation?: 'interruption'
   activityAdditions?: number

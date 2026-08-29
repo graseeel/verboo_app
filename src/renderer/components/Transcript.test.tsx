@@ -239,6 +239,42 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
     expect(container).toHaveTextContent(rawDiagnostic)
   })
 
+  it('shows the event correlation id inside the expandable technical details', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-correlated:error',
+          role: 'system',
+          text: 'Could not complete the turn.',
+          errorDetail: '(exit=1, runtime=bundled-node)',
+          correlationId: 'turn-correlated-109',
+          timestamp: 0,
+        }]}
+      />,
+    )
+
+    const details = container.querySelector('details.turn-error-details') as HTMLDetailsElement
+    expect(details).toHaveTextContent('transcript.correlationId')
+    expect(details).toHaveTextContent('turn-correlated-109')
+  })
+
+  it('does not show a correlation row when the error event has no correlation id', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-legacy:error',
+          role: 'system',
+          text: 'Could not complete the turn.',
+          errorDetail: '(exit=1, runtime=bundled-node)',
+          timestamp: 0,
+        }]}
+      />,
+    )
+
+    const details = container.querySelector('details.turn-error-details') as HTMLDetailsElement
+    expect(details).not.toHaveTextContent('transcript.correlationId')
+  })
+
   it('renders an interruption with the assistant treatment while keeping a real failure highlighted', () => {
     const interruptionText = 'Turn interrupted by the user.'
     const failureText = '(signal, runtime=bundled-node, cwd=/project)'

@@ -3098,6 +3098,7 @@ export function App() {
                 ? ''
                 : errorPresentation.text,
               errorDetail: errorPresentation.technicalDetail,
+              correlationId: errorPresentation.correlationId,
               presentation: 'interruption',
               timestamp: Date.now(),
             })
@@ -3131,7 +3132,12 @@ export function App() {
                 : rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
               appendAssistantText(conversationId, event.turnId, text)
             }
-            stampErrorDetailOnAssistantText(conversationId, event.turnId, errorPresentation.technicalDetail)
+            stampErrorDetailOnAssistantText(
+              conversationId,
+              event.turnId,
+              errorPresentation.technicalDetail,
+              errorPresentation.correlationId,
+            )
           }
         }
       }
@@ -5900,17 +5906,24 @@ export function App() {
     }))
   }
 
-  /** T23: stamp errorDetail on the turn's open assistant text segment so the
+  /** T23: stamp technical diagnostics on the turn's open assistant text segment so the
    *  "Mostrar detalhes técnicos" toggle (TurnErrorDetails, Transcript.tsx:461)
    *  renders on the turn body — not a separate "Sistema" badge. No-op when
-   *  there is no open segment or no detail to attach. */
-  function stampErrorDetailOnAssistantText(conversationId: string, turnId: string, errorDetail: string | undefined) {
-    if (!errorDetail) return
+   *  there is no open segment or no diagnostic metadata to attach. */
+  function stampErrorDetailOnAssistantText(
+    conversationId: string,
+    turnId: string,
+    errorDetail: string | undefined,
+    correlationId: string | undefined,
+  ) {
+    if (!errorDetail && !correlationId) return
     const segId = turnOpenTextSegment.current[turnId]
     if (!segId) return
     updateConversation(conversationId, conversation => ({
       ...conversation,
-      items: conversation.items.map(item => item.id === segId ? { ...item, errorDetail } : item),
+      items: conversation.items.map(item => item.id === segId
+        ? { ...item, errorDetail, correlationId }
+        : item),
       updatedAt: Date.now(),
     }))
   }

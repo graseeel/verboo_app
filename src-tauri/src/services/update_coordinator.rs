@@ -101,6 +101,9 @@ impl UpdateCoordinator {
     fn construct_cli_service(&self, node_path: PathBuf) -> Result<CliUpdateService, String> {
         let service = CliUpdateService::production(&self.app_data_dir, node_path.clone())?;
         super::cli_update::runtime::configure(service.store().clone(), node_path)?;
+        if let Some(version) = super::cli_update::runtime::current_version() {
+            crate::services::diagnostic_log::note_cli_version(&version);
+        }
         Ok(service)
     }
 

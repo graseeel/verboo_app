@@ -111,17 +111,25 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
     {
         let guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
         if let Some(cached) = guard.as_ref() {
+            emit_plugins_refresh(cached.0.len(), "cache");
             return Ok(cached.0.clone());
         }
     }
 
-    let raw = run_cli_json(&["plugin", "list", "--json"], 15).await?;
-    let mut plugins: Vec<Plugin> = parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+    let raw = match run_cli_json(&["plugin", "list", "--json"], 15).await {
+        Ok(raw) => raw,
+        Err(error) => return on_plugin_catalog_error(error),
+    };
+    let mut plugins: Vec<Plugin> = match parse_json(&raw) {
+        Ok(plugins) => plugins,
+        Err(error) => return on_plugin_catalog_error(parse_err(&raw, &error)),
+    };
     // The CLI's bare `list` payload omits `name` — fill from `id`.
     for p in &mut plugins {
         p.fill_name_from_id();
     }
 
+    emit_plugins_refresh(plugins.len(), "network");
     let mut guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
     *guard = Some(CachedList(plugins.clone()));
     Ok(plugins)
@@ -142,15 +150,21 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
     {
         let guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
         if let Some(cached) = guard.as_ref() {
+            emit_plugins_refresh(cached.0.available.len(), "cache");
             return Ok(cached.0.clone());
         }
     }
 
-    let raw = run_cli_json(&["plugin", "list", "--json", "--available"], 30).await?;
+    let raw = match run_cli_json(&["plugin", "list", "--json", "--available"], 30).await {
+        Ok(raw) => raw,
+        Err(error) => return on_plugin_catalog_error(error),
+    };
     // Parse as generic Value first so we can deserialize each `available[]`
     // item individually without failing the whole payload.
-    let value: serde_json::Value =
-        parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+    let value: serde_json::Value = match parse_json(&raw) {
+        Ok(value) => value,
+        Err(error) => return on_plugin_catalog_error(parse_err(&raw, &error)),
+    };
 
     // Installed half — trusted CLI state, but parse tolerantly via
     // `unwrap_or_default()` so a single malformed installed row (CLI drift)
@@ -184,7 +198,25 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
 
     let mut guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
     *guard = Some(CachedAvailable(payload.clone()));
+    emit_plugins_refresh(payload.available.len(), "network");
     Ok(payload)
+}
+
+fn emit_plugins_refresh(item_count: usize, origin: &str) {
+    crate::services::diagnostic_log::emit_state(
+        "plugins",
+        "plugins_refresh",
+        serde_json::json!({
+            "item_count": item_count,
+            "origin": origin,
+            "degraded": item_count == 0,
+        }),
+    );
+}
+
+fn on_plugin_catalog_error<T>(error: PluginError) -> Result<T, PluginError> {
+    emit_plugins_refresh(0, "network");
+    Err(error)
 }
 
 /// Parses `available[]` items one-by-one, skipping invalid rows with a warn
@@ -1867,5 +1899,92 @@ mod tests {
         let json = serde_json::to_value(&r).expect("serialize");
         assert!(json.get("pluginId").is_none(), "None pluginId must be skipped");
         assert!(json.get("exitCode").is_none(), "None exitCode must be skipped");
+    }
+
+    #[test]
+    fn plugins_refresh_marks_empty_catalog_as_degraded() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(
+            dir.path().to_path_buf(),
+            serde_json::json!({ "os": "macos" }),
+        )
+        .unwrap();
+        emit_plugins_refresh(0, "network");
+        emit_plugins_refresh(4, "cache");
+        let raw = std::fs::read_to_string(
+            dir.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        let events: Vec<serde_json::Value> = raw
+            .lines()
+            .filter(|line| line.starts_with('{'))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let refreshes: Vec<_> = events
+            .iter()
+            .filter(|event| event["code"] == "plugins_refresh")
+            .collect();
+        assert_eq!(refreshes.len(), 2, "{raw}");
+        assert_eq!(refreshes[0]["context"]["item_count"], 0);
+        assert_eq!(refreshes[0]["context"]["degraded"], true);
+        assert_eq!(refreshes[0]["context"]["origin"], "network");
+        assert_eq!(refreshes[1]["context"]["item_count"], 4);
+        assert_eq!(refreshes[1]["context"]["degraded"], false);
+        crate::services::diagnostic_log::reset_for_test();
+    }
+
+    #[test]
+    fn plugin_catalog_error_emits_degraded_refresh_before_returning() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(
+            dir.path().to_path_buf(),
+            serde_json::json!({ "os": "macos" }),
+        )
+        .unwrap();
+        let returned = on_plugin_catalog_error::<Vec<Plugin>>(PluginError::CliNotFound);
+        assert!(matches!(returned, Err(PluginError::CliNotFound)));
+        let raw = std::fs::read_to_string(
+            dir.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        let events: Vec<serde_json::Value> = raw
+            .lines()
+            .filter(|line| line.starts_with('{'))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let refresh = events
+            .iter()
+            .rev()
+            .find(|event| event["code"] == "plugins_refresh")
+            .expect("plugins_refresh on error");
+        assert_eq!(refresh["context"]["item_count"], 0);
+        assert_eq!(refresh["context"]["degraded"], true);
+        assert_eq!(refresh["context"]["origin"], "network");
+        crate::services::diagnostic_log::reset_for_test();
+    }
+
+    #[test]
+    fn plugin_list_and_available_do_not_swallow_cli_errors_without_emit() {
+        let src = include_str!("plugins_service.rs");
+        assert!(
+            !src.contains("run_cli_json(&[\"plugin\", \"list\", \"--json\"], 15).await?"),
+            "plugin_list must emit before propagating a CLI error"
+        );
+        assert!(
+            !src.contains(
+                "run_cli_json(&[\"plugin\", \"list\", \"--json\", \"--available\"], 30).await?"
+            ),
+            "plugin_available must emit before propagating a CLI error"
+        );
+        assert!(
+            src.contains("on_plugin_catalog_error"),
+            "catalog helpers must route CLI/parse failures through on_plugin_catalog_error"
+        );
     }
 }

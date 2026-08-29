@@ -4,6 +4,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  Clipboard,
   Computer,
   FolderOpen,
   Ghost,
@@ -154,6 +155,8 @@ export function SettingsView({
   const { toast } = useToast()
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const [copyingDiagnostics, setCopyingDiagnostics] = useState(false)
+  const [diagnosticLogDegraded, setDiagnosticLogDegraded] = useState(false)
   // Issue #94: a rejected check_for_updates invoke never reaches the snapshot
   // stream — without local state the failure would be silent.
   const [updateCheckError, setUpdateCheckError] = useState<string | undefined>(undefined)
@@ -197,6 +200,26 @@ export function SettingsView({
     setUpdateCheckError(undefined)
   }, [updateSnapshot])
 
+  useEffect(() => {
+    if (activeTab !== 'general') {
+      setDiagnosticLogDegraded(false)
+      return
+    }
+    let cancelled = false
+    void window.verboo.diagnosticLogStatus()
+      .then(status => {
+        if (!cancelled) setDiagnosticLogDegraded(status.degraded)
+      })
+      .catch(() => {
+        // If the renderer cannot even read logger status, do not let the
+        // observability path fail silently; surface the same conservative warning.
+        if (!cancelled) setDiagnosticLogDegraded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab])
+
   async function submitApiKey() {
     setSaving(true)
     try {
@@ -215,6 +238,20 @@ export function SettingsView({
   async function saveCustomInstructions() {
     await onUserSettingsChange({ customInstructions: customDraft })
     toast(t('toast.instructionsSaved'))
+  }
+
+  async function copyDiagnosticPackage() {
+    setCopyingDiagnostics(true)
+    try {
+      const diagnosticPackage = await window.verboo.diagnosticPackage()
+      const copied = await window.verboo.clipboardWriteText(diagnosticPackage)
+      if (!copied) throw new Error('clipboard_write_failed')
+      toast(t('settings.diagnosticCopySuccess'))
+    } catch {
+      toast(t('settings.diagnosticCopyError'), 'error')
+    } finally {
+      setCopyingDiagnostics(false)
+    }
   }
 
   function requestAccessModeChange(mode: AccessMode) {
@@ -611,21 +648,37 @@ export function SettingsView({
             </section>
 
             <section className="settings-panel">
-              <div className="settings-row settings-row--control">
+              <div className="settings-row settings-row--control settings-diagnostic-row">
                 <FolderOpen size={16} />
                 <div>
                   <strong>{t('settings.diagnosticLogs')}</strong>
                   <p>{t('settings.diagnosticLogsBody')}</p>
+                  {diagnosticLogDegraded ? (
+                    <p className="settings-warning" role="status">
+                      {t('settings.diagnosticLogsDegraded')}
+                    </p>
+                  ) : null}
                 </div>
-                <button
-                  className="button button-sm button-secondary"
-                  type="button"
-                  onClick={() => {
-                    void window.verboo.openDiagnosticLogsDir()
-                  }}
-                >
-                  {t('settings.openLogsFolder')}
-                </button>
+                <div className="settings-diagnostic-actions">
+                  <button
+                    className="button button-sm button-secondary"
+                    type="button"
+                    disabled={copyingDiagnostics}
+                    onClick={() => void copyDiagnosticPackage()}
+                  >
+                    <Clipboard size={14} />
+                    {t(copyingDiagnostics ? 'settings.copyingDiagnostics' : 'settings.copyDiagnostics')}
+                  </button>
+                  <button
+                    className="button button-sm button-secondary"
+                    type="button"
+                    onClick={() => {
+                      void window.verboo.openDiagnosticLogsDir()
+                    }}
+                  >
+                    {t('settings.openLogsFolder')}
+                  </button>
+                </div>
               </div>
             </section>
 

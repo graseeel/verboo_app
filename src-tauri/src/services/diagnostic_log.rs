@@ -3,6 +3,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
@@ -12,7 +13,9 @@ pub const JSONL_FILE: &str = "verboo.jsonl";
 pub const STDERR_FILE: &str = "cli-stderr.log";
 pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 pub const KEEP_FILES: usize = 5;
+pub const DEFAULT_PACKAGE_LINES: usize = 80;
 
+const LAST_VERSIONS_FILE: &str = "last-versions.json";
 const TOP_LEVEL_KEYS: &[&str] = &[
     "ts",
     "level",
@@ -22,7 +25,7 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "context",
     "correlation_id",
 ];
-const CONTEXT_KEYS: &[&str] = &[
+const CONTEXT_STRING_KEYS: &[&str] = &[
     "os",
     "arch",
     "app_version",
@@ -30,12 +33,32 @@ const CONTEXT_KEYS: &[&str] = &[
     "node_version",
     "provider",
     "model",
+    "previous_app_version",
+    "previous_cli_version",
+];
+const CONTEXT_COUNT_KEYS: &[&str] = &[
+    "account_count",
+    "item_count",
+    "tokens_in_total",
+    "tokens_out_total",
+    "total_tokens",
+];
+const CONTEXT_BOOL_KEYS: &[&str] = &[
+    "degraded",
+    "empty_user",
+    "empty_plan",
+    "empty_summary",
+    "empty_activity",
+    "empty_tokens_out",
 ];
 const MAX_MESSAGE_CHARS: usize = 512;
+const MAX_PACKAGE_LINES: usize = 500;
 
 static LOGGER: Mutex<Option<Arc<DiagnosticLog>>> = Mutex::new(None);
 static BASE_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
 static SESSION_ID: Mutex<Option<String>> = Mutex::new(None);
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static DEGRADED: AtomicBool = AtomicBool::new(false);
 
 struct RotatingFile {
     path: PathBuf,
@@ -80,7 +103,9 @@ impl RotatingFile {
             self.size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
             self.file = Some(file);
         }
-        Ok(self.file.as_mut().expect("log file opened"))
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "log file missing"))
     }
 
     #[cfg(test)]
@@ -150,10 +175,7 @@ impl DiagnosticLog {
     pub fn write_event(&self, event: Value) -> io::Result<()> {
         let finalized = finalize_event(event);
         let line = serde_json::to_string(&finalized).unwrap_or_else(|_| "{}".to_string());
-        self.jsonl
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .write_line(&line)
+        write_rotating_line(&self.jsonl, "jsonl", &line)
     }
 
     pub fn append_cli_stderr(&self, line: &str) -> io::Result<()> {
@@ -163,11 +185,28 @@ impl DiagnosticLog {
         if sanitized.is_empty() {
             return Ok(());
         }
-        self.stderr
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .write_line(sanitized)
+        write_rotating_line(&self.stderr, "cli-stderr", sanitized)
     }
+}
+
+fn write_rotating_line(mutex: &Mutex<RotatingFile>, label: &str, line: &str) -> io::Result<()> {
+    let mut file = match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            mark_degraded(&format!("{label} mutex poisoned"));
+            poisoned.into_inner()
+        }
+    };
+    if let Err(error) = file.write_line(line) {
+        mark_degraded(&format!("{label} write failed: {error}"));
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn mark_degraded(reason: &str) {
+    DEGRADED.store(true, Ordering::SeqCst);
+    eprintln!("[verboo:diagnostic-log] degraded: {reason}");
 }
 
 /// OS-standard log directory resolved by Tauri. No path constructed here.
@@ -181,11 +220,11 @@ pub fn try_init(dir: Result<PathBuf, String>, context: Value) {
     match dir {
         Ok(dir) => {
             if let Err(error) = init(dir, context) {
-                eprintln!("[verboo:diagnostic-log] failed to initialize: {error}");
+                mark_degraded(&format!("failed to initialize: {error}"));
             }
         }
         Err(error) => {
-            eprintln!("[verboo:diagnostic-log] log directory unavailable: {error}");
+            mark_degraded(&format!("log directory unavailable: {error}"));
         }
     }
 }
@@ -202,15 +241,36 @@ pub fn init(dir: PathBuf, context: Value) -> io::Result<String> {
     *SESSION_ID
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(session_id.clone());
-    let _ = log.write_event(json!({
+    ACTIVE.store(true, Ordering::SeqCst);
+    DEGRADED.store(false, Ordering::SeqCst);
+    if let Err(error) = log.write_event(json!({
         "level": "info",
         "code": "session_start",
         "component": "session",
         "message": "session started",
         "correlation_id": session_id,
         "context": context,
-    }));
+    })) {
+        mark_degraded(&format!("session_start write failed: {error}"));
+    }
+    maybe_emit_version_changed(&log, &context, &session_id);
     Ok(session_id)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticLogStatus {
+    pub active: bool,
+    pub degraded: bool,
+    pub dir: Option<String>,
+}
+
+pub fn status() -> DiagnosticLogStatus {
+    DiagnosticLogStatus {
+        active: ACTIVE.load(Ordering::Relaxed),
+        degraded: DEGRADED.load(Ordering::Relaxed),
+        dir: global_log().map(|log| log.dir.to_string_lossy().into_owned()),
+    }
 }
 
 pub fn emit_error(
@@ -228,14 +288,97 @@ pub fn emit_error(
     let correlation_id = correlation_id
         .filter(|id| !id.is_empty())
         .unwrap_or(&fallback);
-    let _ = log.write_error(component, code, message, correlation_id, context);
+    if let Err(error) = log.write_error(component, code, message, correlation_id, context) {
+        eprintln!("[verboo:diagnostic-log] write failed: {error}");
+    }
+}
+
+pub fn emit_state(component: &str, code: &str, extra_context: Value) {
+    let Some(log) = global_log() else {
+        return;
+    };
+    let context = merge_context(extra_context);
+    let correlation_id = session_id();
+    if let Err(error) = log.write_event(json!({
+        "level": "info",
+        "code": code,
+        "component": component,
+        "message": code,
+        "correlation_id": correlation_id,
+        "context": context,
+    })) {
+        eprintln!("[verboo:diagnostic-log] write failed: {error}");
+    }
+}
+
+pub fn note_cli_version(version: &str) {
+    let version = version.trim();
+    if version.is_empty() || version == "unknown" {
+        return;
+    }
+    {
+        let mut base = BASE_CONTEXT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(object) = base.as_mut().and_then(Value::as_object_mut) {
+            if object.get("cli_version").and_then(Value::as_str) == Some(version) {
+                return;
+            }
+            object.insert("cli_version".into(), json!(version));
+        }
+    }
+    emit_state(
+        "session",
+        "session_cli_resolved",
+        json!({ "cli_version": version }),
+    );
+}
+
+pub fn diagnostic_package(max_lines: usize) -> Result<String, String> {
+    let log = global_log().ok_or_else(|| "diagnostic log unavailable".to_string())?;
+    let max_lines = max_lines.clamp(1, MAX_PACKAGE_LINES);
+    let context = BASE_CONTEXT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_else(|| json!({}));
+    let raw = fs::read_to_string(log.dir.join(JSONL_FILE)).unwrap_or_default();
+    let lines: Vec<&str> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(max_lines);
+    let reported = status();
+    let mut body = String::from("=== Verboo diagnostic package ===\n");
+    for key in [
+        "app_version",
+        "cli_version",
+        "os",
+        "arch",
+        "node_version",
+    ] {
+        if let Some(value) = context.get(key).and_then(Value::as_str) {
+            body.push_str(&format!("{key}: {value}\n"));
+        }
+    }
+    body.push_str(&format!("log_active: {}\n", reported.active));
+    body.push_str(&format!("log_degraded: {}\n", reported.degraded));
+    body.push_str("--- jsonl ---\n");
+    for line in &lines[start..] {
+        body.push_str(line);
+        body.push('\n');
+    }
+    sanitize_text(&mut body);
+    Ok(body)
 }
 
 pub fn append_cli_stderr(line: &str) {
     let Some(log) = global_log() else {
         return;
     };
-    let _ = log.append_cli_stderr(line);
+    if let Err(error) = log.append_cli_stderr(line) {
+        eprintln!("[verboo:diagnostic-log] write failed: {error}");
+    }
 }
 
 fn global_log() -> Option<Arc<DiagnosticLog>> {
@@ -332,7 +475,7 @@ fn allowlist_context(value: &Value) -> Value {
         return json!({});
     };
     let mut out = Map::new();
-    for key in CONTEXT_KEYS {
+    for key in CONTEXT_STRING_KEYS {
         let Some(raw) = object.get(*key).and_then(Value::as_str) else {
             continue;
         };
@@ -341,7 +484,131 @@ fn allowlist_context(value: &Value) -> Value {
             out.insert((*key).to_string(), json!(sanitized));
         }
     }
+    if let Some(raw) = object.get("origin").and_then(Value::as_str) {
+        if let Some(origin) = allow_origin(&sanitize_owned(raw)) {
+            out.insert("origin".into(), json!(origin));
+        }
+    }
+    if let Some(raw) = object.get("profile_status").and_then(Value::as_str) {
+        if let Some(status) = allow_profile_status(&sanitize_owned(raw)) {
+            out.insert("profile_status".into(), json!(status));
+        }
+    }
+    for key in CONTEXT_COUNT_KEYS {
+        if let Some(count) = object.get(*key).and_then(allow_count) {
+            out.insert((*key).to_string(), json!(count));
+        }
+    }
+    for key in CONTEXT_BOOL_KEYS {
+        if let Some(flag) = object.get(*key).and_then(Value::as_bool) {
+            out.insert((*key).to_string(), json!(flag));
+        }
+    }
+    if let Some(items) = object.get("usage_window_counts").and_then(Value::as_array) {
+        let counts: Vec<u64> = items.iter().filter_map(allow_count).collect();
+        if counts.len() == items.len() {
+            out.insert("usage_window_counts".into(), json!(counts));
+        }
+    }
     Value::Object(out)
+}
+
+fn allow_count(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+}
+
+fn allow_origin(value: &str) -> Option<&'static str> {
+    match value {
+        "network" => Some("network"),
+        "cache" => Some("cache"),
+        "api-key" => Some("api-key"),
+        "cli" => Some("cli"),
+        "none" => Some("none"),
+        _ => None,
+    }
+}
+
+fn allow_profile_status(value: &str) -> Option<&'static str> {
+    match value {
+        "ready" => Some("ready"),
+        "unauthenticated" => Some("unauthenticated"),
+        "api-key-only" => Some("api-key-only"),
+        "error" => Some("error"),
+        _ => None,
+    }
+}
+
+fn maybe_emit_version_changed(log: &DiagnosticLog, context: &Value, session_id: &str) {
+    let app = context
+        .get("app_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let cli = context
+        .get("cli_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let previous = load_last_versions(&log.dir);
+    if let Some(previous) = previous {
+        let prev_app = previous.app_version.as_deref().unwrap_or("");
+        let prev_cli = previous.cli_version.as_deref().unwrap_or("");
+        let app_changed = is_real_version(prev_app) && is_real_version(app) && prev_app != app;
+        let cli_changed = is_real_version(prev_cli) && is_real_version(cli) && prev_cli != cli;
+        if app_changed || cli_changed {
+            if let Err(error) = log.write_event(json!({
+                "level": "info",
+                "code": "version_changed",
+                "component": "session",
+                "message": "version changed",
+                "correlation_id": session_id,
+                "context": {
+                    "app_version": app,
+                    "cli_version": cli,
+                    "previous_app_version": prev_app,
+                    "previous_cli_version": prev_cli,
+                },
+            })) {
+                mark_degraded(&format!("version_changed write failed: {error}"));
+            }
+        }
+    }
+    store_last_versions(&log.dir, app, cli);
+}
+
+fn is_real_version(value: &str) -> bool {
+    !value.is_empty() && value != "unknown"
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct LastSeenVersions {
+    #[serde(default)]
+    app_version: Option<String>,
+    #[serde(default)]
+    cli_version: Option<String>,
+}
+
+fn load_last_versions(dir: &Path) -> Option<LastSeenVersions> {
+    let bytes = fs::read(dir.join(LAST_VERSIONS_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn store_last_versions(dir: &Path, app: &str, cli: &str) {
+    let payload = LastSeenVersions {
+        app_version: nonempty_version(app),
+        cli_version: nonempty_version(cli),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&payload) {
+        let _ = fs::write(dir.join(LAST_VERSIONS_FILE), bytes);
+    }
+}
+
+fn nonempty_version(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn now_iso() -> String {
@@ -573,6 +840,8 @@ pub(crate) fn reset_for_test() {
     *SESSION_ID
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    ACTIVE.store(false, Ordering::SeqCst);
+    DEGRADED.store(false, Ordering::SeqCst);
 }
 
 #[cfg(test)]
@@ -774,5 +1043,251 @@ mod tests {
                 "production logger must not hardcode path fragment {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn provider_accounts_refresh_logs_counts_without_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = DiagnosticLog::open(dir.path()).unwrap();
+        log.write_event(json!({
+            "level": "info",
+            "code": "provider_accounts_refresh",
+            "component": "provider",
+            "message": "accounts refreshed",
+            "correlation_id": "sess-1",
+            "context": {
+                "account_count": 2,
+                "usage_window_counts": [3, 1],
+                "origin": "network",
+                "degraded": false,
+                "display_label": "Codex Secret Corp",
+                "account_id": "acct-secret-99",
+                "plan_display_name": "Pro Secret Plan",
+            },
+        }))
+        .unwrap();
+        let parsed = &read_jsonl(dir.path())[0];
+        assert_eq!(parsed["level"], "info");
+        assert_eq!(parsed["code"], "provider_accounts_refresh");
+        assert_eq!(parsed["context"]["account_count"], 2);
+        assert_eq!(parsed["context"]["usage_window_counts"], json!([3, 1]));
+        assert_eq!(parsed["context"]["origin"], "network");
+        assert_eq!(parsed["context"]["degraded"], false);
+        let line = fs::read_to_string(dir.path().join(JSONL_FILE)).unwrap();
+        assert!(!line.contains("Codex Secret Corp"), "account label leaked: {line}");
+        assert!(!line.contains("acct-secret-99"), "account id leaked: {line}");
+        assert!(!line.contains("Pro Secret Plan"), "plan name leaked: {line}");
+        assert!(!line.contains("display_label"), "identity key leaked: {line}");
+        assert!(!line.contains("account_id"), "identity key leaked: {line}");
+    }
+
+    #[test]
+    fn session_start_with_resolvable_cli_does_not_write_unknown() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.0-beta",
+                "cli_version": "0.15.18",
+            }),
+        )
+        .unwrap();
+        let parsed = &read_jsonl(dir.path())[0];
+        assert_eq!(parsed["code"], "session_start");
+        assert_eq!(parsed["context"]["cli_version"], "0.15.18");
+        let line = fs::read_to_string(dir.path().join(JSONL_FILE)).unwrap();
+        assert!(
+            !line.contains("unknown"),
+            "resolvable CLI must not be recorded as unknown: {line}"
+        );
+        reset_for_test();
+    }
+
+    #[test]
+    fn note_cli_version_completes_session_that_started_unknown() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let session = init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.0-beta",
+                "cli_version": "unknown",
+            }),
+        )
+        .unwrap();
+        note_cli_version("0.15.18");
+        let events = read_jsonl(dir.path());
+        let resolved = events
+            .iter()
+            .find(|event| event["code"] == "session_cli_resolved")
+            .expect("session_cli_resolved must be emitted when CLI becomes known");
+        assert_eq!(resolved["correlation_id"], session);
+        assert_eq!(resolved["context"]["cli_version"], "0.15.18");
+        assert_eq!(resolved["level"], "info");
+        reset_for_test();
+    }
+
+    #[test]
+    fn version_change_between_runs_emits_event() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.0-beta",
+                "cli_version": "0.15.17",
+            }),
+        )
+        .unwrap();
+        reset_for_test();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.1-beta",
+                "cli_version": "0.15.18",
+            }),
+        )
+        .unwrap();
+        let events = read_jsonl(dir.path());
+        let changed = events
+            .iter()
+            .find(|event| event["code"] == "version_changed")
+            .expect("version_changed must be emitted across runs");
+        assert_eq!(changed["level"], "info");
+        assert_eq!(changed["context"]["previous_app_version"], "0.8.0-beta");
+        assert_eq!(changed["context"]["previous_cli_version"], "0.15.17");
+        assert_eq!(changed["context"]["app_version"], "0.8.1-beta");
+        assert_eq!(changed["context"]["cli_version"], "0.15.18");
+        reset_for_test();
+    }
+
+    #[test]
+    fn unknown_to_resolved_cli_is_not_a_version_change() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.0-beta",
+                "cli_version": "unknown",
+            }),
+        )
+        .unwrap();
+        reset_for_test();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "app_version": "0.8.0-beta",
+                "cli_version": "0.15.18",
+            }),
+        )
+        .unwrap();
+        let events = read_jsonl(dir.path());
+        assert!(
+            events.iter().all(|event| event["code"] != "version_changed"),
+            "resolving CLI from unknown must not look like a regression: {events:?}"
+        );
+        reset_for_test();
+    }
+
+    #[test]
+    fn poisoned_writer_is_reported_by_status() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path().to_path_buf(), json!({ "os": "macos" })).unwrap();
+        let log = global_log().expect("logger");
+        let poison = std::thread::spawn({
+            let log = Arc::clone(&log);
+            move || {
+                let _hold = log.jsonl.lock().unwrap();
+                panic!("poison diagnostic jsonl");
+            }
+        })
+        .join();
+        assert!(poison.is_err(), "thread must poison the mutex");
+        emit_state(
+            "provider",
+            "provider_accounts_refresh",
+            json!({ "account_count": 0, "origin": "none" }),
+        );
+        let reported = status();
+        assert!(reported.active, "logger must stay active after poison recovery");
+        assert!(
+            reported.degraded,
+            "poison must be queryable so the UI can warn"
+        );
+        let expected = dir.path().to_string_lossy().into_owned();
+        assert_eq!(reported.dir.as_deref(), Some(expected.as_str()));
+        reset_for_test();
+    }
+
+    #[test]
+    fn try_init_failure_is_reported_as_degraded() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        try_init(Err("app_log_dir unavailable".into()), json!({ "os": "macos" }));
+        let reported = status();
+        assert!(!reported.active);
+        assert!(
+            reported.degraded,
+            "init failure must not stay silent to the renderer"
+        );
+        reset_for_test();
+    }
+
+    #[test]
+    fn diagnostic_package_redacts_injected_secrets() {
+        let _guard = serial_test_lock();
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        init(
+            dir.path().to_path_buf(),
+            json!({
+                "os": "macos",
+                "arch": "aarch64",
+                "app_version": "0.8.0-beta",
+                "cli_version": "0.15.18",
+            }),
+        )
+        .unwrap();
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.secret-sig";
+        let mut jsonl = OpenOptions::new()
+            .append(true)
+            .open(dir.path().join(JSONL_FILE))
+            .unwrap();
+        writeln!(
+            jsonl,
+            r#"{{"level":"error","code":"leak","message":"vbk_liveSecret99 Bearer super-secret-bearer jwt={jwt}"}}"#
+        )
+        .unwrap();
+        drop(jsonl);
+        let package = diagnostic_package(80).expect("package");
+        assert!(
+            !package.contains("vbk_liveSecret99"),
+            "vbk_ secret leaked: {package}"
+        );
+        assert!(
+            !package.contains("super-secret-bearer"),
+            "Bearer secret leaked: {package}"
+        );
+        assert!(
+            !package.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            "JWT leaked: {package}"
+        );
+        assert!(package.contains("0.8.0-beta"), "package must include app_version");
+        assert!(package.contains("0.15.18"), "package must include cli_version");
+        reset_for_test();
     }
 }

@@ -100,6 +100,16 @@
     position: static;
   }
 
+  .settings-diagnostic-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .settings-diagnostic-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .settings-select-row > svg {
     display: none;
   }

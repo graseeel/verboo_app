@@ -8,6 +8,18 @@ const translator = createTranslator('en-US')
 const rawDiagnostic = '(signal, runtime=bundled-node, cwd=/project)'
 
 describe('agent error wiring', () => {
+  it('carries the event turn id as the diagnostic correlation id', () => {
+    const event: Extract<AgentEvent, { type: 'error' }> = {
+      type: 'error',
+      turnId: 'turn-correlation-109',
+      message: rawDiagnostic,
+    }
+
+    expect(presentAgentError(event, new Set(), translator).correlationId).toBe(
+      'turn-correlation-109',
+    )
+  })
+
   it('passes the production interruption label when a marked turn errors', () => {
     const event: Extract<AgentEvent, { type: 'error' }> = {
       type: 'error',
@@ -29,7 +41,10 @@ describe('agent error wiring', () => {
       message: rawDiagnostic,
     }
 
-    expect(presentAgentError(event, new Set(), translator)).toEqual({ text: rawDiagnostic })
+    expect(presentAgentError(event, new Set(), translator)).toEqual({
+      text: rawDiagnostic,
+      correlationId: 'turn-wired-failure',
+    })
   })
 
   it('localizes the CLI headless unauthenticated gate and keeps the raw message as technical detail', () => {

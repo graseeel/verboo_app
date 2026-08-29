@@ -3,6 +3,7 @@ import type { AgentEvent } from '../../../shared/types'
 export type TurnErrorPresentation = {
   text: string
   technicalDetail?: string
+  correlationId?: string
   presentation?: 'interruption'
 }
 

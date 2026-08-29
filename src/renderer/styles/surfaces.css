@@ -1605,6 +1605,13 @@
   margin-top: 0;
 }
 
+.settings-diagnostic-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* Inside a settings card the panel title already names the field — the
    selector's own icon+label would repeat it. */
 .settings-panel .language-selector__label {
@@ -2281,6 +2288,20 @@
 .turn-error-details summary {
   width: fit-content;
   cursor: pointer;
+}
+
+.turn-error-correlation {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+
+.turn-error-correlation code {
+  user-select: text;
+  color: var(--text-muted);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .turn-error-details pre {

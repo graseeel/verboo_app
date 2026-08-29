@@ -44,6 +44,9 @@ beforeEach(() => {
     readProjectInstructionFile: vi.fn(async () => ({ exists: false, content: '' })),
     writeProjectInstructionFile: vi.fn(async () => {}),
     openDiagnosticLogsDir: vi.fn(async () => ''),
+    diagnosticLogStatus: vi.fn(async () => ({ active: true, degraded: false, dir: '/tmp/logs' })),
+    diagnosticPackage: vi.fn(async () => 'sanitized diagnostic package'),
+    clipboardWriteText: vi.fn(async () => true),
   }
 })
 
@@ -211,6 +214,77 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
     fireEvent.click(screen.getByRole('button', { name: 'Open logs folder' }))
     await waitFor(() => expect(openDiagnosticLogsDir).toHaveBeenCalledTimes(1))
+  })
+
+  it('copies the sanitized diagnostic package and confirms success', async () => {
+    const diagnosticPackage = vi.fn().mockResolvedValue('sanitized diagnostic package')
+    const clipboardWriteText = vi.fn().mockResolvedValue(true)
+    ;(window as unknown as { verboo: Record<string, unknown> }).verboo = {
+      ...(window as unknown as { verboo: Record<string, unknown> }).verboo,
+      diagnosticPackage,
+      clipboardWriteText,
+    }
+
+    renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
+
+    await waitFor(() => expect(diagnosticPackage).toHaveBeenCalledWith())
+    expect(clipboardWriteText).toHaveBeenCalledWith('sanitized diagnostic package')
+    expect(await screen.findByText('Diagnostic package copied.')).toBeInTheDocument()
+  })
+
+  it('reports a diagnostic package failure without claiming it copied', async () => {
+    const diagnosticPackage = vi.fn().mockRejectedValue(new Error('package unavailable'))
+    const clipboardWriteText = vi.fn().mockResolvedValue(true)
+    ;(window as unknown as { verboo: Record<string, unknown> }).verboo = {
+      ...(window as unknown as { verboo: Record<string, unknown> }).verboo,
+      diagnosticPackage,
+      clipboardWriteText,
+    }
+
+    renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
+
+    expect(await screen.findByText('Could not copy the diagnostic package.')).toBeInTheDocument()
+    expect(clipboardWriteText).not.toHaveBeenCalled()
+    expect(screen.queryByText('Diagnostic package copied.')).not.toBeInTheDocument()
+  })
+
+  it('warns in the logs section when diagnostic logging is degraded', async () => {
+    const diagnosticLogStatus = vi.fn().mockResolvedValue({
+      active: true,
+      degraded: true,
+      dir: '/tmp/logs',
+    })
+    ;(window as unknown as { verboo: Record<string, unknown> }).verboo = {
+      ...(window as unknown as { verboo: Record<string, unknown> }).verboo,
+      diagnosticLogStatus,
+    }
+
+    renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
+
+    expect(await screen.findByText(
+      'Diagnostic logging is degraded. Some recent events may be missing.',
+    )).toHaveClass('settings-warning')
+  })
+
+  it('does not warn when diagnostic logging reports normal status', async () => {
+    const diagnosticLogStatus = vi.fn().mockResolvedValue({
+      active: true,
+      degraded: false,
+      dir: '/tmp/logs',
+    })
+    ;(window as unknown as { verboo: Record<string, unknown> }).verboo = {
+      ...(window as unknown as { verboo: Record<string, unknown> }).verboo,
+      diagnosticLogStatus,
+    }
+
+    renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
+
+    await waitFor(() => expect(diagnosticLogStatus).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText(
+      'Diagnostic logging is degraded. Some recent events may be missing.',
+    )).not.toBeInTheDocument()
   })
 
   it('renders Account with avatar, credentials, consumption, and plan controls', () => {

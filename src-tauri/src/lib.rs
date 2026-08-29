@@ -625,6 +625,20 @@ fn open_diagnostic_logs_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path)
 }
 
+#[tauri::command]
+fn diagnostic_log_status() -> services::diagnostic_log::DiagnosticLogStatus {
+    services::diagnostic_log::status()
+}
+
+#[tauri::command]
+fn diagnostic_package(max_lines: Option<u32>) -> Result<String, String> {
+    services::diagnostic_log::diagnostic_package(
+        max_lines
+            .map(|n| n as usize)
+            .unwrap_or(services::diagnostic_log::DEFAULT_PACKAGE_LINES),
+    )
+}
+
 /// Returns the untrusted skills (from a list) that need approval before
 /// injection into the prompt. The renderer calls this before sending a turn
 /// with skills — if the result is non-empty, it shows the permission panel
@@ -2370,8 +2384,7 @@ pub fn run() {
                     "os": std::env::consts::OS,
                     "arch": std::env::consts::ARCH,
                     "app_version": app.package_info().version.to_string(),
-                    "cli_version": services::cli_spawn::bundled_cli_version()
-                        .unwrap_or_else(|| "unknown".to_string()),
+                    "cli_version": services::cli_spawn::session_cli_version(&app_data_dir),
                     "node_version": services::cli_update::PINNED_NODE_VERSION,
                 }),
             );
@@ -2835,6 +2848,8 @@ pub fn run() {
             list_skills,
             open_user_skills_folder,
             open_diagnostic_logs_dir,
+            diagnostic_log_status,
+            diagnostic_package,
             check_skill_approval,
             approve_skill,
             fire_completion_notification,
