@@ -1061,20 +1061,47 @@ mod tests {
         );
     }
 
+    fn as_pure_crlf(source: &str) -> String {
+        // Independent of git EOL: collapse any mix to LF, then emit CRLF.
+        // A naive `.replace('\n', "\r\n")` on a Windows checkout yields
+        // `\r\r\n` and rust_fn_src cannot find `\n` signatures.
+        source.replace("\r\n", "\n").replace('\n', "\r\n")
+    }
+
     #[test]
     fn rust_fn_src_finds_unix_liveness_when_checkout_uses_crlf() {
-        // Windows CI checks out .rs as CRLF unless .gitattributes forces LF.
-        // Signatures in this module are written with `\n`; locate must not
-        // treat that as an implementation drift.
-        let crlf = include_str!("android_emulator_bridge.rs").replace('\n', "\r\n");
-        let body = rust_fn_src(
-            &crlf,
-            "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool",
+        let raw = include_str!("android_emulator_bridge.rs");
+        let lf = raw.replace("\r\n", "\n");
+        let already_crlf = lf.replace('\n', "\r\n");
+        assert!(
+            !already_crlf.contains("\r\r\n"),
+            "constructed CRLF fixture must be pure"
+        );
+        assert_eq!(
+            as_pure_crlf(raw),
+            already_crlf,
+            "as_pure_crlf must ignore whether git delivered LF or CRLF"
+        );
+        assert_eq!(as_pure_crlf(&already_crlf), already_crlf);
+        assert!(
+            already_crlf.replace('\n', "\r\n").contains("\r\r\n"),
+            "naive LF→CRLF on an already-CRLF checkout is the Windows CI bug"
+        );
+
+        let signature = "#[cfg(unix)]\nfn process_is_alive(pid: u32) -> bool";
+        let from_lf = rust_fn_src(&as_pure_crlf(&lf), signature);
+        let from_crlf = rust_fn_src(&as_pure_crlf(&already_crlf), signature);
+        let direct_crlf = rust_fn_src(&already_crlf, signature);
+        assert!(
+            from_lf.contains("fn process_is_alive(pid: u32) -> bool"),
+            "LF source converted to CRLF must still yield the unix liveness helper"
         );
         assert!(
-            body.contains("fn process_is_alive(pid: u32) -> bool"),
-            "CRLF checkout must still yield the unix liveness helper"
+            from_crlf.contains("fn process_is_alive(pid: u32) -> bool"),
+            "already-CRLF source converted to CRLF must still yield the unix liveness helper"
         );
+        assert_eq!(from_lf, from_crlf);
+        assert_eq!(from_crlf, direct_crlf);
     }
 
     fn rust_fn_src(source: &str, signature: &str) -> String {
