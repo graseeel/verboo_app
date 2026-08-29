@@ -157,6 +157,19 @@ struct AccountsData {
     accounts: Vec<ProviderAccountSummary>,
 }
 
+fn log_provider_error(code: &str, provider: Option<&str>) {
+    crate::services::diagnostic_log::emit_error(
+        "provider",
+        code,
+        code,
+        None,
+        match provider {
+            Some(provider) => serde_json::json!({ "provider": provider }),
+            None => serde_json::json!({}),
+        },
+    );
+}
+
 /// Maps CLI-provided error codes to stable, renderer-facing codes. Known
 /// codes pass through; anything else becomes a generic protocol error. Raw
 /// CLI output never reaches this function — the envelope is parsed before any
@@ -202,19 +215,24 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|_| "provider_cli_unavailable".to_string())?;
+        .map_err(|_| {
+            log_provider_error("provider_cli_unavailable", None);
+            "provider_cli_unavailable".to_string()
+        })?;
 
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for _ in reader.lines() {}
+            for line in reader.lines().map_while(Result::ok) {
+                crate::services::diagnostic_log::append_cli_stderr(&line);
+            }
         });
     }
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "provider_cli_unavailable".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        log_provider_error("provider_cli_unavailable", None);
+        "provider_cli_unavailable".to_string()
+    })?;
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -241,6 +259,7 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
         if started.elapsed() > CLI_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
+            log_provider_error("provider_usage_timeout", None);
             return Err("provider_usage_timeout".to_string());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -267,13 +286,19 @@ fn parse_capabilities(stdout: &str) -> Result<ProviderCapabilities, String> {
             provider_usage_v1: false,
             login_transport: None,
         }),
-        Err(code) => Err(code),
+        Err(code) => {
+            log_provider_error(&code, None);
+            Err(code)
+        }
     }
 }
 
 pub fn provider_accounts_list() -> Result<Vec<ProviderAccountSummary>, String> {
     let stdout = run_cli(&["provider-accounts", "list"])?;
-    let data: AccountsData = parse_envelope(&stdout)?;
+    let data: AccountsData = parse_envelope(&stdout).map_err(|code| {
+        log_provider_error(&code, None);
+        code
+    })?;
     Ok(data
         .accounts
         .into_iter()
@@ -320,18 +345,25 @@ pub fn provider_accounts_usage(
                 error_code: None,
             }])
         }
-        Ok(_) => Ok(vec![ProviderUsageResult {
-            provider: provider.as_str().to_string(),
-            account_id: account_id.as_str().to_string(),
-            snapshot: None,
-            error_code: Some("provider_protocol_error".to_string()),
-        }]),
-        Err(error_code) => Ok(vec![ProviderUsageResult {
-            provider: provider.as_str().to_string(),
-            account_id: account_id.as_str().to_string(),
-            snapshot: None,
-            error_code: Some(stable_error(&error_code)),
-        }]),
+        Ok(_) => {
+            log_provider_error("provider_protocol_error", Some(provider.as_str()));
+            Ok(vec![ProviderUsageResult {
+                provider: provider.as_str().to_string(),
+                account_id: account_id.as_str().to_string(),
+                snapshot: None,
+                error_code: Some("provider_protocol_error".to_string()),
+            }])
+        }
+        Err(error_code) => {
+            let stable = stable_error(&error_code);
+            log_provider_error(&stable, Some(provider.as_str()));
+            Ok(vec![ProviderUsageResult {
+                provider: provider.as_str().to_string(),
+                account_id: account_id.as_str().to_string(),
+                snapshot: None,
+                error_code: Some(stable),
+            }])
+        }
     }
 }
 
@@ -408,8 +440,11 @@ pub fn provider_account_models(
         "--account",
         account_id.as_str(),
     ])?;
-    let models =
-        parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| models_error_code(&code))?;
+    let models = parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| {
+        let mapped = models_error_code(&code);
+        log_provider_error(&mapped, Some(provider.as_str()));
+        mapped
+    })?;
     Ok(models
         .into_iter()
         .filter(|model| model.provider.as_deref() == Some(provider.as_str()))

@@ -43,6 +43,7 @@ beforeEach(() => {
     })),
     readProjectInstructionFile: vi.fn(async () => ({ exists: false, content: '' })),
     writeProjectInstructionFile: vi.fn(async () => {}),
+    openDiagnosticLogsDir: vi.fn(async () => ''),
   }
 })
 
@@ -197,7 +198,19 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     expect(screen.getByText('Update channel')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Check for updates' })).toBeInTheDocument()
     expect(screen.getByText('Version 0.6.2 is current.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open logs folder' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reset app preferences' })).toBeInTheDocument()
+  })
+
+  it('opens the local logs folder from General without sending anything over the network', async () => {
+    const openDiagnosticLogsDir = vi.fn().mockResolvedValue('/tmp/logs')
+    ;(window as unknown as { verboo: Record<string, unknown> }).verboo = {
+      ...(window as unknown as { verboo: Record<string, unknown> }).verboo,
+      openDiagnosticLogsDir,
+    }
+    renderSettings(buildProps({ activeTab: 'general' as SettingsViewProps['activeTab'] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open logs folder' }))
+    await waitFor(() => expect(openDiagnosticLogsDir).toHaveBeenCalledTimes(1))
   })
 
   it('renders Account with avatar, credentials, consumption, and plan controls', () => {

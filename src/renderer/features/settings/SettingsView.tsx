@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Computer,
+  FolderOpen,
   Ghost,
   KeyRound,
   Languages,
@@ -606,6 +607,25 @@ export function SettingsView({
                     {t('updates.unsupported')}
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="settings-panel">
+              <div className="settings-row settings-row--control">
+                <FolderOpen size={16} />
+                <div>
+                  <strong>{t('settings.diagnosticLogs')}</strong>
+                  <p>{t('settings.diagnosticLogsBody')}</p>
+                </div>
+                <button
+                  className="button button-sm button-secondary"
+                  type="button"
+                  onClick={() => {
+                    void window.verboo.openDiagnosticLogsDir()
+                  }}
+                >
+                  {t('settings.openLogsFolder')}
+                </button>
               </div>
             </section>
 

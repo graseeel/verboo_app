@@ -394,6 +394,13 @@ impl NodeRuntimeService {
             bootstrap_required: true,
         });
         crate::services::bootstrap_diag::record(&detail);
+        crate::services::diagnostic_log::emit_error(
+            "updater",
+            "runtime_install_failed",
+            &detail,
+            None,
+            serde_json::json!({}),
+        );
         Err(detail)
     }
 }

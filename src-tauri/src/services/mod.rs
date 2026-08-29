@@ -16,6 +16,7 @@ pub mod cli_spawn;
 pub mod cli_update;
 pub mod cli_subagent_transcript;
 pub mod credentials_store;
+pub mod diagnostic_log;
 pub mod feedback_service;
 pub mod file_service;
 pub mod git_service;

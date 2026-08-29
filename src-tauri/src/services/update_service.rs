@@ -290,6 +290,13 @@ impl UpdateService {
 
     /// Records a check failure. Returns the resulting snapshot.
     pub fn mark_error(&self, error: String) -> UpdateSnapshot {
+        crate::services::diagnostic_log::emit_error(
+            "updater",
+            "update_check_failed",
+            &error,
+            None,
+            serde_json::json!({}),
+        );
         if let Ok(mut state) = self.state.lock() {
             state.checking = false;
             state.snapshot.status = UpdateStatus::Error;
@@ -731,6 +738,25 @@ mod tests {
         assert_eq!(snap.status, UpdateStatus::Error);
         assert_eq!(snap.error.as_deref(), Some("network down"));
         assert!(snap.last_checked_at.is_some());
+    }
+
+    #[test]
+    fn mark_error_logs_update_check_failed_not_runtime_install_failed() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(dir.path().to_path_buf(), serde_json::json!({}))
+            .unwrap();
+        let s = service(true);
+        s.mark_error("network down".into());
+        let raw = std::fs::read_to_string(
+            dir.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        assert!(raw.contains("update_check_failed"), "{raw}");
+        assert!(!raw.contains("runtime_install_failed"), "{raw}");
+        crate::services::diagnostic_log::reset_for_test();
     }
 
     #[test]

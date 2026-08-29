@@ -30,6 +30,32 @@ describe('@-mention + voice i18n keys', () => {
   })
 })
 
+describe('diagnostic logs copy', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'settings.diagnosticLogs': 'Diagnostic logs',
+        'settings.diagnosticLogsBody': 'Local sanitized logs for support. Nothing is sent over the network.',
+        'settings.openLogsFolder': 'Open logs folder',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'settings.diagnosticLogs': 'Logs de diagnóstico',
+        'settings.diagnosticLogsBody': 'Logs locais sanitizados para suporte. Nada é enviado pela rede.',
+        'settings.openLogsFolder': 'Abrir pasta de logs',
+      },
+    },
+  ])('provides complete translated copy for $language', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
+  })
+})
+
 describe('Android emulator F2 copy', () => {
   it.each([
     ['en-US', 'ADB PNG'],

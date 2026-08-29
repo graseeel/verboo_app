@@ -1484,6 +1484,7 @@ impl TurnService {
                 let reader = BufReader::new(se);
                 for line in reader.lines().map_while(Result::ok) {
                     eprintln!("[verboo-cli stderr] {line}");
+                    crate::services::diagnostic_log::append_cli_stderr(&line);
                     if let Ok(mut b) = buf.lock() {
                         b.push_str(&line);
                         b.push('\n');
@@ -1910,6 +1911,21 @@ impl Default for TurnService {
 }
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
+    if event.event_type == EventType::Error {
+        let code = event
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("category"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("process_error");
+        crate::services::diagnostic_log::emit_error(
+            "turn",
+            code,
+            event.message.as_deref().unwrap_or(""),
+            event.turn_id.as_deref(),
+            serde_json::json!({}),
+        );
+    }
     if let Err(e) = app.emit(AGENT_EVENT_CHANNEL, event) {
         eprintln!("[turn_service] failed to emit agent event: {e}");
     }

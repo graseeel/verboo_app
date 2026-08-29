@@ -218,6 +218,7 @@ describe('verboo-bridge — API shape', () => {
       'toggleWindowZoom',
       'listSkills',
       'openUserSkillsFolder',
+      'openDiagnosticLogsDir',
       'getDefaultWorkingDirectory',
       'getBundledCliVersion',
       'chromeIntegrationStatus',
@@ -251,6 +252,12 @@ describe('verboo-bridge — API shape', () => {
       ['chrome_integration_remove'],
       ['open_chrome_extension_store'],
     ])
+  })
+
+  it('maps openDiagnosticLogsDir to the Tauri open_diagnostic_logs_dir command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.openDiagnosticLogsDir()
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(['open_diagnostic_logs_dir'])
   })
 
   it('exposes every workspace/files/agent method', () => {

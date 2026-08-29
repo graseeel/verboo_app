@@ -642,6 +642,18 @@ impl CliUpdateService {
     fn fail(&self, error: String, bootstrap: bool) {
         let error = crate::services::bootstrap_diag::sanitize(&error);
         crate::services::bootstrap_diag::record(&error);
+        let code = if bootstrap {
+            "cli_initialization_failed"
+        } else {
+            "cli_update_failed"
+        };
+        crate::services::diagnostic_log::emit_error(
+            "updater",
+            code,
+            &error,
+            None,
+            serde_json::json!({}),
+        );
         let mut state = self.lock_state();
         state.snapshot.status = if bootstrap {
             CliUpdateStatus::BootstrapError
@@ -817,6 +829,56 @@ mod tests {
         let snapshot = service.check().unwrap();
         assert_eq!(snapshot.status, CliUpdateStatus::NotAvailable);
         assert_eq!(snapshot.current_version.as_deref(), Some("0.15.6"));
+    }
+
+    #[test]
+    fn fail_logs_cli_initialization_failed_during_bootstrap() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let logs = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(logs.path().to_path_buf(), serde_json::json!({}))
+            .unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let service = service(
+            app_data.path(),
+            app_data.path().join("node"),
+            Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
+            signed_source(),
+        );
+        service.fail("offline".into(), true);
+        let raw = std::fs::read_to_string(
+            logs.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        assert!(raw.contains("cli_initialization_failed"), "{raw}");
+        assert!(!raw.contains("cli_update_failed"), "{raw}");
+        crate::services::diagnostic_log::reset_for_test();
+    }
+
+    #[test]
+    fn fail_logs_cli_update_failed_when_not_bootstrap() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let logs = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(logs.path().to_path_buf(), serde_json::json!({}))
+            .unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let service = service(
+            app_data.path(),
+            app_data.path().join("node"),
+            Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
+            signed_source(),
+        );
+        service.fail("offline".into(), false);
+        let raw = std::fs::read_to_string(
+            logs.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        assert!(raw.contains("cli_update_failed"), "{raw}");
+        assert!(!raw.contains("cli_initialization_failed"), "{raw}");
+        crate::services::diagnostic_log::reset_for_test();
     }
 
     #[test]

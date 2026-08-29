@@ -219,6 +219,13 @@ fn emit_provider_confirmation_error(
         Some(PROVIDER_LOGIN_CONFIRMATION_FAILED),
         sanitized_provider_confirmation_error_code(code),
     );
+    crate::services::diagnostic_log::emit_error(
+        "provider",
+        PROVIDER_LOGIN_CONFIRMATION_FAILED,
+        PROVIDER_LOGIN_CONFIRMATION_FAILED,
+        None,
+        serde_json::json!({ "provider": provider }),
+    );
     emit(ProviderLoginEvent {
         provider: provider.to_string(),
         state: ProviderLoginState::Error,
@@ -234,6 +241,19 @@ fn emit_logged(emit: &Arc<dyn Fn(ProviderLoginEvent) + Send + Sync>, event: Prov
         "[verboo:provider-login] provider={} state={:?} message={:?}",
         event.provider, event.state, event.message
     );
+    if matches!(event.state, ProviderLoginState::Error) {
+        let code = match event.message.as_deref() {
+            Some(PROVIDER_LOGIN_CONFIRMATION_FAILED) => PROVIDER_LOGIN_CONFIRMATION_FAILED,
+            _ => "provider_cli_unavailable",
+        };
+        crate::services::diagnostic_log::emit_error(
+            "provider",
+            code,
+            event.message.as_deref().unwrap_or(code),
+            None,
+            serde_json::json!({ "provider": event.provider }),
+        );
+    }
     emit(event);
 }
 

@@ -261,6 +261,7 @@ const api = {
   listSkills: (workingDirectory: string) =>
     invoke<SkillSummary[]>('list_skills', { workingDirectory }),
   openUserSkillsFolder: () => invoke<string>('open_user_skills_folder'),
+  openDiagnosticLogsDir: () => invoke<string>('open_diagnostic_logs_dir'),
   // Skill approval gating (item 1.8): returns untrusted skills that need
   // approval before injection. If non-empty, renderer shows the permission
   // panel for each. Reuses the existing PermissionApprovalPanel.

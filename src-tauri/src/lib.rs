@@ -212,7 +212,9 @@ async fn chrome_integration_configure(
     request: ChromeIntegrationRequest,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, move |service| service.configure(request)).await
+    let result = with_chrome_service(service, move |service| service.configure(request)).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
@@ -220,21 +222,40 @@ async fn chrome_integration_repair(
     request: ChromeIntegrationRequest,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, move |service| service.repair(request)).await
+    let result = with_chrome_service(service, move |service| service.repair(request)).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
 async fn chrome_integration_test(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeConnectionTestResult, String> {
-    with_chrome_service(service, |service| service.test_connection()).await
+    let result = with_chrome_service(service, |service| service.test_connection()).await;
+    match &result {
+        Ok(test) => {
+            if let Some(code) = test.error_code.as_deref() {
+                services::diagnostic_log::emit_error(
+                    "chrome",
+                    code,
+                    code,
+                    None,
+                    serde_json::json!({}),
+                );
+            }
+        }
+        Err(error) => log_chrome_err(error),
+    }
+    result
 }
 
 #[tauri::command]
 async fn chrome_integration_remove(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, |service| service.remove()).await
+    let result = with_chrome_service(service, |service| service.remove()).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
@@ -242,10 +263,42 @@ fn open_chrome_extension_store(
     app: tauri::AppHandle,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
-    let url = service.store_url().ok_or("chrome_store_url_missing")?;
+    let url = match service.store_url() {
+        Some(url) => url,
+        None => {
+            log_chrome_err("chrome_store_url_missing");
+            return Err("chrome_store_url_missing".into());
+        }
+    };
     open_external_url(&app, url)
 }
 
+
+fn log_chrome_status(result: &Result<ChromeIntegrationStatus, String>) {
+    match result {
+        Ok(status) => {
+            if let Some(code) = status.error_code.as_deref() {
+                services::diagnostic_log::emit_error(
+                    "chrome",
+                    code,
+                    code,
+                    None,
+                    serde_json::json!({}),
+                );
+            }
+        }
+        Err(error) => log_chrome_err(error),
+    }
+}
+
+fn log_chrome_err(error: &str) {
+    let code = if error.starts_with("chrome_") || error == "multiple_browser_sessions" {
+        error
+    } else {
+        "chrome_integration_unknown_error"
+    };
+    services::diagnostic_log::emit_error("chrome", code, error, None, serde_json::json!({}));
+}
 
 #[tauri::command]
 fn get_credential_status(
@@ -558,6 +611,18 @@ fn list_skills(working_directory: String) -> Result<Vec<SkillSummary>, String> {
 fn open_user_skills_folder() -> Result<String, String> {
     let path = crate::services::skills_service::SkillsService::open_user_skills_folder()?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_diagnostic_logs_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = services::diagnostic_log::resolve_log_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("Falha ao criar pasta de logs: {error}"))?;
+    let path = dir.to_string_lossy().to_string();
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|error| format!("Falha ao abrir pasta de logs: {error}"))?;
+    Ok(path)
 }
 
 /// Returns the untrusted skills (from a list) that need approval before
@@ -2299,6 +2364,18 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
 
+            services::diagnostic_log::try_init(
+                services::diagnostic_log::resolve_log_dir(app.handle()),
+                serde_json::json!({
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "app_version": app.package_info().version.to_string(),
+                    "cli_version": services::cli_spawn::bundled_cli_version()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    "node_version": services::cli_update::PINNED_NODE_VERSION,
+                }),
+            );
+
             let whats_new_preview = std::env::var("VERBOO_WHATS_NEW_PREVIEW")
                 .map(|value| value == "1")
                 .unwrap_or(false);
@@ -2757,6 +2834,7 @@ pub fn run() {
             heartbeat_menu_bar,
             list_skills,
             open_user_skills_folder,
+            open_diagnostic_logs_dir,
             check_skill_approval,
             approve_skill,
             fire_completion_notification,
@@ -2857,6 +2935,24 @@ pub fn run() {
 
 #[cfg(test)]
 mod platform_contract_tests {
+    #[test]
+    fn diagnostic_log_must_not_abort_tauri_setup() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains("diagnostic_log::try_init("),
+            "setup must initialize diagnostic logs through try_init so a missing log dir cannot abort boot"
+        );
+        assert!(
+            !setup.contains("diagnostic_log::resolve_log_dir(app.handle())\n                .map_err(std::io::Error::other)?"),
+            "resolve_log_dir must not use ? inside Tauri setup"
+        );
+    }
+
     #[test]
     fn native_dialog_labels_are_supplied_by_the_renderer() {
         let source = include_str!("lib.rs").replace("\r\n", "\n");

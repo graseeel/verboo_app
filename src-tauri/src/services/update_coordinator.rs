@@ -110,6 +110,13 @@ impl UpdateCoordinator {
             let detail = crate::services::bootstrap_diag::sanitize(&detail);
             eprintln!("[verboo:cli-update] initialization failed: {detail}");
             crate::services::bootstrap_diag::record(&detail);
+            crate::services::diagnostic_log::emit_error(
+                "updater",
+                "cli_initialization_failed",
+                &detail,
+                None,
+                serde_json::json!({}),
+            );
             self.set_cli_initialization_error(Some(detail.clone()));
             detail
         })
