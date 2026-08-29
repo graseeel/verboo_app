@@ -911,6 +911,7 @@ export type ProviderUsageWindow = {
   kind: 'session' | 'weekly' | 'model-scoped-weekly' | 'unknown'
   displayLabel: string
   modelScope?: string
+  windowMinutes?: number
   usedPercent: number
   resetsAt?: string
 }

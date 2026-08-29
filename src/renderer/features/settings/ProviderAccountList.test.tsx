@@ -42,6 +42,82 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ProviderAccou
 }
 
 describe('ProviderAccountList', () => {
+  it('keeps distinct per-account quotas and derives each window label from its reported duration', () => {
+    const rows: ProviderUsageRowState[] = [
+      {
+        account: { ...account, accountId: 'codex-a', displayLabel: 'Codex Work' },
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'codex',
+          accountId: 'codex-a',
+          plan: { id: 'plus', displayName: 'Plus' },
+          windows: [
+            {
+              id: 'codex:primary',
+              kind: 'session',
+              displayLabel: 'must not decide the duration',
+              windowMinutes: 180,
+              usedPercent: 11,
+              resetsAt: '2026-08-29T03:00:00.000Z',
+            },
+            {
+              id: 'codex:partial-hour',
+              kind: 'unknown',
+              displayLabel: 'must not decide the duration',
+              windowMinutes: 90,
+              usedPercent: 22,
+              resetsAt: '2026-08-29T04:30:00.000Z',
+            },
+            {
+              id: 'codex:legacy-session',
+              kind: 'session',
+              displayLabel: 'legacy session without duration',
+              usedPercent: 97,
+              resetsAt: '2026-08-29T05:00:00.000Z',
+            },
+          ],
+          fetchedAt: '2026-08-28T23:00:00.000Z',
+        },
+      },
+      {
+        account: { ...account, accountId: 'codex-b', displayLabel: 'Codex Personal', isDefault: false },
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'codex',
+          accountId: 'codex-b',
+          plan: { id: 'plus', displayName: 'Plus' },
+          windows: [{
+            id: 'codex:primary',
+            kind: 'session',
+            displayLabel: 'must not decide the duration',
+            windowMinutes: 480,
+            usedPercent: 73,
+            resetsAt: '2026-08-29T08:00:00.000Z',
+          }],
+          fetchedAt: '2026-08-28T23:00:01.000Z',
+        },
+      },
+    ]
+
+    renderList({ rows })
+
+    const workCard = screen.getByText('Codex Work').closest('article')!
+    const personalCard = screen.getByText('Codex Personal').closest('article')!
+    expect(within(workCard).getByText('3 hours')).toBeInTheDocument()
+    expect(within(workCard).getByText(/11% used/)).toBeInTheDocument()
+    expect(within(workCard).getByText('90 minutes')).toBeInTheDocument()
+    expect(within(workCard).getByText(/22% used/)).toBeInTheDocument()
+    expect(within(workCard).queryByText(/73% used/)).toBeNull()
+    expect(within(workCard).queryByText(/97% used/)).toBeNull()
+    expect(within(personalCard).getByText('8 hours')).toBeInTheDocument()
+    expect(within(personalCard).getByText(/73% used/)).toBeInTheDocument()
+    expect(within(personalCard).queryByText(/11% used/)).toBeNull()
+    expect(within(personalCard).queryByText(/22% used/)).toBeNull()
+    expect(within(personalCard).queryByText(/97% used/)).toBeNull()
+  })
+
   it('shows the detected usage plan when the account summary has no plan yet', () => {
     const row: ProviderUsageRowState = {
       account: { ...account, planDisplayName: undefined },

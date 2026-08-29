@@ -49,6 +49,8 @@ pub struct ProviderUsageWindow {
     pub display_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<u32>,
     pub used_percent: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
@@ -450,6 +452,32 @@ mod tests {
             validate_usage_snapshot_identity(&snapshot, "codex", "local-a"),
             Ok(())
         );
+    }
+
+    #[test]
+    fn preserves_provider_reported_window_duration() {
+        let stdout = r#"{
+          "schemaVersion":1,
+          "ok":true,
+          "data":{
+            "schemaVersion":1,
+            "provider":"codex",
+            "accountId":"local-a",
+            "windows":[{
+              "id":"codex:primary",
+              "kind":"session",
+              "displayLabel":"ignored",
+              "windowMinutes":300,
+              "usedPercent":27
+            }],
+            "fetchedAt":"2026-08-28T23:00:00.000Z"
+          }
+        }"#;
+
+        let snapshot: ProviderUsageSnapshot =
+            parse_envelope(stdout).expect("usage snapshot with a duration must parse");
+
+        assert_eq!(snapshot.windows[0].window_minutes, Some(300));
     }
 
     #[test]
