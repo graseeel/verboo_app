@@ -8,7 +8,6 @@ import { usePluginIcon } from './usePluginIcon'
 import { OFFICIAL_MARKETPLACES } from '../../../shared/plugins'
 import verbooIconUrl from '../../../../assets/branding/verboo-mascot.png'
 
-// ── Monogram ────────────────────────────────────────────────────────
 // Deterministic initials + color from a plugin id/name. Gives each plugin
 // a recognizable avatar without storing icons. Color is hashed to a palette
 // so the same plugin always gets the same hue.
@@ -108,7 +107,6 @@ export function PluginIcon({ name, id, size = 36, loadIcons = true }: { name: st
   return <PluginMonogram name={name} id={id} size={size} iconUrl={iconUrl} />
 }
 
-// ── Portal menu ─────────────────────────────────────────────────────
 // Renders via createPortal(document.body) with position:fixed so it never
 // clips inside overflow:hidden parents. Coords from trigger rect; flips
 // above if not enough room below.
@@ -162,7 +160,7 @@ function PortalMenu({ triggerRef, items, onClose }: {
   )
 }
 
-// ── Installed line (W1: borderless row, not card) ───────────────────
+// Installed line (W1: borderless row, not card).
 type InstalledLineProps = {
   plugin: Plugin
   onUpdate: () => void
@@ -229,7 +227,7 @@ export function InstalledPluginCard({ plugin, onUpdate, onToggle, onUninstall, o
   )
 }
 
-// ── Available line (W1: borderless row + Install pill outline) ──────
+// Available line (W1: borderless row + Install pill outline).
 type AvailableLineProps = {
   plugin: AvailablePlugin
   onInstall: () => void
@@ -270,7 +268,6 @@ export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, loadIcons
   )
 }
 
-// ── Skeleton line ───────────────────────────────────────────────────
 type SkeletonLineProps = { delay: number }
 
 export function PluginSkeletonCard({ delay }: SkeletonLineProps) {

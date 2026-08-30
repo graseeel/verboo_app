@@ -26,9 +26,7 @@ import {
 } from './goalState'
 import type { GoalState } from '../../../shared/types'
 
-// ─── Rust type limits (types.rs) ────────────────────────────────
-// These mirror the Rust struct field widths. If Rust changes a type,
-// this test breaks — which is the point.
+// Rust type limits (types.rs): if Rust narrows a field, this test breaks.
 
 const U32_MAX = 4_294_967_295
 const U64_MAX = 18_446_744_073_709_551_615
@@ -139,7 +137,6 @@ const GOAL_STATE_NUMERIC_KEYS = [
 ] as const satisfies readonly NumericKeys[]
 
 describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
-  // ─── Contract documentation test ──────────────────────────────
   it('RUST_FIELD_LIMITS covers every numeric GoalState field', () => {
     const documentedFields = new Set(Object.keys(RUST_FIELD_LIMITS))
     const allNumericFields = new Set(GOAL_STATE_NUMERIC_KEYS as unknown as string[])
@@ -155,12 +152,10 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     ).toEqual([])
   })
 
-  // ─── Constant value validation ────────────────────────────────
   it('GOAL_MAX_TURNS_UNLIMITED equals u32::MAX (the Rust sentinel)', () => {
     expect(GOAL_MAX_TURNS_UNLIMITED).toBe(U32_MAX)
   })
 
-  // ─── createGoalState output validation ────────────────────────
   it('all numeric fields from createGoalState fit their Rust types', () => {
     const goal = createGoalState({
       objective: 'test objective',
@@ -171,7 +166,7 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
 
     for (const field of GOAL_STATE_NUMERIC_KEYS) {
       const value = goal[field]
-      if (value === undefined) continue // optional fields may be absent
+      if (value === undefined) continue
 
       const limit = RUST_FIELD_LIMITS[field]
       expect(
@@ -184,7 +179,6 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     }
   })
 
-  // ─── The fix that prevented G-C7 ──────────────────────────────
   it('maxTurns does NOT exceed u32::MAX (was Number.MAX_SAFE_INTEGER = 9e15)', () => {
     const goal = createGoalState({
       objective: 'test',
@@ -240,9 +234,6 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     const TURNS_SENTINEL = GOAL_MAX_TURNS_UNLIMITED
     const TIME_SENTINEL = GOAL_MAX_ELAPSED_MS_UNLIMITED
 
-    // If the two constants ever diverge in value, the field must
-    // follow its domain's constant, not the other one. This is the
-    // assertion that makes the test future-proof:
     expect(goal.maxElapsedMs).toBe(TIME_SENTINEL)
     expect(goal.maxTurns).toBe(TURNS_SENTINEL)
 
@@ -301,7 +292,6 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     expect(sanitized.accessMode).toBe(stale.accessMode)
   })
 
-  // ─── Idempotence: already-valid goals pass through unchanged ──
   it('sanitizeStoredGoal is idempotent — valid goals pass through untouched', () => {
     const fresh = createGoalState({
       objective: 'fresh goal post-G-C7',
@@ -313,7 +303,6 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     expect(sanitized).toEqual(fresh)
   })
 
-  // ─── Boundary: value AT the sentinel is NOT clamped ──────────
   it('sanitizeStoredGoal does not clamp values already at the sentinel', () => {
     const atSentinel: GoalState = {
       ...createGoalState({
@@ -330,7 +319,6 @@ describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
     expect(sanitized.maxElapsedMs).toBe(GOAL_MAX_ELAPSED_MS_UNLIMITED)
   })
 
-  // ─── Boundary: value ONE above the sentinel IS clamped ───────
   it('sanitizeStoredGoal clamps values one above the sentinel', () => {
     const oneAbove: GoalState = {
       ...createGoalState({

@@ -80,7 +80,6 @@
   border-top: 1px solid var(--border);
 }
 
-/* Inline code */
 .markdown-body :not(pre) > code {
   padding: 0.12em 0.4em;
   border: 1px solid var(--border);
@@ -243,7 +242,6 @@
   background-color: #ffebe9;
 }
 
-/* GFM tables */
 .markdown-body table {
   display: block;
   width: max-content;
@@ -264,7 +262,6 @@
   font-weight: 650;
 }
 
-/* GFM task lists */
 .markdown-body input[type="checkbox"] {
   margin-right: 0.45em;
   vertical-align: middle;

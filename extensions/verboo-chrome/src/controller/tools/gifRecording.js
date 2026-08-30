@@ -43,12 +43,6 @@ export async function gifRecording(tool) {
   )
 }
 
-/**
- * @param {unknown} value
- * @param {number} min
- * @param {number} max
- * @param {number} fallback
- */
 function clamp(value, min, max, fallback) {
   if (typeof value !== 'number' || Number.isNaN(value)) return fallback
   return Math.max(min, Math.min(max, value))

@@ -1065,6 +1065,16 @@
   background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
 }
 
+.profile-api-key-only > div {
+  display: grid;
+  gap: 3px;
+}
+
+.profile-api-key-only span {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
 /* ── Profile page — avatar editor ─────────────────────────── */
 .avatar-editor-panel {
   display: flex; flex-direction: column; gap: 12px;
@@ -1078,6 +1088,15 @@
      and img object-fit are built into .avatar-outer via layout.css. */
 }
 .avatar-editor-upload { display: flex; flex-direction: column; gap: 4px; }
+.avatar-editor-upload-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.avatar-editor-filename {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
 .avatar-editor-upload-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
@@ -1584,6 +1603,13 @@
 
 .settings-row--control > svg {
   margin-top: 0;
+}
+
+.settings-diagnostic-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* Inside a settings card the panel title already names the field — the
@@ -2262,6 +2288,20 @@
 .turn-error-details summary {
   width: fit-content;
   cursor: pointer;
+}
+
+.turn-error-correlation {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+
+.turn-error-correlation code {
+  user-select: text;
+  color: var(--text-muted);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .turn-error-details pre {

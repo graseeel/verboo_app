@@ -29,10 +29,8 @@ import {
 import type { VerbooBridgeMock } from '../../test/test-utils'
 import type { VerbooModel, ModelDiscoveryResult } from '../../../shared/types'
 
-// ─── Mocks ──────────────────────────────────────────────────────────────────
 vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
 
-// ─── Test hook: useModelDiscovery ───────────────────────────────────────────
 // Simplified version of the model discovery flow in App.tsx (lines 1786-1794)
 function useModelDiscovery(mockBridge: Pick<VerbooBridgeMock, 'listModels'>) {
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
@@ -73,7 +71,6 @@ function useModelDiscovery(mockBridge: Pick<VerbooBridgeMock, 'listModels'>) {
   return { modelResult, selectedModel, refreshModels, selectModel }
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('Model Discovery Integration', () => {
   let bridge: ReturnType<typeof installVerbooBridge>
@@ -134,19 +131,16 @@ describe('Model Discovery Integration', () => {
 
       const { result } = renderHook(() => useModelDiscovery(bridge))
 
-      // First load
       await act(async () => {
         await result.current.refreshModels(false)
       })
       expect(result.current.selectedModel).toBe('model-a')
 
-      // Select model-b
       act(() => {
         result.current.selectModel('model-b')
       })
       expect(result.current.selectedModel).toBe('model-b')
 
-      // Refresh — model-b still in list
       await act(async () => {
         await result.current.refreshModels(false)
       })
@@ -171,7 +165,6 @@ describe('Model Discovery Integration', () => {
         result.current.selectModel('model-b')
       })
 
-      // Refresh — model-b removed
       bridge.listModels.mockResolvedValueOnce(makeModelDiscoveryResult({
         models: [makeModel({ id: 'model-a' })],
       }))

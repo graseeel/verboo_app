@@ -103,7 +103,7 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
 
   // Scroll the highlighted row into view only for keyboard navigation.
   // Hover must never scroll: pointing at a row near the fold would yank the
-  // list (and, before the grid fix, the whole palette) under the cursor.
+  // list under the cursor.
   const scrollOnHighlightRef = useRef(false)
   useEffect(() => {
     if (!scrollOnHighlightRef.current) return

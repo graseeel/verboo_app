@@ -14,10 +14,8 @@ type ContextMeterProps = {
  * no rotation, no dropdown, no panel on click. The percent label sits in the
  * ring center; the full `used/max` breakdown is exposed via the native
  * `title` tooltip so it stays discoverable without adding composer chrome.
- *
- * The previous `onClick` / ContextPanel popover was disconnected from the
- * composer (panel file retained for future Settings reuse). Pruning actions
- * (clear attachments / skills) remain available in their own surfaces.
+ * Pruning actions (clear attachments / skills) live in their own surfaces;
+ * ContextPanel.tsx is retained for future Settings reuse.
  */
 export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
   const { language, t } = useI18n()
@@ -41,7 +39,6 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
   const title = overLimit
     ? t('context.overLimitTitle')
     : usage ? t('context.usageTitle') : t('context.waitingTitle')
-  // Compose a single informative tooltip: title + usage breakdown.
   const tooltip = `${title} · ${usageLabel} · ${percentLabel}`
 
   return (

@@ -7,6 +7,7 @@
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::sync::mpsc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::models::types::VerbooModel;
@@ -49,6 +50,8 @@ pub struct ProviderUsageWindow {
     pub display_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<u32>,
     pub used_percent: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
@@ -155,6 +158,72 @@ struct AccountsData {
     accounts: Vec<ProviderAccountSummary>,
 }
 
+fn log_provider_error(code: &str, provider: Option<&str>) {
+    crate::services::diagnostic_log::emit_error(
+        "provider",
+        code,
+        code,
+        None,
+        match provider {
+            Some(provider) => serde_json::json!({ "provider": provider }),
+            None => serde_json::json!({}),
+        },
+    );
+}
+
+struct AccountsRefreshBatch {
+    account_count: usize,
+    windows: Vec<u64>,
+    degraded: bool,
+}
+
+static ACCOUNTS_REFRESH: Mutex<Option<AccountsRefreshBatch>> = Mutex::new(None);
+
+fn emit_accounts_refresh(account_count: usize, windows: &[u64], origin: &str, degraded: bool) {
+    crate::services::diagnostic_log::emit_state(
+        "provider",
+        "provider_accounts_refresh",
+        serde_json::json!({
+            "account_count": account_count,
+            "usage_window_counts": windows,
+            "origin": origin,
+            "degraded": degraded,
+        }),
+    );
+}
+
+pub(crate) fn record_accounts_listed(accounts: &[ProviderAccountSummary]) {
+    let account_count = accounts.len();
+    *ACCOUNTS_REFRESH
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(AccountsRefreshBatch {
+        account_count,
+        windows: Vec::new(),
+        degraded: false,
+    });
+    emit_accounts_refresh(account_count, &[], "network", false);
+}
+
+pub(crate) fn record_usage_windows(count: u64, degraded: bool) {
+    let mut batch = ACCOUNTS_REFRESH
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(current) = batch.as_mut() else {
+        return;
+    };
+    current.windows.push(count);
+    current.degraded |= degraded;
+    if current.windows.len() >= current.account_count {
+        let finished = batch.take().expect("refresh batch present");
+        emit_accounts_refresh(
+            finished.account_count,
+            &finished.windows,
+            "network",
+            finished.degraded,
+        );
+    }
+}
+
 /// Maps CLI-provided error codes to stable, renderer-facing codes. Known
 /// codes pass through; anything else becomes a generic protocol error. Raw
 /// CLI output never reaches this function — the envelope is parsed before any
@@ -200,19 +269,24 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|_| "provider_cli_unavailable".to_string())?;
+        .map_err(|_| {
+            log_provider_error("provider_cli_unavailable", None);
+            "provider_cli_unavailable".to_string()
+        })?;
 
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for _ in reader.lines() {}
+            for line in reader.lines().map_while(Result::ok) {
+                crate::services::diagnostic_log::append_cli_stderr(&line);
+            }
         });
     }
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "provider_cli_unavailable".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        log_provider_error("provider_cli_unavailable", None);
+        "provider_cli_unavailable".to_string()
+    })?;
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -239,6 +313,7 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
         if started.elapsed() > CLI_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
+            log_provider_error("provider_usage_timeout", None);
             return Err("provider_usage_timeout".to_string());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -265,21 +340,29 @@ fn parse_capabilities(stdout: &str) -> Result<ProviderCapabilities, String> {
             provider_usage_v1: false,
             login_transport: None,
         }),
-        Err(code) => Err(code),
+        Err(code) => {
+            log_provider_error(&code, None);
+            Err(code)
+        }
     }
 }
 
 pub fn provider_accounts_list() -> Result<Vec<ProviderAccountSummary>, String> {
     let stdout = run_cli(&["provider-accounts", "list"])?;
-    let data: AccountsData = parse_envelope(&stdout)?;
-    Ok(data
+    let data: AccountsData = parse_envelope(&stdout).map_err(|code| {
+        log_provider_error(&code, None);
+        code
+    })?;
+    let accounts: Vec<ProviderAccountSummary> = data
         .accounts
         .into_iter()
         .filter(|account| {
             account.schema_version == 1
                 && (account.provider == "codex" || account.provider == "claude")
         })
-        .collect())
+        .collect();
+    record_accounts_listed(&accounts);
+    Ok(accounts)
 }
 
 pub fn provider_accounts_usage(
@@ -311,6 +394,7 @@ pub fn provider_accounts_usage(
             )
             .is_ok() =>
         {
+            record_usage_windows(snapshot.windows.len() as u64, false);
             Ok(vec![ProviderUsageResult {
                 provider: provider.as_str().to_string(),
                 account_id: account_id.as_str().to_string(),
@@ -318,18 +402,27 @@ pub fn provider_accounts_usage(
                 error_code: None,
             }])
         }
-        Ok(_) => Ok(vec![ProviderUsageResult {
-            provider: provider.as_str().to_string(),
-            account_id: account_id.as_str().to_string(),
-            snapshot: None,
-            error_code: Some("provider_protocol_error".to_string()),
-        }]),
-        Err(error_code) => Ok(vec![ProviderUsageResult {
-            provider: provider.as_str().to_string(),
-            account_id: account_id.as_str().to_string(),
-            snapshot: None,
-            error_code: Some(stable_error(&error_code)),
-        }]),
+        Ok(_) => {
+            log_provider_error("provider_protocol_error", Some(provider.as_str()));
+            record_usage_windows(0, true);
+            Ok(vec![ProviderUsageResult {
+                provider: provider.as_str().to_string(),
+                account_id: account_id.as_str().to_string(),
+                snapshot: None,
+                error_code: Some("provider_protocol_error".to_string()),
+            }])
+        }
+        Err(error_code) => {
+            let stable = stable_error(&error_code);
+            log_provider_error(&stable, Some(provider.as_str()));
+            record_usage_windows(0, true);
+            Ok(vec![ProviderUsageResult {
+                provider: provider.as_str().to_string(),
+                account_id: account_id.as_str().to_string(),
+                snapshot: None,
+                error_code: Some(stable),
+            }])
+        }
     }
 }
 
@@ -406,8 +499,11 @@ pub fn provider_account_models(
         "--account",
         account_id.as_str(),
     ])?;
-    let models =
-        parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| models_error_code(&code))?;
+    let models = parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| {
+        let mapped = models_error_code(&code);
+        log_provider_error(&mapped, Some(provider.as_str()));
+        mapped
+    })?;
     Ok(models
         .into_iter()
         .filter(|model| model.provider.as_deref() == Some(provider.as_str()))
@@ -450,6 +546,32 @@ mod tests {
             validate_usage_snapshot_identity(&snapshot, "codex", "local-a"),
             Ok(())
         );
+    }
+
+    #[test]
+    fn preserves_provider_reported_window_duration() {
+        let stdout = r#"{
+          "schemaVersion":1,
+          "ok":true,
+          "data":{
+            "schemaVersion":1,
+            "provider":"codex",
+            "accountId":"local-a",
+            "windows":[{
+              "id":"codex:primary",
+              "kind":"session",
+              "displayLabel":"ignored",
+              "windowMinutes":300,
+              "usedPercent":27
+            }],
+            "fetchedAt":"2026-08-28T23:00:00.000Z"
+          }
+        }"#;
+
+        let snapshot: ProviderUsageSnapshot =
+            parse_envelope(stdout).expect("usage snapshot with a duration must parse");
+
+        assert_eq!(snapshot.windows[0].window_minutes, Some(300));
     }
 
     #[test]
@@ -534,5 +656,56 @@ mod tests {
             parse_capabilities(""),
             Err("provider_protocol_error".to_string())
         );
+    }
+
+    fn sample_account(id: &str, label: &str) -> ProviderAccountSummary {
+        ProviderAccountSummary {
+            schema_version: 1,
+            provider: "codex".to_string(),
+            account_id: id.to_string(),
+            display_label: label.to_string(),
+            plan_id: Some("secret-plan".to_string()),
+            plan_display_name: Some("Pro Secret Plan".to_string()),
+            is_default: false,
+            connection_state: "connected".to_string(),
+            last_validated_at: None,
+        }
+    }
+
+    #[test]
+    fn two_account_refresh_emits_counts_without_content() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(
+            dir.path().to_path_buf(),
+            serde_json::json!({ "os": "macos" }),
+        )
+        .unwrap();
+        record_accounts_listed(&[
+            sample_account("acct-secret-99", "Codex Secret Corp"),
+            sample_account("acct-hidden-2", "Claude Hidden"),
+        ]);
+        record_usage_windows(3, false);
+        record_usage_windows(1, false);
+        let raw = std::fs::read_to_string(dir.path().join(crate::services::diagnostic_log::JSONL_FILE))
+            .unwrap();
+        let events: Vec<serde_json::Value> = raw
+            .lines()
+            .filter(|line| line.starts_with('{'))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let refresh = events
+            .iter()
+            .rev()
+            .find(|event| event["code"] == "provider_accounts_refresh")
+            .expect("provider_accounts_refresh");
+        assert_eq!(refresh["context"]["account_count"], 2);
+        assert_eq!(refresh["context"]["usage_window_counts"], serde_json::json!([3, 1]));
+        assert_eq!(refresh["origin"].as_str().or(refresh["context"]["origin"].as_str()), Some("network"));
+        assert!(!raw.contains("Codex Secret Corp"), "label leaked: {raw}");
+        assert!(!raw.contains("acct-secret-99"), "id leaked: {raw}");
+        assert!(!raw.contains("Pro Secret Plan"), "plan leaked: {raw}");
+        crate::services::diagnostic_log::reset_for_test();
     }
 }

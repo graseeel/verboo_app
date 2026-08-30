@@ -114,7 +114,6 @@ describe('useChecklistCompletionExit: THE SEQUENCE — dwell, animate, THEN remo
     // Removed at the dwell boundary WITHOUT an exiting phase.
     expect(exiting()).toBe(false)
     expect(onRemove).toHaveBeenCalledTimes(1)
-    // And nothing lingers afterwards.
     act(() => {
       vi.advanceTimersByTime(CHECKLIST_EXIT_MS + 100)
     })

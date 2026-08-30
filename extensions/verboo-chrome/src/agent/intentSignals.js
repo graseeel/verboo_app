@@ -2,15 +2,19 @@
  * intentSignals.js — intent signals for the browser-tools decision
  * (ciclo Intenção+UX, FRENTE classificador).
  *
- * Two NEW signals complement shouldOfferBrowserTools's verb list WITHOUT
+ * These signals complement shouldOfferBrowserTools's verb list WITHOUT
  * adding verbs (the verb list is whack-a-mole: every new verb a user
  * types outside it is a new miss):
  *
- *   1. hasDeicticImperativeIntent — STRUCTURAL, any language: a
+ *   - hasDeicticImperativeIntent — STRUCTURAL, any language: a
  *      verb-first clause whose object is anchored to the CURRENT page
  *      (deictic anchor + page noun). No verb list at all.
  *
- *   2. hasBrowserUnavailableAdmission — SEMANTIC: the ASSISTANT's own
+ *   - hasImperativeWithObject — STRUCTURAL fall-open when the turn has a
+ *      controllable page under the panel: verb-first clause + article +
+ *      concrete object, gated against questions/explanations/desires.
+ *
+ *   - hasBrowserUnavailableAdmission — SEMANTIC: the ASSISTANT's own
  *      reply admits it has no browser access ("o navegador não está
  *      disponível", "I don't have access to the browser"). Used to
  *      reclassify a conversation turn into a browser turn (L3).
@@ -33,10 +37,6 @@
 const DEICTIC_IMPERATIVE_RE =
   /^(?:(?:por\s+favor|please)\s+)?[a-z]+\s+(?:[a-z]+\s+){0,4}(?:o|a|os|as|um|uma|uns|umas|the|an)\s+(?:[a-z]+\s+){0,4}(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|deste|desse|this|that|here|there)\s+(?:pagina|page|aba|tab|site|tela|screen|janela|window|lista|list|formulario|form|secao|section|campo|field|planilha|spreadsheet)\b/i
 
-/**
- * @param {unknown} value
- * @returns {boolean}
- */
 export function hasDeicticImperativeIntent(value) {
   const text = normalizeIntentText(value)
   if (!text) return false
@@ -104,10 +104,6 @@ const DEICTIC_PAGE_ANCHOR_RE =
 const IMPERATIVE_WITH_OBJECT_RE =
   /^[a-z]+\s+(?:[a-z]+\s+){0,4}(?:o|a|os|as|um|uma|uns|umas|the|an)\s+[a-z]+\b/i
 
-/**
- * @param {unknown} value
- * @returns {boolean}
- */
 export function hasImperativeWithObject(value) {
   const text = normalizeIntentText(value)
   if (!text) return false
@@ -159,7 +155,6 @@ export function hasBrowserUnavailableAdmission(value) {
   return BROWSER_UNAVAILABLE_ADMISSION_PATTERNS.some((re) => re.test(text))
 }
 
-/** @param {unknown} value */
 function normalizeIntentText(value) {
   return String(value ?? '')
     .normalize('NFD')

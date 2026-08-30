@@ -53,6 +53,17 @@ test("0.7.3-beta has complete reviewed release copy", async () => {
   assert.deepEqual(releaseEntry(catalog, "0.7.3-beta"), entry);
 });
 
+test("0.8.0-beta has complete reviewed Android Simulator release copy", async () => {
+  const catalog = await readReleaseCatalog();
+  const entry = validateReleaseCatalog(catalog, "0.8.0-beta");
+
+  assert.equal(entry["pt-BR"].items.length, 5);
+  assert.equal(entry["en-US"].items.length, 5);
+  assert.match(entry["pt-BR"].items[0].title, /Simulador de Android/);
+  assert.match(entry["en-US"].items[0].title, /Android Simulator/);
+  assert.deepEqual(releaseEntry(catalog, "0.8.0-beta"), entry);
+});
+
 test("rejects missing locale, editorial sentinel, and invalid item count", async () => {
   const original = await readReleaseCatalog();
 

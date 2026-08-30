@@ -526,11 +526,8 @@ pub fn save_avatar_blob_core(
         )
     })?;
 
-    // Ensure app data dir exists.
     std::fs::create_dir_all(app_data_dir).map_err(|e| format!("create app_data_dir: {e}"))?;
 
-    // Remove old avatars with different extensions to avoid accumulating
-    // stale files (e.g. switching from PNG to JPEG should delete avatar.png).
     for (_, old_ext) in AVATAR_MIME_EXTENSIONS {
         if *old_ext == ext {
             continue;
@@ -541,7 +538,6 @@ pub fn save_avatar_blob_core(
         }
     }
 
-    // Write the new avatar.
     let target_path = app_data_dir.join(format!("avatar.{ext}"));
     std::fs::write(&target_path, bytes)
         .map_err(|e| format!("write avatar file: {e}"))?;
@@ -582,16 +578,13 @@ pub fn write_pasted_image_and_inspect(
         return Err("filename too long".to_string());
     }
 
-    // Ensure target dir exists.
     std::fs::create_dir_all(target_dir).map_err(|e| format!("create dir: {e}"))?;
 
-    // Extract extension from filename (default to .png).
     let ext = Path::new(filename)
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_else(|| ".png".to_string());
 
-    // Generate unique filename: <secs>_<nanos>_<sanitized>.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("system time: {e}"))?;
@@ -610,10 +603,8 @@ pub fn write_pasted_image_and_inspect(
     let unique_name = format!("{secs}_{nanos}_{sanitized}");
     let temp_path = target_dir.join(format!("{unique_name}{ext}"));
 
-    // Write the decoded bytes.
     std::fs::write(&temp_path, bytes).map_err(|e| format!("write temp file: {e}"))?;
 
-    // Reuse inspect_attachment on the written file.
     let path_str = temp_path.to_string_lossy().to_string();
     match inspect_attachment(&path_str) {
         Some(meta) => Ok(meta),
@@ -790,8 +781,6 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── PDF extraction tests ───────────────────────────────────────
-    //
     // These tests verify the fix for the "PDF alucinado" bug: when a user
     // attaches a PDF, the model must receive real extracted text (or an
     // explicit warning), never an empty string that invites hallucination.
@@ -995,7 +984,6 @@ mod tests {
 
     #[test]
     fn truncate_extracted_text_long_text_gets_marker() {
-        // Create text larger than MAX_EXTRACTED_TEXT_BYTES.
         let input = "A".repeat(MAX_EXTRACTED_TEXT_BYTES * 2);
         let input_len = input.len();
         let output = truncate_extracted_text(input);
@@ -1070,7 +1058,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Text file extraction tests (FRENTE B) ───────────────────────
+    // Text file extraction tests (FRENTE B)
 
     #[test]
     fn is_text_file_by_ext_recognizes_common_formats() {
@@ -1083,7 +1071,7 @@ mod tests {
         assert!(is_text_file_by_ext(Path::new("app.tsx")));
         assert!(is_text_file_by_ext(Path::new("main.rs")));
         assert!(is_text_file_by_ext(Path::new("script.sh")));
-        assert!(is_text_file_by_ext(Path::new("Dockerfile"))); // uppercase ext
+        assert!(is_text_file_by_ext(Path::new("Dockerfile"))); // no ext — matches by filename
         assert!(!is_text_file_by_ext(Path::new("image.png")));
         assert!(!is_text_file_by_ext(Path::new("archive.zip")));
         assert!(!is_text_file_by_ext(Path::new("unknown.xyz")));
@@ -1241,7 +1229,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Pasted image tests (inspect_pasted_image command) ───────────
+    // Pasted image tests (inspect_pasted_image command)
 
     /// Minimal valid PNG (1x1 red pixel) for testing image inspection.
     fn minimal_png_bytes() -> Vec<u8> {
@@ -1294,7 +1282,6 @@ mod tests {
         assert_eq!(meta.kind, AttachmentKind::Image);
         assert_eq!(meta.media_type.as_deref(), Some("image/png"));
         assert_eq!(meta.size, png.len() as u64);
-        // Temp file should exist on disk.
         assert!(std::path::Path::new(&meta.path).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1311,7 +1298,6 @@ mod tests {
     #[test]
     fn write_pasted_image_rejects_oversized() {
         let dir = std::env::temp_dir().join("verboo-test-paste-big");
-        // Create bytes just over the limit.
         let oversized = vec![0u8; MAX_PASTED_IMAGE_BYTES + 1];
         let result = write_pasted_image_and_inspect(&oversized, "big.png", &dir);
         assert!(result.is_err());
@@ -1362,7 +1348,6 @@ mod tests {
             "filename should have no path separators, got: {}",
             filename
         );
-        // File should exist.
         assert!(std::path::Path::new(&meta.path).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1377,7 +1362,6 @@ mod tests {
                 .as_nanos()
         ));
         let png = minimal_png_bytes();
-        // Filename with no extension — should default to .png.
         let meta = write_pasted_image_and_inspect(&png, "screenshot", &dir).unwrap();
         assert!(
             meta.path.ends_with(".png"),
@@ -1422,7 +1406,6 @@ mod tests {
         // Small delay to ensure different nanos.
         std::thread::sleep(std::time::Duration::from_millis(1));
         let meta2 = write_pasted_image_and_inspect(&png, "shot.png", &dir).unwrap();
-        // Two writes with same filename should produce different paths.
         assert_ne!(
             meta1.path, meta2.path,
             "unique names should prevent collisions"
@@ -1433,7 +1416,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── Avatar blob tests (save_avatar_blob command) ───────────────
+    // Avatar blob tests (save_avatar_blob command)
 
     #[test]
     fn save_avatar_blob_png_saves_and_returns_path() {
@@ -1527,7 +1510,6 @@ mod tests {
         ));
         let png = minimal_png_bytes();
 
-        // Save PNG first.
         let png_path = save_avatar_blob_core(&png, "image/png", &dir).unwrap();
         assert!(png_path.ends_with("avatar.png"));
         assert!(png_path.exists());
@@ -1560,10 +1542,8 @@ mod tests {
         let png2 = vec![0xFF; 200]; // different content
         let path2 = save_avatar_blob_core(&png2, "image/png", &dir).unwrap();
 
-        // Same path, overwritten content.
         assert_eq!(path1, path2, "same extension should overwrite same path");
         assert!(path2.exists());
-        // Content should be the new bytes.
         let saved = std::fs::read(&path2).unwrap();
         assert_eq!(saved, png2, "content should be overwritten");
 

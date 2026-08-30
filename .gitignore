@@ -42,6 +42,7 @@ src-tauri/.cargo/
 # Local agent/tool state
 .superpowers/
 .verboo/
+.elyra/
 extensions/verboo-chrome/dist/
 extensions/verboo-chrome/store-assets/*.zip
 

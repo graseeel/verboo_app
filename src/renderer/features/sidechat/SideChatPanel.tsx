@@ -1,4 +1,4 @@
-import { MessageCircle, Send, X } from 'lucide-react'
+import { MessageCircle, Send, Square, X } from 'lucide-react'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import type { Annotation, StoredConversation } from '../../../shared/types'
 import { useI18n } from '../../i18n'
@@ -12,6 +12,7 @@ export function SideChatPanel({
   busy,
   disabled = false,
   onSubmit,
+  onStop,
   onClose,
   onFocusConversation,
   auxiliary,
@@ -21,11 +22,13 @@ export function SideChatPanel({
   busy: boolean
   disabled?: boolean
   onSubmit: (message: string) => void
+  onStop?: () => void
   onClose: () => void
   onFocusConversation?: () => void
   auxiliary?: ReactNode
 }) {
   const { t } = useI18n()
+  const stopMode = busy && Boolean(onStop)
   const [value, setValue] = useState('')
   const messages = groupSideChatMessages(conversation.items)
   const firstUserMessage = messages.find(item => item.role === 'user')?.text.trim()
@@ -88,12 +91,18 @@ export function SideChatPanel({
           }}
         />
         <button
-          type="submit"
-          className="sidechat-send"
-          aria-label={t('sideChat.sendAria')}
-          disabled={busy || disabled || !value.trim()}
+          type={stopMode ? 'button' : 'submit'}
+          className={`sidechat-send${stopMode ? ' is-stop' : ''}`}
+          onClick={stopMode ? onStop : undefined}
+          aria-label={stopMode ? t('composer.stop') : t('sideChat.sendAria')}
+          title={stopMode ? t('composer.stop') : t('sideChat.sendAria')}
+          // Intencional: stop continua habilitado se as demais ações forem
+          // bloqueadas, pois um processo já em execução ainda deve parar.
+          disabled={!stopMode && (busy || disabled || !value.trim())}
         >
-          <Send size={15} aria-hidden="true" />
+          {stopMode
+            ? <Square size={12} fill="currentColor" aria-hidden="true" data-testid="sidechat-stop-icon" />
+            : <Send size={15} aria-hidden="true" />}
         </button>
       </form>
     </aside>

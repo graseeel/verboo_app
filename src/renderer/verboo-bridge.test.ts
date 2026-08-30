@@ -53,7 +53,6 @@ describe('verboo-bridge — IS_TAURI guard', () => {
   })
 
   afterEach(() => {
-    // Restore window.verboo and __TAURI_INTERNALS__.
     if (originalVerboo !== undefined) {
       ;(window as unknown as Record<string, unknown>).verboo = originalVerboo
     } else {
@@ -147,6 +146,15 @@ describe('verboo-bridge — API shape', () => {
     ])
   })
 
+  it('passes the optional CLI login flowId to the Tauri command', async () => {
+    expect(api).toBeDefined()
+    const auth = api as { startCliLogin: (flowId?: number) => Promise<unknown> }
+
+    await auth.startCliLogin(41)
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('start_cli_login', { flowId: 41 })
+  })
+
   it('exposes every models/profile/feedback method', () => {
     expect(api).toBeDefined()
     const required = [
@@ -210,6 +218,9 @@ describe('verboo-bridge — API shape', () => {
       'toggleWindowZoom',
       'listSkills',
       'openUserSkillsFolder',
+      'openDiagnosticLogsDir',
+      'diagnosticLogStatus',
+      'diagnosticPackage',
       'getDefaultWorkingDirectory',
       'getBundledCliVersion',
       'chromeIntegrationStatus',
@@ -242,6 +253,27 @@ describe('verboo-bridge — API shape', () => {
       ['chrome_integration_test'],
       ['chrome_integration_remove'],
       ['open_chrome_extension_store'],
+    ])
+  })
+
+  it('maps openDiagnosticLogsDir to the Tauri open_diagnostic_logs_dir command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.openDiagnosticLogsDir()
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(['open_diagnostic_logs_dir'])
+  })
+
+  it('maps diagnosticLogStatus to the Tauri diagnostic_log_status command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.diagnosticLogStatus()
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(['diagnostic_log_status'])
+  })
+
+  it('maps diagnosticPackage to the Tauri diagnostic_package command', async () => {
+    const bridge = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await bridge.diagnosticPackage(40)
+    expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual([
+      'diagnostic_package',
+      { maxLines: 40 },
     ])
   })
 
@@ -280,6 +312,32 @@ describe('verboo-bridge — API shape', () => {
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  it('forwards localized native-dialog labels to the matching Tauri commands', async () => {
+    expect(api).toBeDefined()
+    vi.mocked(invoke).mockClear()
+    const workspace = api as VerbooDesktopApi
+
+    await workspace.pickFiles({
+      title: 'Selecionar arquivos para anexar',
+      imagesFilter: 'Imagens',
+      videosFilter: 'Vídeos',
+      allFilesFilter: 'Todos os arquivos',
+    })
+    await workspace.pickFolder('Selecionar pasta')
+    await workspace.createProjectFolder('Selecionar pasta pai para o novo projeto')
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['pick_files', {
+        title: 'Selecionar arquivos para anexar',
+        imagesFilter: 'Imagens',
+        videosFilter: 'Vídeos',
+        allFilesFilter: 'Todos os arquivos',
+      }],
+      ['pick_folder', { title: 'Selecionar pasta' }],
+      ['create_project_folder', { title: 'Selecionar pasta pai para o novo projeto' }],
+    ])
   })
 
   it('exposes every event subscription method', () => {
@@ -358,7 +416,6 @@ describe('verboo-bridge — API shape', () => {
 
   it('returns a cleanup function from event subscriptions', async () => {
     expect(api).toBeDefined()
-    // onAgentEvent returns a cleanup fn — calling it must not throw.
     const cleanup = (api as Record<string, (cb: () => void) => () => void>).onAgentEvent(() => {})
     expect(typeof cleanup).toBe('function')
     expect(() => cleanup()).not.toThrow()

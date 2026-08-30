@@ -1,17 +1,13 @@
 import type { ContextUsageSnapshot } from '../../../shared/types'
 
 /**
- * T3: context-usage extraction, MOVED OUT of App.tsx so the frontier's
- * signal (ii) — contextUsage DROPS after a task-boundary compaction —
- * is testable as EFFECT at the layer where it is observable: the exact
- * function the stream-event handler feeds (App.tsx:~1751 wires
- * `extractContextUsage(event.payload, ...) → setContextUsage`).
- * Importing App.tsx into vitest would drag the whole component tree
- * and the Tauri bridge in; this module is pure payload→snapshot.
- *
- * The move is VERBATIM: every function below is byte-identical to its
- * pre-T3 App.tsx definition (comments included). App.tsx imports them
- * back from here. No behavior change.
+ * Context-usage extraction kept out of App.tsx so the frontier signal
+ * (ii) — contextUsage DROPS after a task-boundary compaction — stays
+ * testable at the layer where it is observable: the exact function the
+ * stream-event handler feeds (`extractContextUsage(event.payload, ...)
+ * → setContextUsage`). Importing App.tsx into vitest would drag the
+ * whole component tree and the Tauri bridge in; this module is pure
+ * payload→snapshot, and App.tsx imports its functions back from here.
  */
 
 export function isRecord(value: unknown): value is Record<string, any> {
@@ -92,7 +88,6 @@ export function extractContextUsage(payload: unknown, maxTokens?: number): Conte
     }
   }
 
-  // Fallback: compute from raw API usage tokens (input + cache).
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
 

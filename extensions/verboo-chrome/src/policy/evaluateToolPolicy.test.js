@@ -9,7 +9,7 @@
  *   - Site always allows without prompt
  *   - Site once allows this call
  *   - Manual mode + no grant → needsApproval
- *   - Auto/Skip + no grant → allowed (hard blocks already returned)
+ *   - Skip + no grant → allowed (hard blocks already returned)
  *   - Elevated tools always need approval (even Auto/Skip, even `always`)
  *   - Invalid tool call → blocked
  *   - Unknown mode → fail safe (needsApproval)

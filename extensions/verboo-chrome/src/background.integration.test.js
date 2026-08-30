@@ -357,7 +357,6 @@ test('(5) RED-DE-VERDADE: L2 (crie uma tarefa) + sourceWindowId + 1 janela → b
   const tab = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
   sh.state.windows = { 20: { activeTab: tab } }
   sh.state.tabsById = new Map([[tab.id, tab]])
-  // Override tabs.query para devolver a aba também para currentWindow:true.
   const origQuery = sh.chrome.tabs.query
   sh.chrome.tabs.query = async (q) => {
     if (q.active === true && q.currentWindow === true) return [tab]

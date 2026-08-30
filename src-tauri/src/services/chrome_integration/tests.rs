@@ -309,23 +309,7 @@ fn fresh_and_repeated_configuration_are_owned_and_idempotent() {
 }
 
 #[test]
-fn foreign_helper_manifest_and_mcp_entries_are_never_overwritten() {
-    let (_temp, paths, _runner, service) = service_fixture();
-    fs::create_dir_all(paths.helper_path().parent().unwrap()).unwrap();
-    fs::write(paths.helper_path(), b"foreign").unwrap();
-    assert_eq!(
-        service.configure(development_request()).unwrap_err(),
-        "chrome_helper_conflict"
-    );
-
-    let (_temp, paths, _runner, service) = service_fixture();
-    fs::create_dir_all(paths.manifest_path().parent().unwrap()).unwrap();
-    fs::write(paths.manifest_path(), b"{\"foreign\":true}").unwrap();
-    assert_eq!(
-        service.configure(development_request()).unwrap_err(),
-        "chrome_manifest_conflict"
-    );
-
+fn unmanaged_mcp_entry_is_never_overwritten() {
     let (_temp, paths, runner, service) = service_fixture();
     runner.write_entry("/foreign/verboo-in-chrome", "9.9.9");
     assert_eq!(
@@ -362,6 +346,66 @@ fn repair_replaces_a_damaged_managed_helper() {
 }
 
 #[test]
+fn repair_adopts_orphan_helper_when_installation_record_is_missing() {
+    let (_temp, paths, _runner, service) = service_fixture();
+    fs::create_dir_all(paths.helper_path().parent().unwrap()).unwrap();
+    fs::write(paths.helper_path(), b"orphan").unwrap();
+    fs::create_dir_all(paths.manifest_path().parent().unwrap()).unwrap();
+    fs::write(paths.manifest_path(), br#"{"name":"orphan"}"#).unwrap();
+    assert!(!paths.installation_record_path().exists());
+
+    let status = service.repair(development_request()).unwrap();
+
+    assert_eq!(status.bridge, ChromeComponentState::Managed);
+    assert_eq!(fs::read(paths.helper_path()).unwrap(), b"helper-v1");
+    assert!(paths.installation_record_path().is_file());
+}
+
+#[test]
+fn repair_refuses_a_valid_record_owned_by_another_installation() {
+    let (_temp, paths, _runner, service) = service_fixture();
+    fs::create_dir_all(paths.helper_path().parent().unwrap()).unwrap();
+    fs::write(paths.helper_path(), b"foreign-owned").unwrap();
+    fs::create_dir_all(paths.integration_root()).unwrap();
+    fs::write(
+        paths.installation_record_path(),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "owner": "other-product",
+            "version": "9.9.9",
+            "helperPath": paths.helper_path(),
+            "manifestPath": paths.manifest_path(),
+            "extensionId": "abcdefghijklmnopabcdefghijklmnop",
+            "extensionIdSource": "development"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        service.repair(development_request()).unwrap_err(),
+        "chrome_installation_conflict"
+    );
+    assert_eq!(fs::read(paths.helper_path()).unwrap(), b"foreign-owned");
+}
+
+#[test]
+fn status_names_a_missing_record_with_residual_local_artifact() {
+    let (_temp, paths, _runner, service) = service_fixture();
+    fs::create_dir_all(paths.helper_path().parent().unwrap()).unwrap();
+    fs::write(paths.helper_path(), b"orphan").unwrap();
+
+    let status = service.status().unwrap();
+
+    assert_eq!(status.extension, ChromeComponentState::Missing);
+    assert_eq!(status.bridge, ChromeComponentState::Invalid);
+    assert_eq!(
+        status.error_code.as_deref(),
+        Some("chrome_integration_record_missing")
+    );
+    assert!(status.can_repair);
+}
+
+#[test]
 fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("home/.verboo/.config.json");
@@ -387,9 +431,7 @@ fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
 fn upgrade_overwrites_helper_at_new_path_when_installation_record_exists() {
     // When an installation record exists, the helper at the expected path
     // is considered ours (installed by the previous version). The upgrade
-    // overwrites it with the new version's helper. Foreign helper detection
-    // only applies when there is NO installation record (see
-    // foreign_helper_manifest_and_mcp_entries_are_never_overwritten).
+    // overwrites it. A valid record of another installation is still refused.
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("home/.verboo/.config.json");
     let runner = Arc::new(FakeCliRunner::new(config_path));

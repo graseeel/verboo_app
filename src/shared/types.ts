@@ -413,6 +413,8 @@ export type TranscriptItem = {
   activityDetail?: string
   /** Native diagnostic kept behind a friendly user-facing error summary. */
   errorDetail?: string
+  /** Stable id shared with the local diagnostic event for support lookup. */
+  correlationId?: string
   /** User-requested interruption uses the assistant's quiet transcript treatment. */
   presentation?: 'interruption'
   activityAdditions?: number
@@ -648,6 +650,8 @@ export type CustomSlashCommand = {
   createdAt: number
 }
 
+export type AndroidStreamFps = 30 | 60
+
 export type UserSettings = {
   language: LanguageCode
   theme: ThemeMode
@@ -658,6 +662,7 @@ export type UserSettings = {
   showMenuBarText: boolean
   staySignedIn: boolean
   preventSleepWhileRunning: boolean
+  androidStreamFps?: AndroidStreamFps
   completionNotifications: CompletionNotificationMode
   permissionNotifications: boolean
   questionNotifications: boolean
@@ -856,6 +861,8 @@ export type TokenRateSnapshot = {
 export type CredentialStatus = {
   hasApiKey: boolean
   apiKeyHint?: string
+  /** Stable code from Rust (`secret_service_file_fallback` / `secret_service_unavailable`). */
+  warning?: string
 }
 
 export type CliAuthStatus = {
@@ -906,6 +913,7 @@ export type ProviderUsageWindow = {
   kind: 'session' | 'weekly' | 'model-scoped-weekly' | 'unknown'
   displayLabel: string
   modelScope?: string
+  windowMinutes?: number
   usedPercent: number
   resetsAt?: string
 }
@@ -965,7 +973,7 @@ export type LoginEventKind = 'url' | 'complete' | 'error'
 /**
  * A1: payload of the `login:event` Tauri channel (event name is
  * literally `login:event`, with the colon). Rust struct LoginEvent
- * (types.rs:590) uses `rename_all = "camelCase"`. All four optional
+ * (types.rs:590) uses `rename_all = "camelCase"`. All five optional
  * fields use `skip_serializing_if Option::is_none` — when absent the
  * KEY IS OMITTED from the JSON and arrives as `undefined`, not null.
  * Treat absence, not null.
@@ -982,6 +990,7 @@ export type LoginEventKind = 'url' | 'complete' | 'error'
  */
 export type LoginEvent = {
   kind: LoginEventKind
+  flowId?: number
   url?: string
   message?: string
   ok?: boolean
@@ -1016,7 +1025,7 @@ export type ProfileUser = {
 }
 
 export type ProfileResult = {
-  status: 'ready' | 'unauthenticated' | 'error'
+  status: 'ready' | 'unauthenticated' | 'api-key-only' | 'error'
   fetchedAt?: number
   user?: ProfileUser
   plan?: ProfilePlan
@@ -1292,6 +1301,7 @@ export type CliTerminalFailure = {
   exitCode: number | null
   sessionId?: string
   recoveryReady: boolean
+  technicalDetail?: string
 }
 
 export type AgentEvent =
@@ -1312,7 +1322,6 @@ export type AppConfig = {
   selectedModel?: string
 }
 
-// ── Verboo in Chrome integration ──────────────────────────────
 
 export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid' | 'conflict'
 export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
@@ -1350,7 +1359,6 @@ export type ChromeConnectionTestResult = {
   errorCode?: string
 }
 
-// ── Review types ────────────────────────────────────────────────
 
 export type WorkspaceReviewScope = 'github-repo' | 'git-repo' | 'local-folder'
 
@@ -1452,7 +1460,6 @@ export type FileDiff = {
   message?: string
 }
 
-// ── Update types ────────────────────────────────────────────────
 
 export type UpdateChannel = 'stable' | 'beta'
 
@@ -1537,7 +1544,6 @@ export type UpdateSettings = {
   autoDownload: boolean
 }
 
-// ── Terminal types ──────────────────────────────────────────────
 
 export type LocalTerminalSession = {
   id: string

@@ -27,7 +27,6 @@
   --review-width: 0px;
   /* Shared by the transcript lane and the composer so messages line up exactly
      with the composer edges (same max width, same centered axis). */
-  /* Shared width for transcript + composer so both share one vertical axis. */
   --chat-lane-width: 840px;
   /* Composer is intentionally wider than the transcript lane so the input
      field's outer edges extend past message bubbles — compensates for the
@@ -35,7 +34,7 @@
      narrower than the messages it sits under. Transcript width is INTACT. */
   --composer-lane-width: calc(var(--chat-lane-width) + 48px);
   /* Horizontal inset inside the dock area so composer width tracks the
-     padded transcript column (slightly roomier than 56px → wider composer). */
+     padded transcript column. */
   --chat-lane-gutter: 40px;
   --composer-clearance: 168px;
   --shimmer-duration: 4s;
@@ -172,6 +171,9 @@ button {
 }
 
 .language-selector.compact .language-selector-trigger {
+  justify-content: center;
+  width: auto;
+  min-width: 72px;
   min-height: 30px;
   padding: 3px 8px;
 }
@@ -379,6 +381,13 @@ button {
   display: none;
 }
 
+/* No tooltip text, no bubble — without the attribute, `content: attr(...)`
+   is empty but the padding would still paint a tiny empty box on hover
+   (e.g. the simulator trigger while its menu is open, PA-36). */
+.ui-tooltip:not([data-tooltip])::after {
+  display: none;
+}
+
 /* Registered so the base color itself can transition between purple tones
    inside a keyframe (shadcn "color" shimmer variant). */
 @property --shimmer-base-color {
@@ -453,7 +462,6 @@ button {
   }
 }
 
-/* ── Skeleton (loading placeholder) ─────────────────────────── */
 
 .skeleton {
   display: block;
@@ -473,7 +481,6 @@ button {
   100% { background-position: -120% 0; }
 }
 
-/* ── Empty state (icon + title + hint) ──────────────────────── */
 
 .empty-state {
   display: grid;
@@ -743,7 +750,6 @@ input[type="checkbox"]:disabled {
   color: var(--accent-strong);
 }
 
-/* ── Video understanding settings layout ── */
 .video-understanding-settings .video-consent-row {
   align-items: center;
 }
@@ -786,7 +792,6 @@ input[type="checkbox"]:disabled {
   line-height: 1.5;
 }
 
-/* ── Command palette content-search snippet ── */
 .palette-item-text {
   display: flex;
   flex-direction: column;
@@ -801,7 +806,6 @@ input[type="checkbox"]:disabled {
   white-space: nowrap;
 }
 
-/* ── Subagent indicator: dismissable chip ── */
 .subagent-indicator-main {
   display: inline-flex;
   align-items: center;
@@ -830,7 +834,6 @@ input[type="checkbox"]:disabled {
   color: var(--text);
 }
 
-/* ── Profile avatar editor polish ── */
 .avatar-editor-section-label {
   margin-top: 14px;
   font-size: 11px;
@@ -883,4 +886,16 @@ input[type="checkbox"]:disabled {
 .avatar-editor-grid .avatar-editor-icon.is-active {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

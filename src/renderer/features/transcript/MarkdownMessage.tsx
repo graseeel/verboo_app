@@ -6,7 +6,6 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { MarkdownLinkDialog } from './MarkdownLinkDialog'
 import { parseLinkDestination, type LinkDestination } from './markdownLink'
 
-// ── densifyMarkdown ──────────────────────────────────────────────────────
 // The model often emits blank lines between numbered list items (loose
 // markdown). CommonMark renders loose lists with extra <p> wrappers inside
 // each <li>, creating unavoidable visual gaps. We tighten the source before

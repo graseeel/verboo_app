@@ -30,6 +30,19 @@ pub enum CliRuntime {
     Missing,
 }
 
+impl CliRuntime {
+    /// User-visible runtime tag. Full `Display` keeps node/cli paths for logs.
+    pub fn short_label(&self) -> String {
+        match self {
+            Self::InstalledNode { version, .. } => {
+                format!("installed-node(version={version})")
+            }
+            Self::DevelopmentOverride { .. } => "development-override".to_string(),
+            Self::Missing => "missing".to_string(),
+        }
+    }
+}
+
 impl fmt::Display for CliRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -204,8 +217,13 @@ pub fn runtime_available() -> bool {
 }
 
 pub fn runtime_missing_error() -> String {
-    "O CLI do Verboo ainda não está pronto. O app baixa e verifica o CLI oficial na primeira inicialização; confira sua conexão e tente novamente. O restante do app continua disponível."
-        .to_string()
+    const GENERIC: &str = "O CLI do Verboo ainda não está pronto. O app baixa e verifica o CLI oficial na primeira inicialização; confira sua conexão e tente novamente. O restante do app continua disponível.";
+    match crate::services::bootstrap_diag::last() {
+        Some(detail) if !detail.is_empty() && !GENERIC.contains(&detail) => {
+            format!("{GENERIC} ({detail})")
+        }
+        _ => GENERIC.to_string(),
+    }
 }
 
 pub fn check_runtime_available() -> Result<(), String> {
@@ -219,6 +237,23 @@ pub fn bundled_cli_version() -> Option<String> {
         return package_version_for_cli(&cli);
     }
     runtime::current_version()
+}
+
+/// CLI version for `session_start`. Prefers the live runtime, then the
+/// on-disk store pointer — runtime is configured after diagnostic init.
+pub fn installed_cli_version(app_data_dir: &Path) -> Option<String> {
+    crate::services::cli_update::store::CliStore::open(app_data_dir)
+        .ok()?
+        .current()
+        .ok()?
+        .map(|pointer| pointer.version)
+}
+
+pub fn session_cli_version(app_data_dir: &Path) -> String {
+    bundled_cli_version()
+        .or_else(|| installed_cli_version(app_data_dir))
+        .filter(|version| !version.is_empty() && version != "unknown")
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn package_version_for_cli(cli_mjs: &Path) -> Option<String> {
@@ -242,6 +277,7 @@ pub fn apply_creation_flags(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::services::cli_update::contract::DesktopTarget;
@@ -374,17 +410,120 @@ mod tests {
 
     #[test]
     fn missing_error_is_typed_and_does_not_request_a_system_node_install() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
         let message = runtime_missing_error();
         assert!(!message.contains("os error"));
         assert!(!message.contains("npm i -g"));
         assert!(!message.contains("Instale o Node"));
         assert!(message.contains("primeira inicialização"));
+        assert!(!message.contains("HTTP 403"));
+    }
+
+    #[test]
+    fn missing_error_appends_last_bootstrap_detail_when_present() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record(
+            "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip",
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(message.contains("HTTP 403"), "{message}");
+        assert!(message.contains("nodejs.org"), "{message}");
+        crate::services::bootstrap_diag::reset();
+    }
+
+    #[test]
+    fn missing_error_does_not_append_expired_bootstrap_detail() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record_aged(
+            "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip",
+            std::time::Duration::from_secs(61),
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(!message.contains("HTTP 403"), "{message}");
+        crate::services::bootstrap_diag::reset();
+    }
+
+    #[test]
+    fn missing_error_redacts_tokens_from_attached_bootstrap_detail() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::bootstrap_diag::reset();
+        crate::services::bootstrap_diag::record(
+            "download failed token=super-secret-token from https://example.test/file",
+        );
+        let message = runtime_missing_error();
+        assert!(message.contains("primeira inicialização"), "{message}");
+        assert!(message.contains("[redacted]"), "{message}");
+        assert!(!message.contains("super-secret-token"), "{message}");
+        crate::services::bootstrap_diag::reset();
     }
 
     #[test]
     fn cli_env_disables_the_upstream_autoupdater() {
         assert!(CliSpawn::cli_env_entries()
             .contains(&("DISABLE_AUTOUPDATER".to_string(), "1".to_string())));
+    }
+
+    #[test]
+    fn short_label_omits_node_and_cli_paths() {
+        let runtime = CliRuntime::InstalledNode {
+            node_path: PathBuf::from("/secret/bin/node"),
+            cli_mjs_path: PathBuf::from("/secret/cli/dist/cli.mjs"),
+            version: "0.15.17".into(),
+        };
+        let short = runtime.short_label();
+        assert_eq!(short, "installed-node(version=0.15.17)");
+        assert!(!short.contains("/secret"), "{short}");
+        let full = runtime.to_string();
+        assert!(full.contains("/secret/bin/node"), "{full}");
+        assert!(full.contains("/secret/cli/dist/cli.mjs"), "{full}");
+    }
+
+    #[test]
+    fn short_label_for_dev_override_and_missing_omits_paths() {
+        let runtime = CliRuntime::DevelopmentOverride {
+            node_path: PathBuf::from("/tmp/node"),
+            cli_mjs_path: PathBuf::from("/tmp/cli.mjs"),
+        };
+        assert_eq!(runtime.short_label(), "development-override");
+        assert!(runtime.to_string().contains("/tmp/node"));
+        assert_eq!(CliRuntime::Missing.short_label(), "missing");
+    }
+
+    fn write_store_current(app_data: &Path, version: &str) {
+        CliStore::open(app_data).unwrap();
+        fs::write(
+            app_data.join("cli").join("current.json"),
+            format!(
+                "{{\n  \"version\": \"{version}\",\n  \"target\": \"aarch64-apple-darwin\",\n  \"manifestDigest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"installedAt\": \"2026-08-29T12:00:00Z\"\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn session_cli_version_reads_store_when_runtime_is_unconfigured() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_environment();
+        let app_data = tempfile::tempdir().unwrap();
+        write_store_current(app_data.path(), "0.15.18");
+        let version = session_cli_version(app_data.path());
+        assert_eq!(version, "0.15.18");
+        assert_ne!(version, "unknown");
     }
 }
 

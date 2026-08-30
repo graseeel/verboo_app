@@ -1,6 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { SimulatorIssue } from './iosSimulatorModel'
+import type {
+  SimulatorAccessibilityNode,
+  SimulatorElementHit,
+  SimulatorPoint,
+  SimulatorRect,
+} from './simulatorSelection'
 
 const noopUnlisten: UnlistenFn = () => {}
 
@@ -97,7 +103,7 @@ export type IosSimulatorError = {
   message: string
 }
 
-export type IosSimulatorPoint = { x: number; y: number }
+export type IosSimulatorPoint = SimulatorPoint
 export type IosSimulatorPresencePhase = 'start' | 'clear'
 export type IosSimulatorPresenceAction =
   | 'tap'
@@ -129,23 +135,9 @@ export type IosSimulatorKey =
   | 'arrowLeft'
   | 'arrowRight'
 
-export type IosSimulatorAccessibilityNode = {
-  id: string
-  role: string
-  label?: string | null
-  value?: string | null
-  frame: { x: number; y: number; width: number; height: number }
-  enabled: boolean
-  visible: boolean
-  actionable: boolean
-}
-
-export type IosSimulatorRect = { x: number; y: number; width: number; height: number }
-
-export type IosSimulatorElementHit = {
-  element: IosSimulatorAccessibilityNode
-  rect: IosSimulatorRect
-}
+export type IosSimulatorAccessibilityNode = SimulatorAccessibilityNode
+export type IosSimulatorRect = SimulatorRect
+export type IosSimulatorElementHit = SimulatorElementHit
 
 export type IosSimulatorAnnotationCapture = {
   cropPath: string
@@ -256,7 +248,6 @@ export const iosSimulatorApi = {
     listenInTauri<IosSimulatorPresenceEvent | null>('ios-simulator:open-requested', handler),
   onLifecycle: (handler: (snapshot: IosSimulatorLifecycleSnapshot) => void): Promise<UnlistenFn> =>
     listenInTauri<IosSimulatorLifecycleSnapshot>('ios-simulator:lifecycle', handler),
-  // ── Setup onboarding (design-ios-onboarding contract, PA-13/PA-14) ──
   setupOpenAppStore: () => invoke<void>('ios_simulator_setup_open_app_store'),
   setupStart: (mode: IosSimulatorSetupMode) =>
     invoke<void>('ios_simulator_setup_start', { mode }),

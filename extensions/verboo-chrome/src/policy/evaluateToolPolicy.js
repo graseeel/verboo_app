@@ -12,8 +12,8 @@
  *   - Site Grant `once` allows this call but does not persist (caller
  *     decides whether to upgrade to `always` after success).
  *   - No grant + Manual mode → `needsApproval` (caller prompts the user).
- *   - No grant + Auto mode → `allowed` (safety checks still ran; hard
- *     blocks + deny already returned above).
+ *   - No grant + unknown mode (legacy 'auto' included) → fail-safe
+ *     `needsApproval` (hard blocks + deny already returned above).
  *   - No grant + Skip mode → `allowed` (hard blocks + deny still apply).
  *   - Elevated tools (risk === 'elevated') ALWAYS `needsApproval`, even
  *     under Auto/Skip and even with `always` grant. This matches the

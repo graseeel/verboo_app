@@ -7,42 +7,50 @@ import type {
   IosSimulatorElementHit,
   IosSimulatorKey,
   IosSimulatorPoint,
-  IosSimulatorPresenceEvent,
   IosSimulatorRect,
 } from './iosSimulatorApi'
+import { AndroidPreviewCanvas } from './AndroidPreviewCanvas'
+import type { RgbPaintPush } from './androidWebglPreview'
 import {
-  clientPointToNormalized,
   normalizedRectToCss,
   paintedContainRect,
+  pointToNormalizedOnSurface,
   type Rect,
 } from './simulatorGeometry'
-import { createSimulatorAnnotationAttachment } from './simulatorAnnotations'
-import { SimulatorPresenceOverlay } from './SimulatorPresenceOverlay'
+import {
+  createSimulatorAnnotationAttachment,
+  type SimulatorAnnotationContext,
+} from './simulatorAnnotations'
+import { SimulatorPresenceOverlay, type SimulatorPresence } from './SimulatorPresenceOverlay'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import {
   useSimulatorInteraction,
   type SimulatorInteractionMode,
+  type SimulatorKeyMapper,
 } from './useSimulatorInteraction'
 
 type Labels = {
   interact: string
-  selectElement: string
-  selectArea: string
   interaction: string
   keyboardHint: string
   unavailable: string
-  note: string
-  notePlaceholder: string
-  addToChat: string
-  cancel: string
-  capturing: string
-  selectionTooSmall: string
-  elementUnavailable: string
   agentActive: string
   agentBadge: string
+  /** Selection-mode labels — rendered when `selectionEnabled`. */
+  selectElement?: string
+  selectArea?: string
+  note?: string
+  notePlaceholder?: string
+  addToChat?: string
+  cancel?: string
+  capturing?: string
+  inspecting?: string
+  inspectionFailed?: string
+  selectionTooSmall?: string
+  elementUnavailable?: string
 }
 
-type SimulatorSurfaceProps = {
+type SimulatorSurfaceProps<K extends string = IosSimulatorKey> = {
   frameDataUrl?: string
   streamUrl?: string
   deviceName: string
@@ -50,23 +58,37 @@ type SimulatorSurfaceProps = {
   mode: SimulatorInteractionMode
   interactive: boolean
   labels: Labels
+  /** Per-platform key mapper injected by the caller (PA-27); defaults to the
+   *  iOS mapper inside useSimulatorInteraction. */
+  keyMapper?: SimulatorKeyMapper<K>
+  /** false renders an interact-only surface without element/area selection. */
+  selectionEnabled?: boolean
+  /** Slot canvas Android — dimensões EXPLÍCITAS do header VAF1. Ausente no iOS. */
+  canvasMedia?: {
+    width: number
+    height: number
+    onPushReady: (push: RgbPaintPush | null) => void
+    onTerminalFailure: () => void
+  }
   onModeChange: (mode: SimulatorInteractionMode) => void
   onTap: (point: IosSimulatorPoint) => void
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
-  onPressKey: (key: IosSimulatorKey) => void
-  onInspectPoint: (
+  onPressKey: (key: K) => void
+  /** Selection callbacks — used only when `selectionEnabled` is true. */
+  onInspectPoint?: (
     point: IosSimulatorPoint,
     exact?: boolean,
   ) => Promise<IosSimulatorElementHit | undefined>
-  onCaptureAnnotation: (
+  onCaptureAnnotation?: (
     kind: 'element' | 'area',
     rect: IosSimulatorRect,
     element?: IosSimulatorAccessibilityNode | null,
   ) => Promise<IosSimulatorAnnotationCapture | undefined>
-  onDeleteCapture: (paths: string[]) => Promise<void>
-  onAddAnnotation: (attachment: AttachmentMeta) => void
-  agentPresence?: IosSimulatorPresenceEvent
+  onDeleteCapture?: (paths: string[]) => Promise<void>
+  onAddAnnotation?: (attachment: AttachmentMeta) => void
+  annotationContext?: SimulatorAnnotationContext
+  agentPresence?: SimulatorPresence
 }
 
 type AreaPointer = { pointerId: number; start: IosSimulatorPoint }
@@ -77,7 +99,7 @@ type PendingCapture = {
 
 const ELEMENT_INSPECTION_INTERVAL_MS = 100
 
-export function SimulatorSurface({
+export function SimulatorSurface<K extends string = IosSimulatorKey>({
   frameDataUrl,
   streamUrl,
   deviceName,
@@ -85,6 +107,9 @@ export function SimulatorSurface({
   mode,
   interactive,
   labels,
+  keyMapper,
+  selectionEnabled = true,
+  canvasMedia,
   onModeChange,
   onTap,
   onDrag,
@@ -94,8 +119,9 @@ export function SimulatorSurface({
   onCaptureAnnotation,
   onDeleteCapture,
   onAddAnnotation,
+  annotationContext,
   agentPresence,
-}: SimulatorSurfaceProps) {
+}: SimulatorSurfaceProps<K>) {
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
   const areaPointerRef = useRef<AreaPointer | null>(null)
@@ -113,12 +139,14 @@ export function SimulatorSurface({
   const [pendingCapture, setPendingCapture] = useState<PendingCapture | undefined>()
   const [note, setNote] = useState('')
   const [capturing, setCapturing] = useState(false)
+  const [inspecting, setInspecting] = useState(false)
   const [selectionError, setSelectionError] = useState<string | undefined>()
   const [hoveredElement, setHoveredElement] = useState<IosSimulatorElementHit | undefined>()
   const [failedStreamUrl, setFailedStreamUrl] = useState<string | undefined>()
   const paintedRectRef = useRef<Rect>({ x: 0, y: 0, width: 0, height: 0 })
   const [stablePaintedRect, setStablePaintedRect] = useState<Rect>(paintedRectRef.current)
-  const interactionHandlers = useSimulatorInteraction({
+  const mediaSize = canvasMedia ? { width: canvasMedia.width, height: canvasMedia.height } : undefined
+  const interactionHandlers = useSimulatorInteraction<K>({
     surfaceRef,
     imageRef,
     mode,
@@ -127,6 +155,8 @@ export function SimulatorSurface({
     onDrag,
     onTypeText,
     onPressKey,
+    keyMapper,
+    mediaSize,
   })
   const previewSource = streamUrl && streamUrl !== failedStreamUrl ? streamUrl : frameDataUrl
 
@@ -135,11 +165,19 @@ export function SimulatorSurface({
   }, [streamUrl])
 
   const updatePaintedRect = useCallback(() => {
-    const next = paintedSurfaceRect(surfaceRef.current, imageRef.current)
+    const next = canvasMedia
+      ? paintedContainRect(
+          (() => {
+            const bounds = surfaceRef.current?.getBoundingClientRect()
+            return { width: bounds?.width ?? 0, height: bounds?.height ?? 0 }
+          })(),
+          mediaSize ?? { width: 0, height: 0 },
+        )
+      : paintedSurfaceRect(surfaceRef.current, imageRef.current)
     if (next.width <= 0 || next.height <= 0 || sameRect(paintedRectRef.current, next)) return
     paintedRectRef.current = next
     setStablePaintedRect(next)
-  }, [])
+  }, [canvasMedia?.width, canvasMedia?.height])
 
   useEffect(() => {
     updatePaintedRect()
@@ -152,7 +190,7 @@ export function SimulatorSurface({
     }
     window.addEventListener('resize', updatePaintedRect)
     return () => window.removeEventListener('resize', updatePaintedRect)
-  }, [updatePaintedRect])
+  }, [updatePaintedRect, canvasMedia?.width, canvasMedia?.height])
 
   useEffect(() => {
     modeRef.current = mode
@@ -165,6 +203,7 @@ export function SimulatorSurface({
     }
     setSelectionRect(undefined)
     setSelectionError(undefined)
+    setInspecting(false)
     setHoveredElement(undefined)
     areaPointerRef.current = null
   }, [mode])
@@ -176,11 +215,13 @@ export function SimulatorSurface({
     }
   }, [])
 
-  const modes: Array<{ value: SimulatorInteractionMode; label: string; icon: React.ReactNode }> = [
-    { value: 'interact', label: labels.interact, icon: <Hand size={13} aria-hidden="true" /> },
-    { value: 'select-element', label: labels.selectElement, icon: <MousePointer2 size={13} aria-hidden="true" /> },
-    { value: 'select-area', label: labels.selectArea, icon: <Scan size={13} aria-hidden="true" /> },
-  ]
+  const modes: Array<{ value: SimulatorInteractionMode; label: string; icon: React.ReactNode }> = selectionEnabled
+    ? [
+        { value: 'interact', label: labels.interact, icon: <Hand size={13} aria-hidden="true" /> },
+        { value: 'select-element', label: labels.selectElement ?? '', icon: <MousePointer2 size={13} aria-hidden="true" /> },
+        { value: 'select-area', label: labels.selectArea ?? '', icon: <Scan size={13} aria-hidden="true" /> },
+      ]
+    : []
   const selectionStyle = selectionRect ? normalizedRectToCss(selectionRect, stablePaintedRect) : undefined
   const frameStyle = stablePaintedRect.width > 0 && stablePaintedRect.height > 0
     ? {
@@ -193,17 +234,16 @@ export function SimulatorSurface({
 
   function normalizedAt(clientX: number, clientY: number): IosSimulatorPoint | null {
     const surface = surfaceRef.current
-    const image = imageRef.current
-    if (!surface || !image) return null
-    const bounds = surface.getBoundingClientRect()
-    const painted = paintedContainRect(
-      { width: bounds.width, height: bounds.height },
-      { width: image.naturalWidth, height: image.naturalHeight },
-    )
-    return clientPointToNormalized(
-      { x: clientX - bounds.left, y: clientY - bounds.top },
-      painted,
-    )
+    if (!surface) return null
+    const size = mediaSize
+      ?? (imageRef.current
+        ? {
+            width: imageRef.current.naturalWidth,
+            height: imageRef.current.naturalHeight,
+          }
+        : null)
+    if (!size) return null
+    return pointToNormalizedOnSurface(surface, size, clientX, clientY)
   }
 
   async function captureSelection(
@@ -211,7 +251,7 @@ export function SimulatorSurface({
     rect: IosSimulatorRect,
     element: IosSimulatorAccessibilityNode | null = null,
   ) {
-    if (capturing || pendingCapture) return
+    if (capturing || pendingCapture || !onCaptureAnnotation) return
     setCapturing(true)
     setSelectionError(undefined)
     try {
@@ -245,7 +285,7 @@ export function SimulatorSurface({
   async function runElementInspection() {
     const inspection = inspectionRef.current
     const point = inspection.queued
-    if (!point || inspection.inFlight || modeRef.current !== 'select-element') return
+    if (!point || inspection.inFlight || modeRef.current !== 'select-element' || !onInspectPoint) return
     inspection.queued = undefined
     inspection.inFlight = true
     inspection.lastStartedAt = performance.now()
@@ -256,6 +296,10 @@ export function SimulatorSurface({
       setHoveredElement(hit)
       setSelectionRect(hit?.rect)
       setSelectionError(undefined)
+    } catch {
+      if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
+      setHoveredElement(undefined)
+      setSelectionRect(undefined)
     } finally {
       inspection.inFlight = false
       if (inspection.queued && modeRef.current === 'select-element') {
@@ -265,8 +309,9 @@ export function SimulatorSurface({
   }
 
   async function selectElementAt(point: IosSimulatorPoint) {
-    if (capturing || pendingCapture) return
+    if (capturing || pendingCapture || !onInspectPoint) return
     const inspection = inspectionRef.current
+    if (inspection.selecting) return
     inspection.sequence += 1
     inspection.selecting = true
     inspection.queued = undefined
@@ -275,6 +320,8 @@ export function SimulatorSurface({
       inspection.timer = undefined
     }
     const sequence = inspection.sequence
+    setInspecting(true)
+    setSelectionError(undefined)
     // Re-inspect the exact click point. The last hover result may belong to a
     // neighbouring control while a newer throttled inspection is still queued.
     try {
@@ -287,9 +334,17 @@ export function SimulatorSurface({
       }
       setHoveredElement(hit)
       setSelectionRect(hit.rect)
+      setInspecting(false)
       await captureSelection('element', hit.rect, hit.element)
+    } catch {
+      if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
+      setSelectionRect(undefined)
+      setSelectionError(labels.inspectionFailed)
     } finally {
-      if (sequence === inspection.sequence) inspection.selecting = false
+      if (sequence === inspection.sequence) {
+        inspection.selecting = false
+        setInspecting(false)
+      }
     }
   }
 
@@ -358,16 +413,17 @@ export function SimulatorSurface({
     setSelectionRect(undefined)
     setNote('')
     if (pending) {
-      await onDeleteCapture([pending.capture.cropPath, pending.capture.viewportPath])
+      await onDeleteCapture?.([pending.capture.cropPath, pending.capture.viewportPath])
     }
   }
 
   function confirmCapture() {
-    if (!pendingCapture) return
+    if (!pendingCapture || !onAddAnnotation) return
     onAddAnnotation(createSimulatorAnnotationAttachment(
       pendingCapture.kind,
       note.trim() || undefined,
       pendingCapture.capture,
+      annotationContext,
     ))
     setPendingCapture(undefined)
     setSelectionRect(undefined)
@@ -377,6 +433,7 @@ export function SimulatorSurface({
 
   return (
     <div className="ios-simulator-surface-shell">
+      {modes.length > 0 && (
       <div className="ios-simulator-mode-toolbar" role="toolbar" aria-label={deviceName}>
         {modes.map(item => (
           <SimulatorTooltipButton
@@ -393,6 +450,7 @@ export function SimulatorSurface({
           </SimulatorTooltipButton>
         ))}
       </div>
+      )}
       <div
         ref={surfaceRef}
         className="ios-simulator-interaction-surface"
@@ -400,7 +458,7 @@ export function SimulatorSurface({
         tabIndex={mode === 'interact' && interactive ? 0 : -1}
         aria-label={labels.interaction}
         aria-describedby={hintId}
-        aria-busy={capturing}
+        aria-busy={capturing || inspecting}
         data-mode={mode}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -412,17 +470,26 @@ export function SimulatorSurface({
         onCompositionStart={interactionHandlers.onCompositionStart}
         onCompositionEnd={interactionHandlers.onCompositionEnd}
       >
-        <img
-          ref={imageRef}
-          src={previewSource}
-          alt={previewAlt}
-          draggable={false}
-          style={frameStyle}
-          onLoad={updatePaintedRect}
-          onError={() => {
-            if (streamUrl && previewSource === streamUrl) setFailedStreamUrl(streamUrl)
-          }}
-        />
+        {previewSource ? (
+          <img
+            ref={imageRef}
+            src={previewSource}
+            alt={previewAlt}
+            draggable={false}
+            style={frameStyle}
+            onLoad={updatePaintedRect}
+            onError={() => {
+              if (streamUrl && previewSource === streamUrl) setFailedStreamUrl(streamUrl)
+            }}
+          />
+        ) : canvasMedia ? (
+          <AndroidPreviewCanvas
+            ariaLabel={previewAlt}
+            onPushReady={canvasMedia.onPushReady}
+            onTerminalFailure={canvasMedia.onTerminalFailure}
+            style={frameStyle}
+          />
+        ) : null}
         <SimulatorPresenceOverlay
           paintedRect={stablePaintedRect}
           presence={agentPresence}
@@ -432,7 +499,8 @@ export function SimulatorSurface({
         {selectionStyle && (
           <div className="ios-simulator-selection-outline" style={selectionStyle} aria-hidden="true" />
         )}
-        {capturing && <div className="ios-simulator-capturing" role="status">{labels.capturing}</div>}
+        {inspecting && <div className="ios-simulator-capturing" role="status">{labels.inspecting ?? ''}</div>}
+        {capturing && <div className="ios-simulator-capturing" role="status">{labels.capturing ?? ''}</div>}
         {!interactive && mode === 'interact' && (
           <div className="ios-simulator-interaction-unavailable" aria-hidden="true">
             {labels.unavailable}

@@ -64,7 +64,7 @@ function apiRetryEvent(turnId: string, attempt: number, retryDelayMs?: number): 
 }
 
 /** The full quota-exhausted turn, exactly as the Rust forwarder emits it:
- *  every payload rides a json event; extract_text (turn_service.rs:3050)
+ *  every payload rides a json event; extract_text (turn_service.rs)
  *  turns BOTH the assistant error event AND the result event into stdout —
  *  the same text twice; the process exit lands as the terminal error. */
 function quotaFailureEvents(turnId: string): AgentEvent[] {
@@ -565,8 +565,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     expect(details?.textContent).toContain('invalid_request_error')
   })
 
-  // T19-retry — covers the retry-error path at App.tsx:2594 (the `.catch`
-  // handler when `runTurn(retry)` rejects). T23: the error message is the
+  // T19-retry — covers the retry-error path (the `.catch` handler when
+  // `runTurn(retry)` rejects). T23: the error message is the
   // model's natural response (appendAssistantText), not a "Sistema" badge.
   // runTurn rejects before any stdout, so the body is empty and
   // appendAssistantText creates a fresh segment; ApiErrorAwareText in the
@@ -642,8 +642,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     expect(sendTurn.mock.calls[1][0].message).toBe('Refactor the parser')
   })
 
-  // T19-recovery — covers the recovery-error system row at App.tsx:2637
-  // (the `.catch` handler when `runTurn(resume)` rejects after an auth
+  // T19-recovery — covers the recovery-error system row (the `.catch`
+  // handler when `runTurn(resume)` rejects after an auth
   // recovery attempt). Same unreachability proof as T19-retry: runTurn
   // rejects before any stdout events for the resume turn, so the body is
   // always empty and the guard always returns false. The recovery headline
@@ -785,8 +785,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     seedConversation()
     const { emitAgentEvent, turnId, interrupt } = await renderAppAndSendTurn()
     // Simulate interrupt failure: the CLI process already exited, so the
-    // interrupt returns false. interruptForUser rolls back userInterruptedTurnsRef
-    // (App.tsx:2963) — the first error event is NOT labeled 'interruption'.
+    // interrupt returns false. interruptForUser rolls back userInterruptedTurnsRef —
+    // the first error event is NOT labeled 'interruption'.
     interrupt.mockResolvedValue(false)
 
     act(() => { emitAgentEvent({ type: 'started', turnId }) })

@@ -1,5 +1,5 @@
-import { ArrowUp, Mic, MicOff, Paperclip, Target, X } from 'lucide-react'
-import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, Mic, MicOff, Paperclip, Square, Target, X } from 'lucide-react'
+import { type ComponentPropsWithoutRef, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentMeta, CustomSlashCommand, SkillSummary, Annotation } from '../../../shared/types'
 import { useI18n } from '../../i18n'
@@ -43,6 +43,7 @@ type ComposerProps = {
   onDropFiles: (paths: string[], files: File[]) => void
   onRemoveAttachment: (path: string) => void
   onSubmit: (message: string) => void
+  onStop?: () => void
   onPasteFiles: (paths: string[], files: File[]) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   onPetCommand: () => void
@@ -67,6 +68,36 @@ type ComposerProps = {
   onEditAnnotationComment?: (annotationId: string, comment: string | null) => void
 }
 
+function AttachmentChipButton({ onClick, ...buttonProps }: ComponentPropsWithoutRef<'button'>) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  useLayoutEffect(() => {
+    const button = buttonRef.current
+    if (!button) return
+
+    if (buttonProps.title === undefined) {
+      button.removeAttribute('title')
+    } else {
+      button.setAttribute('title', buttonProps.title)
+    }
+
+    return () => button.removeAttribute('title')
+  }, [buttonProps.title])
+
+  return (
+    <button
+      {...buttonProps}
+      ref={buttonRef}
+      onClick={event => {
+        // Browser-managed title tooltips do not receive mouseleave when their
+        // hovered node disappears, so dismiss the tooltip before unmounting it.
+        event.currentTarget.removeAttribute('title')
+        onClick?.(event)
+      }}
+    />
+  )
+}
+
 export function Composer({
   disabled,
   busy = false,
@@ -82,6 +113,7 @@ export function Composer({
   onDropFiles,
   onRemoveAttachment,
   onSubmit,
+  onStop,
   onPasteFiles,
   onGoalCommand,
   onPetCommand,
@@ -99,6 +131,7 @@ export function Composer({
   onEditAnnotationComment,
 }: ComposerProps) {
   const { t, language } = useI18n()
+  const stopMode = busy && Boolean(onStop)
   const [internalValue, setInternalValue] = useState('')
   const value = externalValue ?? internalValue
   const setValue = onValueChange ?? setInternalValue
@@ -227,7 +260,6 @@ export function Composer({
   const goalModeActive = isGoalCommandDraft(value)
   const dropActive = dragDepth > 0 || nativeDragging
 
-  // ── @-mention skill palette ─────────────────────────────────────────────
   const atQuery = getAtQuery(value)
 
   const matchingAtSkills = useMemo(() => {
@@ -357,7 +389,7 @@ export function Composer({
     textareaRef.current?.focus()
   }
 
-  // ── Voice input (Web Speech API, no backend key) ────────────────────────
+  // Voice input — Web Speech API, no backend key (no local API key needed).
   // Lazy handle: created on the first toggle so a session never opens the
   // mic until the user explicitly asks for it. Cleanup runs on unmount and
   // whenever the composer is discarded so we never leave the OS mic open.
@@ -827,7 +859,7 @@ export function Composer({
                 ? `${simulatorAnnotation?.kind === 'element' ? t('simulator.annotationElement') : t('simulator.annotationArea')} · ${simulatorAnnotation?.element?.label || simulatorAnnotation?.element?.role || simulatorAnnotation?.device.name || attachment.name}`
               : attachment.name
             return (
-              <button
+              <AttachmentChipButton
                 key={attachment.path}
                 className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}${isAnnotation ? ' attachment-annotation' : ''}`}
                 type="button"
@@ -862,7 +894,7 @@ export function Composer({
                   </span>
                 )}
                 <X size={12} />
-              </button>
+              </AttachmentChipButton>
             )
           })}
         </div>
@@ -932,15 +964,21 @@ export function Composer({
         <div className="composer-tools right">
           {rightToolbar}
           <button
-            className="send-button"
-            type="submit"
+            className={`send-button${stopMode ? ' is-stop' : ''}`}
+            type={stopMode ? 'button' : 'submit'}
+            onClick={stopMode ? onStop : undefined}
             // F3: chip de anotação também habilita o envio (mesma regra do
-            // submit acima) — sem isto o botão ficaria morto com anotação e
-            // texto vazio, contradizendo o comportamento exigido.
-            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation' || attachment.kind === 'simulator-annotation') && annotations.length === 0)}
-            title={busy ? t('composer.queue') : t('composer.send')}
+            // submit acima) quando idle. Durante um turno, o controle vira
+            // uma ação de parada independente do conteúdo do campo.
+            // Intencional: stop continua habilitado se as demais ações forem
+            // bloqueadas, pois um processo já em execução ainda deve parar.
+            disabled={!stopMode && (disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation' || attachment.kind === 'simulator-annotation') && annotations.length === 0))}
+            aria-label={stopMode ? t('composer.stop') : t('composer.send')}
+            title={stopMode ? t('composer.stop') : t('composer.send')}
           >
-            <ArrowUp size={17} />
+            {stopMode
+              ? <Square size={13} fill="currentColor" aria-hidden="true" data-testid="composer-stop-icon" />
+              : <ArrowUp size={17} />}
           </button>
         </div>
       </div>

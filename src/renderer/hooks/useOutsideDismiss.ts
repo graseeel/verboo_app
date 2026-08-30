@@ -18,8 +18,6 @@ export function useOutsideDismiss<T extends HTMLElement>(
       const target = event.target
       if (!(target instanceof Node)) return
       if (ref.current?.contains(target)) return
-      // If the pointer landed on any ignored node, let the click handler
-      // decide open/close without interference.
       if (ignoreRefs?.some(r => r.current?.contains(target))) return
       onDismiss()
     }

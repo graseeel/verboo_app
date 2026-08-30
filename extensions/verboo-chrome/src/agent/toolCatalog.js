@@ -46,7 +46,6 @@ export function toToolCall(toolCall) {
   }
 }
 
-/** @param {string} argStr */
 function parseArguments(argStr) {
   try {
     const parsed = JSON.parse(argStr)

@@ -54,7 +54,7 @@ describe('applyAnnotations', () => {
   it('CONTRAFACTUAL (byte-identical gate): zero annotations → SAME reference, key never exists', () => {
     const request = legacyRequest()
     const result = applyAnnotations(request, [])
-    expect(result).toBe(request) // same reference — nothing was touched
+    expect(result).toBe(request)
     expect('annotations' in result).toBe(false)
     expect(result).toStrictEqual(legacyRequest())
   })

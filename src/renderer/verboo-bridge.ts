@@ -84,7 +84,6 @@ import type {
   PluginValidateResult,
 } from '../shared/plugins'
 
-// ── Helper: subscribe to Tauri event, returns cleanup fn ────────
 function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
   let unlisten: (() => void) | undefined
   let alive = true
@@ -98,13 +97,11 @@ function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
   }
 }
 
-// ── Drag-drop cache ─────────────────────────────────────────────
 // Tauri's WebView has onDragDropEvent; we cache the last dropped paths
 // so inspectDroppedFiles() can consume them (matching Electron webUtils).
 // NOTE: the 'over' variant has no `paths` — only 'drop' and 'enter' do.
 let _droppedPaths: string[] = []
 
-// ── Tauri-only guard (P1) ───────────────────────────────────────
 // In Electron, `__TAURI_INTERNALS__` is absent — the shim must be a no-op
 // so it doesn't overwrite the preload's `window.verboo` or call missing APIs.
 const IS_TAURI =
@@ -131,7 +128,6 @@ if (IS_TAURI) {
 }
 
 
-// ── Windows Git onboarding wire types (issue #71) ─────────────
 // Field names are the cross-fence contract (contrato-71-gitbash) with the
 // Rust commands — kept local to the renderer fence on purpose.
 export type WindowsLoginPrereqs = {
@@ -145,13 +141,18 @@ export type GitWindowsInstallResult = {
   log: string
 }
 
-// ── The API object (matches preload/index.ts VerbooDesktopApi) ──
+export type NativeFileDialogLabels = {
+  title: string
+  imagesFilter: string
+  videosFilter: string
+  allFilesFilter: string
+}
+
+// The API object (matches preload/index.ts VerbooDesktopApi).
 const api = {
-  // ── Config ──────────────────────────────────────────────────
   getConfig: () => invoke<AppConfig>('get_config'),
 
-  // ── Auth ────────────────────────────────────────────────────
-  startCliLogin: () => invoke<LoginResult>('start_cli_login'),
+  startCliLogin: (flowId?: number) => invoke<LoginResult>('start_cli_login', { flowId }),
   // Windows Git onboarding (issue #71, contract contrato-71-gitbash):
   // detection never installs anything and returns in <1s; off-Windows
   // gitAvailable is always true. installGitWindows runs winget with a
@@ -166,7 +167,7 @@ const api = {
   openSubscriptions: () => invoke<boolean>('open_subscriptions'),
   openSignup: () => invoke<boolean>('open_signup'),
 
-  // ── Providers (F4; comandos registrados em lib.rs:2382-2385) ──
+  // Providers (F4; comandos registrados em lib.rs:2382-2385).
   providerAuthStatus: () => invoke<ProviderAuthStatus[]>('provider_auth_status'),
   providerLoginStart: (provider: string, reconnectAccountId?: string) =>
     invoke<string>('provider_login_start', { provider, reconnectAccountId }),
@@ -185,29 +186,23 @@ const api = {
   onProviderLoginEvent: (handler: (event: ProviderLoginEvent) => void) =>
     onEvent<ProviderLoginEvent>('provider-login:event', handler),
 
-  // ── Credentials ─────────────────────────────────────────────
   getCredentialStatus: () => invoke<CredentialStatus>('get_credential_status'),
   setApiKey: (apiKey: string) => invoke<CredentialStatus>('set_api_key', { apiKey }),
   clearApiKey: () => invoke<CredentialStatus>('clear_api_key'),
 
-  // ── Models ──────────────────────────────────────────────────
   listModels: (forceRefresh = false) =>
     invoke<ModelDiscoveryResult>('list_models', { forceRefresh }),
 
-  // ── Profile ─────────────────────────────────────────────────
   getProfile: () => invoke<ProfileResult>('get_profile'),
 
-  // ── Feedback ────────────────────────────────────────────────
   sendFeedback: (request: FeedbackRequest) =>
     invoke<FeedbackResult>('send_feedback', { request }),
 
-  // ── Settings ────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>('get_user_settings'),
   updateUserSettings: (patch: Partial<UserSettings>) =>
     invoke<UserSettings>('update_user_settings', { patch }),
   resetUserSettings: () => invoke<UserSettings>('reset_user_settings'),
 
-  // ── Verboo in Chrome ────────────────────────────────────────
   chromeIntegrationStatus: () =>
     invoke<ChromeIntegrationStatus>('chrome_integration_status'),
   chromeIntegrationConfigure: (request: ChromeIntegrationRequest) =>
@@ -219,7 +214,7 @@ const api = {
     invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
   openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),
 
-  // ── Vision fallback (FASE 1) ───────────────────────────────────
+  // Vision fallback (FASE 1).
   // Returns current consent + preview of which model would be picked.
   getVisionFallbackState: () =>
     invoke<VisionFallbackState>('get_vision_fallback_state'),
@@ -227,7 +222,6 @@ const api = {
   setVisionFallbackConsent: (consent: VisionFallbackConsent) =>
     invoke<UserSettings>('set_vision_fallback_consent', { consent }),
 
-  // ── Video understanding ─────────────────────────────────────
   getVideoComponentState: () =>
     invoke<VideoComponentState>('get_video_component_state'),
   downloadVideoTranscriber: () =>
@@ -245,7 +239,6 @@ const api = {
   completeVideoOcrBatch: (jobId: string, results: VideoOcrText[]) =>
     invoke<void>('complete_video_ocr_batch', { jobId, results }),
 
-  // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>
     invoke<boolean>('update_menu_bar', { state }),
   // Force the tray to idle — called on turn done/error/abort so a lagging
@@ -257,7 +250,6 @@ const api = {
   // been active for >5min without a renderer push, Rust auto-resets to idle.
   heartbeatMenuBar: () => invoke<string>('heartbeat_menu_bar'),
 
-  // ── Window ──────────────────────────────────────────────────
   // Tauri's bundled drag.js (auto-injected when data-tauri-drag-region is
   // present) already toggles maximize on titlebar double-click via the
   // native `plugin:window|internal_toggle_maximize`. Invoking our own
@@ -266,10 +258,16 @@ const api = {
   // the Tauri path; the Electron preload still owns its own handler.
   toggleWindowZoom: () => Promise.resolve(true),
 
-  // ── Skills ──────────────────────────────────────────────────
   listSkills: (workingDirectory: string) =>
     invoke<SkillSummary[]>('list_skills', { workingDirectory }),
   openUserSkillsFolder: () => invoke<string>('open_user_skills_folder'),
+  openDiagnosticLogsDir: () => invoke<string>('open_diagnostic_logs_dir'),
+  diagnosticLogStatus: () =>
+    invoke<{ active: boolean; degraded: boolean; dir: string | null }>(
+      'diagnostic_log_status',
+    ),
+  diagnosticPackage: (maxLines?: number) =>
+    invoke<string>('diagnostic_package', { maxLines }),
   // Skill approval gating (item 1.8): returns untrusted skills that need
   // approval before injection. If non-empty, renderer shows the permission
   // panel for each. Reuses the existing PermissionApprovalPanel.
@@ -292,7 +290,6 @@ const api = {
       isActiveConversation,
     }),
 
-  // ── Notification actions ────────────────────────────────────
   // Geralt: in fire_completion_notification, use `app_handle.emit("notification-clicked", conversationId)`
   // on click. The renderer listens via `listenForNotificationClick` and focuses the conversation.
   listenForNotificationClick: (handler: (conversationId: string) => void) =>
@@ -300,7 +297,6 @@ const api = {
   getDefaultWorkingDirectory: () => invoke<string>('get_default_working_directory'),
   getBundledCliVersion: () => invoke<string>('get_bundled_cli_version'),
 
-  // ── Workspace ───────────────────────────────────────────────
   getWorkspaceChanges: (workingDirectory: string) =>
     invoke<WorkspaceChangeSummary>('get_workspace_changes', { workingDirectory }),
   getWorkspaceBranches: (workingDirectory: string) =>
@@ -321,7 +317,7 @@ const api = {
   pushWorkspaceChanges: (workingDirectory: string) =>
     invoke<WorkspacePushResult>('push_workspace_changes', { workingDirectory }),
 
-  // ── Stale file detector (Multichat Fase A) ──────────────────
+  // Stale file detector (Multichat Fase A).
   recordFileRead: (conversationId: string, filePath: string) =>
     invoke<void>('record_file_read', { conversationId, filePath }),
   recordFileWrite: (conversationId: string, filePath: string) =>
@@ -334,14 +330,14 @@ const api = {
   evaluateGoal: (input: GoalEvaluationInput) =>
     invoke<GoalEvaluationEnvelope>('evaluate_goal', { input }),
 
-  // ── @-mention file listing (quick-win #1) ──────────────────
+  // @-mention file listing (quick-win #1).
   // Returns RELATIVE paths (POSIX, sorted, cap 5000) for the given
   // working_directory. Uses `git ls-files` when the workspace is a git
   // repo (respects .gitignore); bounded walk otherwise.
   listWorkspaceFiles: (workingDirectory: string) =>
     invoke<string[]>('list_workspace_files', { workingDirectory }),
 
-  // ── Project instructions (QW2) ──────────────────────────────
+  // Project instructions (QW2).
   listProjectInstructionFiles: (workingDirectory: string) =>
     invoke<ProjectInstructionFile[]>('list_project_instruction_files', { workingDirectory }),
   readProjectInstructionFile: (workingDirectory: string, name: ProjectInstructionFile['name']) =>
@@ -355,8 +351,7 @@ const api = {
     content: string,
   ) => invoke<void>('write_project_instruction_file', { workingDirectory, name, content }),
 
-  // ── Files ───────────────────────────────────────────────────
-  pickFiles: () => invoke<AttachmentMeta[]>('pick_files'),
+  pickFiles: (labels: NativeFileDialogLabels) => invoke<AttachmentMeta[]>('pick_files', labels),
   inspectFiles: (paths: string[]) => invoke<AttachmentMeta[]>('inspect_files', { paths }),
   inspectDroppedFiles: (_files: File[]) => {
     // Tauri has no webUtils.getPathForFile; consume cached drop paths instead
@@ -383,7 +378,7 @@ const api = {
     invoke<AttachmentMeta>('finish_pasted_file_upload', input),
   abortPastedFileUpload: (input: { uploadId: string }) =>
     invoke<void>('abort_pasted_file_upload', input),
-  pickFolder: () => invoke<string | undefined>('pick_folder'),
+  pickFolder: (title: string) => invoke<string | undefined>('pick_folder', { title }),
   // Authorize one validated image/video in Tauri's asset protocol. This keeps
   // arbitrary attachment paths displayable without granting the webview a
   // blanket $HOME/** file scope.
@@ -391,14 +386,13 @@ const api = {
     invoke<string>('allow_media_preview_file', { path }),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
-  createProjectFolder: () => invoke<string | undefined>('create_project_folder'),
+  createProjectFolder: (title: string) => invoke<string | undefined>('create_project_folder', { title }),
   // Save an avatar image (base64) to the app data dir. Returns the absolute
   // path of the saved file. Accepted MIME: image/png, image/jpeg, image/webp.
   // Max 10MB. Old avatars with different extensions are removed.
   saveAvatarBlob: (base64: string, mime: string) =>
     invoke<string>('save_avatar_blob', { base64, mime }),
 
-  // ── Agent ───────────────────────────────────────────────────
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) =>
     invoke<string>('send_turn', { request, resumeSessionId }),
   runResearchSubagents: (request: ResearchSubagentsRunRequest) =>
@@ -408,13 +402,11 @@ const api = {
   interrupt: (conversationId?: string) =>
     invoke<boolean>('interrupt', { conversationId }),
 
-  // ── Agent events ────────────────────────────────────────────
   onAgentEvent: (callback: (event: AgentEvent) => void) =>
     onEvent<AgentEvent>('agent:event', callback),
   onRefreshDataRequest: (callback: () => void) =>
     onEvent<void>('app:refresh-data', callback),
 
-  // ── Updates ─────────────────────────────────────────────────
   getWhatsNewStatus: () =>
     invoke<WhatsNewStatus | undefined>('get_whats_new_status'),
   acknowledgeWhatsNew: (version: string) =>
@@ -429,7 +421,6 @@ const api = {
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) =>
     onEvent<UpdateSnapshot>('update:snapshot', callback),
 
-  // ── Terminal ────────────────────────────────────────────────
   terminalStart: (request: LocalTerminalStartRequest) =>
     invoke<LocalTerminalSession>('terminal_start', { request }),
   terminalWrite: (sessionId: string, data: string) =>
@@ -441,12 +432,10 @@ const api = {
   terminalGetState: () =>
     invoke<LocalTerminalSession | undefined>('terminal_get_state'),
 
-  // ── Clipboard ───────────────────────────────────────────────
   clipboardReadText: () => invoke<string>('clipboard_read_text'),
   clipboardWriteText: (text: string) =>
     invoke<boolean>('clipboard_write_text', { text }),
 
-  // ── Workspace review ────────────────────────────────────────
   getWorkspaceReviewMetadata: (workingDirectory: string) =>
     invoke<WorkspaceReviewMetadata>('get_workspace_review_metadata', { workingDirectory }),
   getFileDiff: (workingDirectory: string, filePath: string, status: FileDiffStatus) =>
@@ -456,7 +445,6 @@ const api = {
   openExternalFile: (workingDirectory: string, filePath: string) =>
     invoke<{ ok: boolean; message?: string }>('open_external_file', { workingDirectory, filePath }),
 
-  // ── Terminal events ─────────────────────────────────────────
   onTerminalData: (callback: (event: TerminalDataEvent) => void) =>
     onEvent<TerminalDataEvent>('terminal:data', callback),
   onTerminalExit: (callback: (event: { sessionId: string }) => void) =>
@@ -464,7 +452,7 @@ const api = {
   onTerminalError: (callback: (event: { sessionId: string; error: string }) => void) =>
     onEvent<{ sessionId: string; error: string }>('terminal:error', callback),
 
-  // ── Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md) ──
+  // Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md).
   // 11 wrappers. Reads (`pluginList`, `pluginAvailable`, `marketplaceList`,
   // `pluginValidate`) bypass the Rust auth gate; mutations are gated both
   // FE-side (via cliAuth) and Rust-side.
@@ -488,7 +476,7 @@ const api = {
   marketplaceRemove: (name: string) =>
     invoke<void>('marketplace_remove', { name }),
 
-  // ── Plugins — rich detail (Wave 2 P5+ — Codex parity) ──────────
+  // Plugins — rich detail (Wave 2 P5+ — Codex parity).
   // These read on-disk manifests the CLI's `--available` JSON discards:
   // category, author, homepage, skills list, license, keywords.
   pluginDetail: (id: string) =>
@@ -498,7 +486,7 @@ const api = {
   marketplaceManifests: () =>
     invoke<MarketplaceManifestMap>('marketplace_manifests'),
 
-  // ── Plugins — icon fetch (P5.1 — on-demand, cached, privacy-gated) ──
+  // Plugins — icon fetch (P5.1 — on-demand, cached, privacy-gated).
   // Fetches the plugin's icon from its homepage domain (apple-touch-icon.png
   // → favicon.ico). HTTPS only, on-demand only. Returns a local file path
   // (use `convertFileSrc`) or null (FE renders monogram). Respects the
@@ -507,7 +495,6 @@ const api = {
     invoke<PluginIconResult>('plugin_icon', { pluginId }),
 }
 
-// ── Expose on window (Tauri only) ──────────────────────────────
 // In Electron, the preload script owns `window.verboo` — don't overwrite it.
 if (IS_TAURI) {
   ;(window as unknown as Record<string, unknown>).verboo = api

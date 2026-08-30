@@ -46,10 +46,8 @@ describe('ProviderRiskDialog', () => {
     const dialog = screen.getByRole('dialog')
     // Risk signal (the same danger-tile family as ConfirmDialog).
     expect(dialog.querySelector('.confirm-dialog-icon')).toBeTruthy()
-    // Provider brand glyph + a subtitle naming the provider.
     expect(dialog.querySelector('[data-testid="provider-icon-claude"]')).toBeTruthy()
     expect(dialog.querySelector('.provider-risk-subtitle')?.textContent).toContain('Claude')
-    // The notice lives in the document card, verbatim.
     const document = dialog.querySelector('.provider-risk-document')
     expect(document).toBeTruthy()
     expect(document?.textContent).toContain('Anthropic Usage Policy applies to this login.')

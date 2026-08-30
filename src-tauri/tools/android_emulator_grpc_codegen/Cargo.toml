@@ -1,0 +1,10 @@
+[package]
+name = "verboo-android-emulator-grpc-codegen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+prost-build = "=0.13.1"
+tempfile = "=3.27.0"
+tonic-build = "=0.13.1"

@@ -7,17 +7,18 @@
 //! existem — nunca digita no vazio), envia o slash, e daí em diante quem
 //! trabalha é o CLI (navegador + callback local).
 //!
-//! O sucesso é detectado FORA da tela: poll do estado de autenticação
-//! (provider_catalog::read_provider_auth_state — o mesmo ponto encapsulado
-//! da F2), nunca parse do texto do TUI. Timeout honesto: se o usuário
-//! fechar o navegador, voltamos para erro — não penduramos. O cancelamento
-//! mata o process group inteiro do PTY (o child é session leader) — sem
-//! órfãos, como no WDA.
+//! O sucesso é detectado FORA da tela: o blob local continua como fast path,
+//! e o protocolo sanitizado `provider-accounts list` do próprio CLI confirma
+//! autoritativamente a conta nova. Nunca parseamos o texto do TUI. Timeout
+//! honesto: se o usuário fechar o navegador, voltamos para erro — não
+//! penduramos. O cancelamento mata o process group inteiro do PTY (o child é
+//! session leader) — sem órfãos, como no WDA.
 //!
 //! Quando o time do CLI entregar o comando não-interativo (pedido formal já
 //! enviado), esta ponte SAI — o módulo é isolado de propósito para a
 //! remoção ser barata.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -27,6 +28,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use uuid::Uuid;
 
 use crate::services::cli_spawn::{CliRuntime, CliSpawn};
+use crate::services::provider_accounts::{self, ProviderAccountSummary};
 use crate::services::provider_catalog;
 use crate::services::terminal_service::strip_terminal_controls;
 
@@ -41,6 +43,11 @@ const BROWSER_TIMEOUT: Duration = Duration::from_secs(600);
 /// O CLI interativo pode mostrar telas de primeira execução antes do prompt.
 const PROMPT_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PROVIDER_LOGIN_CONFIRMATION_FAILED: &str = "provider_login_confirmation_failed";
+/// Uma falha isolada pode ser transitória (processo do CLI ainda encerrando o
+/// callback OAuth). Três falhas consecutivas encerram com código sanitizado,
+/// muito antes do browser timeout de 10 minutos.
+const PROVIDER_ACCOUNTS_FAILURE_LIMIT: u8 = 3;
 /// Intervalo entre a seta de navegação e o Enter em menus do TUI. O Ink NÃO
 /// processa a navegação quando os dois chegam colados no mesmo write — o
 /// Enter cai na opção PADRÃO (2 = Cancelar). Prova A/B do dono no CLI real:
@@ -166,6 +173,66 @@ fn deadline_expired(
     now > deadline
 }
 
+/// Fotografia autoritativa, sanitizada e estável das contas conectadas do
+/// provedor segundo o próprio CLI. O `account_id` é o identificador opaco que
+/// o protocolo `provider-accounts list` já expõe; tokens e subject IDs nunca
+/// atravessam este seam.
+fn connected_provider_account_ids(
+    provider: &str,
+    accounts: &[ProviderAccountSummary],
+) -> BTreeSet<String> {
+    accounts
+        .iter()
+        .filter(|account| {
+            account.provider == provider
+                && account.connection_state == "connected"
+                && !account.account_id.trim().is_empty()
+        })
+        .map(|account| account.account_id.clone())
+        .collect()
+}
+
+fn sanitized_provider_confirmation_error_code(code: &str) -> &str {
+    match code {
+        "provider_auth_required"
+        | "verboo_auth_required"
+        | "provider_account_not_found"
+        | "provider_usage_timeout"
+        | "provider_usage_unavailable"
+        | "provider_command_unknown"
+        | "provider_argument_required"
+        | "provider_protocol_error"
+        | "provider_cli_unavailable" => code,
+        _ => "provider_protocol_error",
+    }
+}
+
+fn emit_provider_confirmation_error(
+    emit: &Arc<dyn Fn(ProviderLoginEvent) + Send + Sync>,
+    provider: &str,
+    code: &str,
+) {
+    eprintln!(
+        "[verboo:provider-login] provider={} state={:?} message={:?} confirmation_code={}",
+        provider,
+        ProviderLoginState::Error,
+        Some(PROVIDER_LOGIN_CONFIRMATION_FAILED),
+        sanitized_provider_confirmation_error_code(code),
+    );
+    crate::services::diagnostic_log::emit_error(
+        "provider",
+        PROVIDER_LOGIN_CONFIRMATION_FAILED,
+        PROVIDER_LOGIN_CONFIRMATION_FAILED,
+        None,
+        serde_json::json!({ "provider": provider }),
+    );
+    emit(ProviderLoginEvent {
+        provider: provider.to_string(),
+        state: ProviderLoginState::Error,
+        message: Some(PROVIDER_LOGIN_CONFIRMATION_FAILED.to_string()),
+    });
+}
+
 /// Loga e emite o evento de login no stderr — o erro do usuário (D) era
 /// invisível: o toast do renderer some e nenhum log registrava o motivo.
 /// Os 4 erros + connected são os que decidem o desfecho do fluxo.
@@ -174,6 +241,19 @@ fn emit_logged(emit: &Arc<dyn Fn(ProviderLoginEvent) + Send + Sync>, event: Prov
         "[verboo:provider-login] provider={} state={:?} message={:?}",
         event.provider, event.state, event.message
     );
+    if matches!(event.state, ProviderLoginState::Error) {
+        let code = match event.message.as_deref() {
+            Some(PROVIDER_LOGIN_CONFIRMATION_FAILED) => PROVIDER_LOGIN_CONFIRMATION_FAILED,
+            _ => "provider_cli_unavailable",
+        };
+        crate::services::diagnostic_log::emit_error(
+            "provider",
+            code,
+            event.message.as_deref().unwrap_or(code),
+            None,
+            serde_json::json!({ "provider": event.provider }),
+        );
+    }
     emit(event);
 }
 
@@ -383,6 +463,15 @@ impl ProviderLoginService {
             let mut last_poll = Instant::now();
             let login_started = Instant::now();
             let prompt_deadline = login_started + options.prompt_timeout;
+            // O protocolo é opcional em CLIs antigos. Só um capability flag
+            // positivo torna este canal autoritativo e permite que falhas dele
+            // encerrem o fluxo; capability ausente/indisponível preserva o
+            // comportamento cross-platform anterior, guiado pelo blob.
+            let cli_confirmation_available = provider_accounts::provider_capabilities()
+                .map(|capabilities| capabilities.provider_accounts_v1)
+                .unwrap_or(false);
+            let mut initial_cli_accounts: Option<BTreeSet<String>> = None;
+            let mut cli_confirmation_failures = 0u8;
             // Snapshot do estado de login DO provedor NO MOMENTO DO SLASH
             // (2ª conta: o blob JÁ tem o token da conexão existente). O poll
             // só emite Connected quando ESTE snapshot muda — token key OU
@@ -495,6 +584,62 @@ impl ProviderLoginService {
                             break;
                         }
                     }
+                    // Confirmação AUTORITATIVA pelo protocolo do próprio CLI,
+                    // somente quando o capability flag declarou suporte. Se o
+                    // blob DPAPI estiver ilegível no Windows, uma conta
+                    // conectada que não existia na fotografia pré-login ainda
+                    // conclui o fluxo. O caminho do blob permanece acima como
+                    // fast path nas plataformas em que ele funciona.
+                    if cli_confirmation_available {
+                        match provider_accounts::provider_accounts_list() {
+                            Ok(accounts) => {
+                                cli_confirmation_failures = 0;
+                                let current_accounts = connected_provider_account_ids(
+                                    &provider_for_thread,
+                                    &accounts,
+                                );
+                                let account_appeared = initial_cli_accounts
+                                    .as_ref()
+                                    .map(|initial_accounts| {
+                                        current_accounts.iter().any(|account_id| {
+                                            !initial_accounts.contains(account_id)
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                                if account_appeared {
+                                    emit_logged(
+                                        &emit,
+                                        ProviderLoginEvent {
+                                            provider: provider_for_thread.clone(),
+                                            state: ProviderLoginState::Connected,
+                                            message: None,
+                                        },
+                                    );
+                                    break;
+                                }
+                                if initial_cli_accounts.is_none() {
+                                    // A fotografia pré-login falhou, mas uma
+                                    // consulta posterior se recuperou. Esta
+                                    // primeira resposta válida vira a baseline;
+                                    // nunca tratamos contas já existentes como
+                                    // sucesso por ausência de fotografia.
+                                    initial_cli_accounts = Some(current_accounts);
+                                }
+                            }
+                            Err(code) => {
+                                cli_confirmation_failures =
+                                    cli_confirmation_failures.saturating_add(1);
+                                if cli_confirmation_failures >= PROVIDER_ACCOUNTS_FAILURE_LIMIT {
+                                    emit_provider_confirmation_error(
+                                        &emit,
+                                        &provider_for_thread,
+                                        &code,
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if deadline_expired(
                         awaiting_emitted,
                         login_started,
@@ -553,6 +698,28 @@ impl ProviderLoginService {
                                             &provider_for_thread,
                                             &snapshot_blob,
                                         );
+                                }
+                                // O baseline do protocolo é capturado no MESMO
+                                // ponto prompt-ready do blob, ainda antes do
+                                // slash. Uma resposta válida vira fotografia;
+                                // sem ela, o poll só pode estabelecer baseline,
+                                // nunca concluir por comparação com vazio.
+                                if cli_confirmation_available {
+                                    match provider_accounts::provider_accounts_list() {
+                                        Ok(accounts) => {
+                                            initial_cli_accounts = Some(
+                                                connected_provider_account_ids(
+                                                    &provider_for_thread,
+                                                    &accounts,
+                                                ),
+                                            );
+                                            cli_confirmation_failures = 0;
+                                        }
+                                        Err(_) => {
+                                            initial_cli_accounts = None;
+                                            cli_confirmation_failures = 1;
+                                        }
+                                    }
                                 }
                                 if let Ok(mut w) = writer_for_slash.lock() {
                                     if let Some(writer) = w.as_mut() {
@@ -840,11 +1007,15 @@ mod tests {
         let received_file = dir.join("received.txt");
         let child_pid_file = dir.join("child.pid");
         let cwd_file = dir.join("cwd.txt");
+        let provider_accounts_file = dir.join("provider-accounts.json");
+        let provider_accounts_calls_file = dir.join("provider-accounts-calls.txt");
         // O dir pode ser reutilizado (o pid do cargo test se repete no macOS):
         // remove os artefatos de uma execução anterior para o teste nunca ler
         // um child.pid/received.txt velho.
         let _ = std::fs::remove_file(&child_pid_file);
         let _ = std::fs::remove_file(&received_file);
+        let _ = std::fs::remove_file(&provider_accounts_calls_file);
+        std::fs::write(&provider_accounts_file, r#"{"accounts":[]}"#).unwrap();
         // Blob VAZIO por padrão — isola o poll do keychain real. O dono pode
         // ter um token de codex/claude no keychain; sem isto, o poll emite
         // Connected e quebra testes que esperam Error/timeout/cancel. Testes
@@ -861,12 +1032,59 @@ const stateFile = process.env.FAKE_AUTH_STATE;
 const receivedFile = process.env.FAKE_RECEIVED;
 const childPidFile = process.env.FAKE_CHILD_PID;
 const cwdFile = process.env.FAKE_CWD_FILE;
-fs.writeFileSync(cwdFile, process.cwd());
+const providerAccountsFile = process.env.FAKE_PROVIDER_ACCOUNTS;
+const providerAccountsCallsFile = process.env.FAKE_PROVIDER_ACCOUNTS_CALLS;
+const providerAccountsAtPrompt = process.env.FAKE_PROVIDER_ACCOUNTS_AT_PROMPT;
+if (process.argv[2] === 'provider-accounts') {{
+  const fixture = JSON.parse(fs.readFileSync(providerAccountsFile, 'utf8'));
+  const protocolError = fixture.unsupported
+    ? {{ code: 'provider_command_unknown', message: 'unknown command provider-accounts' }}
+    : fixture.error;
+  if (process.argv[3] === 'capabilities') {{
+    if (protocolError) {{
+      console.log(JSON.stringify({{
+        schemaVersion: 1,
+        ok: false,
+        data: null,
+        error: protocolError,
+      }}));
+      process.exit(1);
+    }}
+    console.log(JSON.stringify({{
+      schemaVersion: 1,
+      ok: true,
+      data: {{ protocols: fixture.protocols ?? ['provider_accounts_v1'] }},
+      error: null,
+    }}));
+    process.exit(0);
+  }}
+  const calls = fs.existsSync(providerAccountsCallsFile)
+    ? Number(fs.readFileSync(providerAccountsCallsFile, 'utf8')) || 0
+    : 0;
+  fs.writeFileSync(providerAccountsCallsFile, String(calls + 1));
+  if (protocolError) {{
+    console.log(JSON.stringify({{
+      schemaVersion: 1,
+      ok: false,
+      data: null,
+      error: protocolError,
+    }}));
+    process.exit(1);
+  }}
+  console.log(JSON.stringify({{
+    schemaVersion: 1,
+    ok: true,
+    data: {{ accounts: fixture.accounts ?? [] }},
+    error: null,
+  }}));
+  process.exit(0);
+}}
 if (process.argv[2] === 'auth') {{
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   console.log(JSON.stringify(state));
   process.exit(0);
 }}
+fs.writeFileSync(cwdFile, process.cwd());
 if (process.env.FAKE_UNEXPECTED === '1') {{
   console.log('Tela de primeira execucao sem prompt...');
   setInterval(() => {{}}, 1000);
@@ -948,6 +1166,12 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
   }});
   setInterval(() => {{}}, 1000);
 }} else {{
+  if (providerAccountsAtPrompt) {{
+    // Give the pre-prompt desktop snapshot a deterministic chance to run.
+    // The corrected bridge snapshots only after this prompt is observed.
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    fs.writeFileSync(providerAccountsFile, providerAccountsAtPrompt);
+  }}
   console.log('Verboo Code — primeiro uso\nverboo> ');
   const child = (await import('node:child_process')).spawn('sleep', ['300']);
   fs.writeFileSync(childPidFile, String(child.pid));
@@ -978,6 +1202,11 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             std::env::set_var("FAKE_RECEIVED", &received_file);
             std::env::set_var("FAKE_CHILD_PID", &child_pid_file);
             std::env::set_var("FAKE_CWD_FILE", &cwd_file);
+            std::env::set_var("FAKE_PROVIDER_ACCOUNTS", &provider_accounts_file);
+            std::env::set_var(
+                "FAKE_PROVIDER_ACCOUNTS_CALLS",
+                &provider_accounts_calls_file,
+            );
             if unexpected {
                 std::env::set_var("FAKE_UNEXPECTED", "1");
             } else {
@@ -1005,6 +1234,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             std::env::remove_var("FAKE_RECEIVED");
             std::env::remove_var("FAKE_CHILD_PID");
             std::env::remove_var("FAKE_CWD_FILE");
+            std::env::remove_var("FAKE_PROVIDER_ACCOUNTS");
+            std::env::remove_var("FAKE_PROVIDER_ACCOUNTS_CALLS");
+            std::env::remove_var("FAKE_PROVIDER_ACCOUNTS_AT_PROMPT");
             std::env::remove_var("FAKE_UNEXPECTED");
             std::env::remove_var("FAKE_RISK");
             std::env::remove_var("FAKE_UNKNOWN");
@@ -1083,6 +1315,55 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         blob_file
     }
 
+    fn set_fake_provider_accounts(accounts: serde_json::Value) {
+        let path = std::env::var_os("FAKE_PROVIDER_ACCOUNTS")
+            .map(std::path::PathBuf::from)
+            .expect("write_fake_cli deve configurar FAKE_PROVIDER_ACCOUNTS");
+        let fixture = serde_json::json!({ "accounts": accounts });
+        std::fs::write(path, serde_json::to_string(&fixture).unwrap()).unwrap();
+    }
+
+    fn set_fake_provider_accounts_error(code: &str, message: &str) {
+        let path = std::env::var_os("FAKE_PROVIDER_ACCOUNTS")
+            .map(std::path::PathBuf::from)
+            .expect("write_fake_cli deve configurar FAKE_PROVIDER_ACCOUNTS");
+        let fixture = serde_json::json!({
+            "error": {
+                "code": code,
+                "message": message,
+            }
+        });
+        std::fs::write(path, serde_json::to_string(&fixture).unwrap()).unwrap();
+    }
+
+    fn set_fake_provider_accounts_unsupported() {
+        let path = std::env::var_os("FAKE_PROVIDER_ACCOUNTS")
+            .map(std::path::PathBuf::from)
+            .expect("write_fake_cli deve configurar FAKE_PROVIDER_ACCOUNTS");
+        std::fs::write(path, r#"{"unsupported":true}"#).unwrap();
+    }
+
+    fn set_fake_provider_accounts_at_prompt(accounts: serde_json::Value) {
+        let fixture = serde_json::json!({ "accounts": accounts });
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var(
+                "FAKE_PROVIDER_ACCOUNTS_AT_PROMPT",
+                serde_json::to_string(&fixture).unwrap(),
+            );
+        }
+    }
+
+    fn fake_provider_accounts_call_count() -> u32 {
+        let path = std::env::var_os("FAKE_PROVIDER_ACCOUNTS_CALLS")
+            .map(std::path::PathBuf::from)
+            .expect("write_fake_cli deve configurar FAKE_PROVIDER_ACCOUNTS_CALLS");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
     fn wait_until(deadline: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         let start = Instant::now();
         while start.elapsed() < deadline {
@@ -1092,6 +1373,60 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             std::thread::sleep(Duration::from_millis(100));
         }
         false
+    }
+
+    type LoginEvents = Arc<Mutex<Vec<ProviderLoginEvent>>>;
+
+    fn start_test_login(
+        provider: &str,
+        browser_timeout: Duration,
+    ) -> (ProviderLoginService, LoginEvents) {
+        let events: LoginEvents = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+        service
+            .start(
+                provider,
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout,
+                },
+            )
+            .expect("start deve abrir o PTY");
+        (service, events)
+    }
+
+    fn wait_for_login_event(
+        events: &LoginEvents,
+        deadline: Duration,
+        predicate: impl Fn(&ProviderLoginState) -> bool,
+    ) -> bool {
+        wait_until(deadline, || {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| predicate(&event.state))
+        })
+    }
+
+    fn fake_connected_account(provider: &str, account_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "provider": provider,
+            "accountId": account_id,
+            "displayLabel": "Conta de teste",
+            "isDefault": true,
+            "connectionState": "connected"
+        })
     }
 
     #[test]
@@ -1902,6 +2237,223 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         clear_fake_cli();
     }
 
+    #[test]
+    fn unreadable_blob_with_new_cli_account_emits_connected() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) =
+            write_fake_cli("cli-account-confirms-login", false);
+        let blob_file = set_fake_blob("codex", None);
+        std::fs::write(&blob_file, "{blob-dpapi-ilegivel").unwrap();
+        set_fake_provider_accounts(serde_json::json!([]));
+        let (_service, events) = start_test_login("codex", Duration::from_secs(15));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser
+            )),
+            "o navegador deve abrir antes da confirmação"
+        );
+
+        set_fake_provider_accounts(serde_json::json!([fake_connected_account(
+            "codex",
+            "codex-account-new"
+        )]));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(5), |state| matches!(
+                state,
+                ProviderLoginState::Connected
+            )),
+            "blob ilegível não pode esconder uma conta nova confirmada por provider-accounts list"
+        );
+    }
+
+    #[test]
+    fn no_new_account_in_blob_or_cli_keeps_waiting() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) =
+            write_fake_cli("no-new-account-keeps-waiting", false);
+        set_fake_blob("codex", Some("token-ja-existente"));
+        set_fake_provider_accounts(serde_json::json!([fake_connected_account(
+            "codex",
+            "codex-account-existing"
+        )]));
+        let (service, events) = start_test_login("codex", Duration::from_secs(30));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser
+            )),
+            "o navegador deve abrir antes da confirmação"
+        );
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                fake_provider_accounts_call_count() >= 2
+            }),
+            "a confirmação deve consultar o protocolo depois da fotografia pré-login"
+        );
+
+        let terminal_event = events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event.state,
+                ProviderLoginState::Connected | ProviderLoginState::Error
+            )
+        });
+        assert!(
+            !terminal_event,
+            "sem conta nova no blob nem no protocolo, o fluxo deve continuar aguardando"
+        );
+
+        service.cancel().expect("o login ainda deve estar em andamento");
+    }
+
+    #[test]
+    fn repeated_cli_confirmation_failures_emit_sanitized_error_before_timeout() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) =
+            write_fake_cli("cli-confirmation-fails", false);
+        let blob_file = set_fake_blob("codex", None);
+        std::fs::write(&blob_file, "{blob-dpapi-ilegivel").unwrap();
+        set_fake_provider_accounts(serde_json::json!([]));
+        let (_service, events) = start_test_login("codex", Duration::from_secs(30));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser
+            )),
+            "o navegador deve abrir antes da falha de confirmação"
+        );
+        let calls_before_failure = fake_provider_accounts_call_count();
+        set_fake_provider_accounts_error(
+            "token=segredo-que-nao-pode-vazar",
+            "Bearer sk-super-secreto",
+        );
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(8), |state| matches!(
+                state,
+                ProviderLoginState::Error
+            )),
+            "três falhas consecutivas da confirmação devem encerrar antes do timeout de browser"
+        );
+        assert!(
+            fake_provider_accounts_call_count() >= calls_before_failure + 3,
+            "uma falha transitória não deve encerrar o login"
+        );
+
+        let terminal = events.lock().unwrap().last().cloned().unwrap();
+        assert!(matches!(terminal.state, ProviderLoginState::Error));
+        assert_eq!(
+            terminal.message.as_deref(),
+            Some("provider_login_confirmation_failed")
+        );
+        let serialized = serde_json::to_string(&terminal).unwrap();
+        assert!(!serialized.contains("provider_protocol_error"));
+        assert!(!serialized.contains("segredo-que-nao-pode-vazar"));
+        assert!(!serialized.contains("sk-super-secreto"));
+        assert!(!serialized.contains("Bearer"));
+    }
+
+    #[test]
+    fn unsupported_provider_accounts_protocol_keeps_blob_login_alive() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) =
+            write_fake_cli("unsupported-provider-accounts", false);
+        set_fake_blob("codex", None);
+        set_fake_provider_accounts_unsupported();
+        let (_service, events) = start_test_login("codex", Duration::from_secs(30));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser
+            )),
+            "o navegador deve abrir mesmo quando o CLI é anterior ao protocolo"
+        );
+
+        let terminated_early = wait_until(Duration::from_secs(4), || {
+            events.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.state,
+                    ProviderLoginState::Connected | ProviderLoginState::Error
+                )
+            })
+        });
+        assert!(
+            !terminated_early,
+            "provider_command_unknown deve desativar só o canal opcional, não matar o login"
+        );
+
+        set_fake_blob("codex", Some("token-confirmado-pelo-blob"));
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(5), |state| matches!(
+                state,
+                ProviderLoginState::Connected
+            )),
+            "sem provider-accounts, o fast path do blob ainda deve concluir o login"
+        );
+    }
+
+    #[test]
+    fn account_visible_at_prompt_is_baseline_not_new_login() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) =
+            write_fake_cli("provider-account-baseline-at-prompt", false);
+        let blob_file = set_fake_blob("codex", None);
+        std::fs::write(&blob_file, "{blob-dpapi-ilegivel").unwrap();
+        set_fake_provider_accounts(serde_json::json!([]));
+        set_fake_provider_accounts_at_prompt(serde_json::json!([fake_connected_account(
+            "codex",
+            "codex-account-existing",
+        )]));
+        let (service, events) = start_test_login("codex", Duration::from_secs(30));
+
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser | ProviderLoginState::Connected
+            )),
+            "o fake deve avançar o fluxo depois de publicar a conta junto do prompt"
+        );
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                fake_provider_accounts_call_count() >= 2
+            }),
+            "o poll deve consultar o protocolo depois do baseline em prompt-ready"
+        );
+
+        let terminal_event = events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event.state,
+                ProviderLoginState::Connected | ProviderLoginState::Error
+            )
+        });
+        assert!(
+            !terminal_event,
+            "conta já visível em prompt-ready pertence ao baseline e não é login novo"
+        );
+
+        service.cancel().expect("o login deve continuar aguardando");
+    }
+
     /// 5a instância da mancha global: o poll NÃO usa state.logged_in (global
     /// Verboo) — usa o blob POR PROVEDOR. Reproduz o campo: global=true +
     /// blob SEM o provider => NAO emite Connected (o CLI segue vivo); com
@@ -1963,7 +2515,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
              e o killpg mata o CLI aos ~4s => ERR_CONNECTION_REFUSED no callback."
         );
 
-        // Agora o token do provedor aparece no blob (OAuth completou).
+        // Token do provedor aparece no blob — OAuth completou.
         set_fake_blob("codex", Some("codex-oauth-tok"));
         assert!(
             wait_until(Duration::from_secs(10), || {
@@ -2242,7 +2794,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             )
             .expect("start deve abrir o PTY");
 
-        // URL do OAuth observado (awaiting_browser).
         assert!(
             wait_until(Duration::from_secs(15), || {
                 events
@@ -2403,7 +2954,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             )
             .expect("start deve abrir o PTY");
 
-        // URL do OAuth observado (awaiting_browser).
         assert!(
             wait_until(Duration::from_secs(15), || {
                 events

@@ -358,7 +358,7 @@ impl NodeRuntimeService {
             downloaded_bytes,
             total_bytes,
             error: (status == NodeRuntimeStatus::Error)
-                .then(|| "runtime_install_failed".to_string()),
+                .then(|| "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip".to_string()),
             bootstrap_required: status != NodeRuntimeStatus::Ready,
         });
         service
@@ -373,6 +373,7 @@ impl NodeRuntimeService {
     }
 
     fn mark_ready(&self) {
+        crate::services::bootstrap_diag::clear();
         self.set_snapshot(NodeRuntimeSnapshot {
             status: NodeRuntimeStatus::Ready,
             downloaded_bytes: None,
@@ -383,15 +384,24 @@ impl NodeRuntimeService {
     }
 
     fn fail<T>(&self, detail: String) -> Result<T, String> {
+        let detail = crate::services::bootstrap_diag::sanitize(&detail);
         eprintln!("[verboo:node-runtime] preparation failed: {detail}");
         self.set_snapshot(NodeRuntimeSnapshot {
             status: NodeRuntimeStatus::Error,
             downloaded_bytes: None,
             total_bytes: None,
-            error: Some("runtime_install_failed".to_string()),
+            error: Some(detail.clone()),
             bootstrap_required: true,
         });
-        Err("managed Node preparation failed".to_string())
+        crate::services::bootstrap_diag::record(&detail);
+        crate::services::diagnostic_log::emit_error(
+            "updater",
+            "runtime_install_failed",
+            &detail,
+            None,
+            serde_json::json!({}),
+        );
+        Err(detail)
     }
 }
 
@@ -596,8 +606,9 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::io::Cursor;
+    use std::sync::Arc;
     #[cfg(unix)]
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     #[cfg(unix)]
     use tar::{Builder, EntryType, Header};
@@ -605,8 +616,47 @@ mod tests {
     use xz2::write::XzEncoder;
 
     use super::*;
-    #[cfg(unix)]
     use crate::services::node_runtime::download::NodeArchiveSource;
+
+    #[test]
+    fn failed_install_exposes_the_real_error_on_the_snapshot() {
+        struct Boom;
+        impl NodeArchiveSource for Boom {
+            fn download(
+                &self,
+                _artifact: &contract::NodeArtifact,
+                _destination: &Path,
+                _progress: &mut dyn FnMut(u64, u64),
+            ) -> Result<(), String> {
+                Err(
+                    "managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip"
+                        .to_string(),
+                )
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        crate::services::bootstrap_diag::reset();
+        let service = NodeRuntimeService::with_parts(
+            directory.path(),
+            contract::NodeRuntimeContract::embedded().unwrap(),
+            crate::services::cli_update::contract::DesktopTarget::host().unwrap(),
+            Arc::new(Boom),
+            Vec::new(),
+        );
+        let error = service.ensure_ready().unwrap_err();
+        let snapshot = service.snapshot();
+        assert!(
+            error.contains("HTTP 403") && error.contains("nodejs.org"),
+            "{error}"
+        );
+        assert_eq!(snapshot.status, NodeRuntimeStatus::Error);
+        assert_eq!(snapshot.error.as_deref(), Some(error.as_str()));
+        assert_ne!(
+            snapshot.error.as_deref(),
+            Some("runtime_install_failed")
+        );
+    }
 
     #[cfg(unix)]
     enum FakeResponse {

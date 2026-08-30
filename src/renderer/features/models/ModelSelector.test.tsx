@@ -87,9 +87,7 @@ describe('ModelSelector — single popover: the chip opens the model list DIRECT
   it('ONE click on the chip shows the model options — no intermediate "Modelo >" row in the way', () => {
     renderSelector()
     openMenu()
-    // The list itself is what greets the user…
     expect(document.querySelectorAll('.model-option').length).toBe(discoveryOk.models.length)
-    // …not the drill-in rows of the old intermediate dialog.
     expect(document.querySelector('.model-rows .model-row')).toBeNull()
   })
 
@@ -251,8 +249,7 @@ describe('ModelSelector — compact list with reasoning footer', () => {
       /Provider models couldn't be refreshed|Não foi possível atualizar os modelos dos provedores/,
     )).toBeVisible()
 
-    // Single popover: the Verboo models stay selectable right there —
-    // no intermediate row to drill through.
+    // Single popover: the Verboo models stay selectable right there.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.model-option')!)
 
     expect(onSelect).toHaveBeenCalledWith('glm-5.2')
@@ -320,7 +317,6 @@ describe('ModelSelector — compact list with reasoning footer', () => {
     expect(labels.some(l => /Baixo|Low/i.test(l))).toBe(true)
     expect(labels.some(l => /Médio|Medium/i.test(l))).toBe(true)
     expect(labels.some(l => /Alto|High/i.test(l))).toBe(true)
-    // No phantom Máximo/Max — qwen3 does not offer it.
     expect(labels.some(l => /Máximo|Max/i.test(l))).toBe(false)
   })
 
@@ -409,7 +405,6 @@ describe('ModelSelector — compact list with reasoning footer', () => {
     openMenu()
     const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).toHaveClass('selected')
-    // No "Máximo" rendered at all because it's not in the dynamic levels.
     expect(screen.queryByText(/Máximo|Max/i)).toBeNull()
   })
 
@@ -448,7 +443,6 @@ describe('ModelSelector — compact list with reasoning footer', () => {
     openMenu()
     fireEvent.click(screen.getByText(/Máximo|Max/i))
     expect(onSelectEffort).toHaveBeenCalledWith('glm-5.2', 'max')
-    // Menu closed (effort list unmounted)
     expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
   })
 
@@ -571,7 +565,6 @@ describe('ModelSelector — compact list with reasoning footer', () => {
     expect(effortButtons.length).toBe(4)
     for (const btn of effortButtons) {
       expect(btn.tagName).toBe('BUTTON')
-      // TabIndex default (0) — focusable via Tab.
       expect(btn).not.toHaveAttribute('tabindex', '-1')
     }
   })
@@ -671,7 +664,6 @@ describe('ModelSelector — provider grouping (F3)', () => {
     )
     openModelsPanel()
     const labels = groupLabels()
-    // One group per provider, verboo first.
     expect(labels.length).toBe(3)
     expect(labels[0]).toMatch(/^Verboo/)
     expect(labels.some(label => /Claude — (your account|sua conta)/.test(label))).toBe(true)
@@ -684,7 +676,6 @@ describe('ModelSelector — provider grouping (F3)', () => {
     // The provider IS the grouping axis — today's Available/Long-context
     // labels must not appear in provider mode.
     expect(labels.some(label => /Available|Disponíveis|Long context|Contexto longo/i.test(label))).toBe(false)
-    // Models remain directly selectable inside their provider group.
     expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'GPT-5' })).toBeTruthy()
   })
@@ -721,7 +712,6 @@ describe('ModelSelector — provider grouping (F3)', () => {
     openModelsPanel()
     expect(groupLabels().some(label => /Acme — (your account|sua conta)/.test(label))).toBe(true)
     expect(document.querySelector('.model-option[aria-label="Acme One"]')).toBeTruthy()
-    // Unknown provider: generic initial tile, no invented glyph.
     const icon = document.querySelector('.group-label [data-testid="provider-icon-acme"]')!
     expect(icon.querySelector('svg')).toBeNull()
     expect(icon.querySelector('.provider-icon-fallback')!.textContent).toBe('A')
@@ -903,7 +893,6 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
   })
 
   it('T14 seletor: renderiza UMA entrada por id mesmo com duplicatas na entrada', () => {
-    // Simulates the Rust merge output: router entry + CLI entry for the same id.
     const routerEntry: VerbooModel = {
       id: 'ultra/glm-5.2',
       displayName: 'Ultra (glm-5.2)',
@@ -936,7 +925,6 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
       />,
     )
     fireEvent.click(document.querySelector('.model-pill')!)
-    // Pin ONE entry per id — the selector must not show duplicates.
     const modelRows = [...document.querySelectorAll('.model-option')]
       .filter(button => button.getAttribute('aria-label') === 'Ultra (glm-5.2)')
     expect(modelRows).toHaveLength(1)

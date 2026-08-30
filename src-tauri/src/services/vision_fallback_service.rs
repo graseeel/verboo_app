@@ -306,7 +306,6 @@ pub fn describe_image_once_with_prompt(
         cmd.creation_flags(crate::services::child_signal::process_creation_flags());
     }
 
-    // Resolve token and inject into env.
     let token = resolve_token(credentials);
     let _token_file = inject_api_key(token.as_deref(), &mut cmd);
     crate::services::auth_token::augment_identity_env(&mut cmd);
@@ -316,7 +315,6 @@ pub fn describe_image_once_with_prompt(
         .spawn()
         .map_err(|e| format!("spawn CLI: {e}"))?;
 
-    // Write stdin payload.
     if let Some(stdin) = child.stdin.take() {
         use std::io::Write;
         let mut stdin = stdin;

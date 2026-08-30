@@ -533,7 +533,7 @@ test('parseCompletionResponse: JSON computer action unwraps action and drops unk
   assert.ok(!(result.content ?? '').includes('<tool_call'))
 })
 
-// ── FRENTE-C: <function_calls> family (Ivo's literal fixtures) ──────
+// FRENTE-C: <function_calls> family (Ivo's literal fixtures).
 
 test('parseCompletionResponse: Ivo fixture — computer/screenshot normalizes to screenshot', () => {
   const result = parseCompletionResponse({

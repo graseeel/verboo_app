@@ -160,7 +160,6 @@ function makeBatchGoal(...taskTexts: string[]): GoalState {
   return goal
 }
 
-/** Every turn produces real action evidence (a 'command' activity). */
 function produceCommandEvidence(delegate: FrontierDelegate): void {
   delegate.onContinueTurn = () => {
     delegate.items.push(activity('command', Date.now()))
@@ -171,7 +170,6 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-// ─── Acceptance 1: the SEQUENCE — reset NEVER before the compact ends ─
 describe('T3 frontier — the reset NEVER happens before the compact concludes', () => {
   it('during the compact wait the ring is still populated and turnsRun untouched; strict order after', async () => {
     const goal = makeBatchGoal('Task one', 'Task two')
@@ -256,7 +254,6 @@ describe('T3 frontier — the reset NEVER happens before the compact concludes',
   })
 })
 
-// ─── Acceptance 2: the compact turn alone NEVER satisfies D1 ─────────
 describe('T3 frontier — the compaction turn does NOT satisfy the next task evidence guard', () => {
   it('a whitelisted activity emitted DURING the compact is excluded by the re-opened window', async () => {
     // Controlled clock: the compact activities and the frontier re-stamp
@@ -303,7 +300,6 @@ describe('T3 frontier — the compaction turn does NOT satisfy the next task evi
   })
 })
 
-// ─── Acceptance 3: FAILURE — proceeds WITHOUT compacting, declared ────
 describe('T3 frontier — a FAILED compaction proceeds without compacting and DECLARES it', () => {
   it('compactionFailures increments, the log declares, the ring is preserved, the batch completes', async () => {
     const goal = makeBatchGoal('Task one', 'Task two')
@@ -345,7 +341,6 @@ describe('T3 frontier — a FAILED compaction proceeds without compacting and DE
   })
 })
 
-// ─── T3b: the LOOP-KILL advance FIRES the frontier (BY DESIGN) ───────
 // CHANGED ASSERTION, BY DESIGN — NOT A REGRESSION. The T3 version of
 // this file pinned the OPPOSITE: "a loop-kill advance never fires the
 // frontier". The Maestro ratified the extension (T3b): EVERY task
@@ -506,7 +501,6 @@ describe('T3b frontier — the loop-kill advance compacts with the exact T3 prot
   })
 })
 
-// ─── T3b: the SKIP advance settles its frontier at cycle start ───────
 describe('T3b frontier — the skip advance compacts on the restarted cycle, protocol intact', () => {
   it('skipBlockedGoalTask stamps the debt; the reset lands only after the compact; the flag is cleared', async () => {
     // ASSERTION CHANGED BY DESIGN (T3b coalescence, Maestro's call): this
@@ -595,7 +589,6 @@ describe('T3b frontier — the skip advance compacts on the restarted cycle, pro
   })
 })
 
-// ─── T3b: the COST CAP — the K-pause boundary does NOT compact ───────
 describe('T3b frontier — cost cap: at most ONE compact per consecutive-failure streak', () => {
   it('the first loop-kill compacts; the second consecutive failure PAUSES (K=2) without compacting', async () => {
     const goal = makeBatchGoal('Stuck one', 'Stuck two', 'Never started')
@@ -621,7 +614,6 @@ describe('T3b frontier — cost cap: at most ONE compact per consecutive-failure
   })
 })
 
-// ─── T3b COALESCENCE: a zero-turn boundary never compacts, and SAYS so ─
 // The Maestro's rule: skip the boundary compaction when the task that is
 // LEAVING ran ZERO turns — with no turns, nothing new entered the context
 // since the last compaction, so compacting would spend 25-50s compressing

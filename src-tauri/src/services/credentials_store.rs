@@ -2,6 +2,9 @@ use keyring::Entry;
 
 use crate::models::types::CredentialStatus;
 
+#[cfg(any(target_os = "linux", test))]
+use std::path::{Path, PathBuf};
+
 /// Stores the API key in the OS-native credential store:
 ///   - macOS: Keychain (apple-native)
 ///   - Windows: Credential Manager (windows-native)
@@ -17,12 +20,21 @@ use crate::models::types::CredentialStatus;
 ///
 /// On Linux, `keyring` v3 requires the `sync-secret-service` feature to be
 /// enabled at build time. The Cargo.toml conditionally enables the right
-/// platform backend.
+/// platform backend. If Secret Service is unavailable (e.g. AppImage
+/// bundled libdbus vs system dbus-launch), the API key is stored in a
+/// 0600 file under `~/.verboo/desktop-api-key` and migrated back to the
+/// keyring on the next successful Secret Service read/write. macOS and
+/// Windows are unchanged (keyring only).
 const SERVICE_NAME: &str = "Verboo Code Desktop-api-key";
 const ACCOUNT_NAME: &str = "api-key";
 /// Pre-migration location (shared service with CLI OAuth — do not write here).
 const LEGACY_SERVICE_NAME: &str = "Verboo Code-credentials";
 const LEGACY_ACCOUNT_NAME: &str = "api-key";
+/// IPC codes for the renderer i18n layer. Not user-facing strings.
+#[cfg(any(target_os = "linux", test))]
+const SECRET_SERVICE_UNAVAILABLE: &str = "secret_service_unavailable";
+#[cfg(any(target_os = "linux", test))]
+const SECRET_SERVICE_FILE_FALLBACK: &str = "secret_service_file_fallback";
 
 pub struct CredentialsStore;
 
@@ -36,11 +48,27 @@ impl CredentialsStore {
             Some(key) => Ok(CredentialStatus {
                 has_api_key: true,
                 api_key_hint: Some(Self::create_hint(&key)),
+                warning: Self::active_linux_file_fallback_warning(),
             }),
             None => Ok(CredentialStatus {
                 has_api_key: false,
                 api_key_hint: None,
+                warning: None,
             }),
+        }
+    }
+
+    /// After a Linux file fallback, `validateAccess` re-reads status and
+    /// would otherwise wipe the save-path warning. If the 0600 file is
+    /// still present, Secret Service did not take the key back.
+    fn active_linux_file_fallback_warning() -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            linux_api_key_fallback_path().and_then(|p| linux_file_fallback_warning_if_present(&p))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
         }
     }
 
@@ -57,17 +85,45 @@ impl CredentialsStore {
         if let Err(msg) = validate_api_key_format(clean) {
             return Err(msg);
         }
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(path) = linux_api_key_fallback_path() {
+                match set_api_key_linux_with(
+                    |k| {
+                        // Post-mortem #80→#83: inject the whole keyring op
+                        // (Entry::new + set). Entry::new outside this
+                        // closure meant #80 never reached the file fallback
+                        // when Secret Service had no Default collection.
+                        let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
+                            .map_err(|e| e.to_string())?;
+                        entry.set_password(k).map_err(|e| e.to_string())
+                    },
+                    &path,
+                    clean,
+                ) {
+                    Ok(LinuxApiKeyWrite::Keyring) => {
+                        Self::delete_legacy_entry();
+                        return Ok(Self::stored_status(clean, None));
+                    }
+                    Ok(LinuxApiKeyWrite::FileFallback) => {
+                        Self::delete_legacy_entry();
+                        return Ok(Self::stored_status(
+                            clean,
+                            Some(SECRET_SERVICE_FILE_FALLBACK.to_string()),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
         let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
-            .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
+            .map_err(|e| credential_store_access_error(e))?;
         entry
             .set_password(clean)
-            .map_err(|e| format!("Falha ao salvar API key: {e}"))?;
+            .map_err(|e| credential_store_save_error(e))?;
         // Drop legacy shared-service item so CLI OAuth service stays clean.
         Self::delete_legacy_entry();
-        Ok(CredentialStatus {
-            has_api_key: true,
-            api_key_hint: Some(Self::create_hint(clean)),
-        })
+        Ok(Self::stored_status(clean, None))
     }
 
     pub fn clear_api_key(&self) -> Result<CredentialStatus, String> {
@@ -76,39 +132,105 @@ impl CredentialsStore {
         // `delete_credential` returns Ok(()) even if the entry doesn't exist.
         let _ = entry.delete_credential();
         Self::delete_legacy_entry();
+        #[cfg(target_os = "linux")]
+        if let Some(path) = linux_api_key_fallback_path() {
+            delete_linux_api_key_file(&path);
+        }
         Ok(CredentialStatus {
             has_api_key: false,
             api_key_hint: None,
+            warning: None,
         })
     }
 
     /// Returns the raw API key if stored. Used by the API client (Fase 2+).
     pub fn get_api_key(&self) -> Result<Option<String>, String> {
-        let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
-            .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
-        match entry.get_password() {
-            Ok(s) if !s.is_empty() => return Ok(Some(s)),
-            Ok(_) => {}
-            Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(format!("Falha ao ler API key: {e}")),
+        #[cfg(target_os = "linux")]
+        {
+            return self.get_api_key_linux();
         }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
+                .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
+            match entry.get_password() {
+                Ok(s) if !s.is_empty() => return Ok(Some(s)),
+                Ok(_) => {}
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(format!("Falha ao ler API key: {e}")),
+            }
 
-        // Migrate once from the old shared Keychain service.
-        // Only delete the legacy entry after confirming the write succeeded,
-        // to avoid permanent credential loss on write failure.
-        if let Some(legacy) = Self::read_legacy_api_key() {
-            match entry.set_password(&legacy) {
-                Ok(()) => {
-                    Self::delete_legacy_entry();
-                    return Ok(Some(legacy));
+            // Migrate once from the old shared Keychain service.
+            // Only delete the legacy entry after confirming the write succeeded,
+            // to avoid permanent credential loss on write failure.
+            if let Some(legacy) = Self::read_legacy_api_key() {
+                match entry.set_password(&legacy) {
+                    Ok(()) => {
+                        Self::delete_legacy_entry();
+                        return Ok(Some(legacy));
+                    }
+                    Err(e) => {
+                        eprintln!("[credentials_store] failed to migrate API key to new keychain: {e}. Legacy key preserved.");
+                        return Ok(Some(legacy));
+                    }
                 }
+            }
+            Ok(None)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_api_key_linux(&self) -> Result<Option<String>, String> {
+        if let Some(path) = linux_api_key_fallback_path() {
+            match get_api_key_linux_with(
+                || {
+                    // Same rule as set: Entry::new belongs inside the
+                    // injected op, or Secret Service setup failures skip
+                    // the 0600 file read.
+                    let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
+                        .map_err(|e| e.to_string())?;
+                    match entry.get_password() {
+                        Ok(s) if !s.is_empty() => Ok(Some(s)),
+                        Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    }
+                },
+                |k| {
+                    let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
+                        .map_err(|e| e.to_string())?;
+                    entry.set_password(k).map_err(|e| e.to_string())
+                },
+                &path,
+            ) {
+                Ok(Some(s)) => return Ok(Some(s)),
+                Ok(None) => {}
                 Err(e) => {
-                    eprintln!("[credentials_store] failed to migrate API key to new keychain: {e}. Legacy key preserved.");
-                    return Ok(Some(legacy));
+                    return Err(map_linux_secret_service(format!(
+                        "Falha ao ler API key: {e}"
+                    )))
                 }
             }
         }
+        if let Some(legacy) = Self::read_legacy_api_key() {
+            if let Ok(entry) = Entry::new(SERVICE_NAME, ACCOUNT_NAME) {
+                match entry.set_password(&legacy) {
+                    Ok(()) => Self::delete_legacy_entry(),
+                    Err(e) => {
+                        eprintln!("[credentials_store] failed to migrate API key to new keychain: {e}. Legacy key preserved.");
+                    }
+                }
+            }
+            return Ok(Some(legacy));
+        }
         Ok(None)
+    }
+
+    fn stored_status(key: &str, warning: Option<String>) -> CredentialStatus {
+        CredentialStatus {
+            has_api_key: true,
+            api_key_hint: Some(Self::create_hint(key)),
+            warning,
+        }
     }
 
     fn read_legacy_api_key() -> Option<String> {
@@ -137,6 +259,198 @@ impl CredentialsStore {
 impl Default for CredentialsStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum LinuxApiKeyWrite {
+    Keyring,
+    FileFallback,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_secret_service_error(err: &str) -> bool {
+    // keyring 3.6.3 wraps dbus-secret-service 4.1.0. That crate prefixes
+    // NoResult/Locked/Prompt with "Secret Service:", but Error::Dbus is
+    // "DBus error: {err}" — the bus name / Collection interface leak
+    // without the prefix. Match those too. Keychain/DPAPI strings do not
+    // contain these tokens.
+    let lower = err.to_ascii_lowercase();
+    lower.contains("secret service")
+        || lower.contains("org.freedesktop.secrets")
+        || lower.contains("secret.collection")
+}
+
+fn map_linux_secret_service(raw: String) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if is_secret_service_error(&raw) {
+            return SECRET_SERVICE_UNAVAILABLE.to_string();
+        }
+    }
+    raw
+}
+
+fn credential_store_access_error(err: impl std::fmt::Display) -> String {
+    map_linux_secret_service(format!("Falha ao acessar credential store: {err}"))
+}
+
+fn credential_store_save_error(err: impl std::fmt::Display) -> String {
+    map_linux_secret_service(format!("Falha ao salvar API key: {err}"))
+}
+
+/// Desktop-only plaintext fallback file. Must not share the CLI OAuth blob
+/// (`~/.verboo/.credentials.json`).
+#[cfg(any(target_os = "linux", test))]
+const LINUX_API_KEY_FALLBACK_FILENAME: &str = "desktop-api-key";
+
+/// `config_home/desktop-api-key` — `config_home` is `$VERBOO_CONFIG_DIR` or
+/// `~/.verboo`.
+#[cfg(any(target_os = "linux", test))]
+fn linux_api_key_fallback_path_in(config_home: &Path) -> PathBuf {
+    config_home.join(LINUX_API_KEY_FALLBACK_FILENAME)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_api_key_fallback_path() -> Option<PathBuf> {
+    let config_home = if let Ok(dir) = std::env::var("VERBOO_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            PathBuf::from(dir)
+        } else {
+            let home = std::env::var_os("HOME").map(PathBuf::from)?;
+            home.join(".verboo")
+        }
+    } else {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        home.join(".verboo")
+    };
+    Some(linux_api_key_fallback_path_in(&config_home))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_file_fallback_warning_if_present(path: &Path) -> Option<String> {
+    path.is_file()
+        .then(|| SECRET_SERVICE_FILE_FALLBACK.to_string())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn write_linux_api_key_file(path: &Path, key: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Falha ao criar diretório da API key: {e}"))?;
+    }
+    std::fs::write(path, key.as_bytes())
+        .map_err(|e| format!("Falha ao salvar API key no arquivo: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Falha ao ajustar permissões da API key: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn read_linux_api_key_file(path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn delete_linux_api_key_file(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "[credentials_store] failed to delete 0600 fallback {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Keyring is primary. On Secret Service failure, read the 0600 file.
+/// When keyring has the key, or a miss can be written back, delete the file
+/// (migrate back). Injected keyring ops so macOS `cargo test --lib` can
+/// cover the Linux policy without compiling `target_os = "linux"` branches.
+#[cfg(any(target_os = "linux", test))]
+fn get_api_key_linux_with<G, S>(
+    keyring_get: G,
+    keyring_set: S,
+    fallback_path: &Path,
+) -> Result<Option<String>, String>
+where
+    G: FnOnce() -> Result<Option<String>, String>,
+    S: FnOnce(&str) -> Result<(), String>,
+{
+    match keyring_get() {
+        Ok(Some(s)) if !s.is_empty() => {
+            delete_linux_api_key_file(fallback_path);
+            Ok(Some(s))
+        }
+        Ok(_) => {
+            let Some(file_key) = read_linux_api_key_file(fallback_path) else {
+                return Ok(None);
+            };
+            match keyring_set(&file_key) {
+                Ok(()) => delete_linux_api_key_file(fallback_path),
+                Err(e) => {
+                    eprintln!(
+                        "[credentials_store] keyring restore from file failed: {e}. Keeping 0600 fallback."
+                    );
+                }
+            }
+            Ok(Some(file_key))
+        }
+        Err(e) => {
+            if let Some(file_key) = read_linux_api_key_file(fallback_path) {
+                eprintln!(
+                    "[credentials_store] keyring read failed ({e}); using 0600 file fallback"
+                );
+                Ok(Some(file_key))
+            } else {
+                eprintln!(
+                    "[credentials_store] keyring read failed ({e}); no file fallback"
+                );
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn set_api_key_linux_with<S>(
+    keyring_set: S,
+    fallback_path: &Path,
+    key: &str,
+) -> Result<LinuxApiKeyWrite, String>
+where
+    S: FnOnce(&str) -> Result<(), String>,
+{
+    match keyring_set(key) {
+        Ok(()) => {
+            delete_linux_api_key_file(fallback_path);
+            Ok(LinuxApiKeyWrite::Keyring)
+        }
+        Err(e) => {
+            eprintln!(
+                "[credentials_store] keyring write failed ({e}); writing 0600 file fallback"
+            );
+            match write_linux_api_key_file(fallback_path, key) {
+                Ok(()) => Ok(LinuxApiKeyWrite::FileFallback),
+                Err(file_err) => {
+                    eprintln!(
+                        "[credentials_store] file fallback write failed: {file_err} (keyring: {e})"
+                    );
+                    Err(SECRET_SERVICE_UNAVAILABLE.to_string())
+                }
+            }
+        }
     }
 }
 
@@ -197,5 +511,246 @@ mod tests {
     #[test]
     fn validate_rejects_too_short() {
         assert!(validate_api_key_format("vbk_abc").is_err());
+    }
+
+    // Linux Secret Service file fallback (issue #80). Compiled on macOS via
+    // `cfg(any(target_os = "linux", test))` like `cli_credentials::read_linux_secret_blob_with`.
+    // These tests inject keyring success/failure; they do not talk to Secret Service.
+    // Form-only for the real dbus/AppImage path — see builder report.
+
+    #[test]
+    fn linux_fallback_path_is_desktop_api_key_under_config_home() {
+        let home = std::path::Path::new("/tmp/verboo-config-home");
+        assert_eq!(
+            linux_api_key_fallback_path_in(home),
+            home.join("desktop-api-key"),
+        );
+    }
+
+    #[test]
+    fn linux_file_fallback_roundtrips_the_api_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_test_key_long_enough").unwrap();
+        assert_eq!(
+            read_linux_api_key_file(&path).as_deref(),
+            Some("vbk_test_key_long_enough"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_file_fallback_permissions_are_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_test_key_long_enough").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn linux_get_prefers_keyring_over_file_and_deletes_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_file_key_long_enough").unwrap();
+
+        let got = get_api_key_linux_with(
+            || Ok(Some("vbk_keyring_key_long_enough".into())),
+            |_k| panic!("must not write to keyring when keyring already has a key"),
+            &path,
+        )
+        .unwrap();
+
+        assert_eq!(got.as_deref(), Some("vbk_keyring_key_long_enough"));
+        assert!(
+            !path.exists(),
+            "file fallback must be deleted after keyring hit (migrate back)"
+        );
+    }
+
+    #[test]
+    fn linux_get_reads_file_when_keyring_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_file_key_long_enough").unwrap();
+
+        let got = get_api_key_linux_with(
+            || Err("Secret Service unavailable".into()),
+            |_k| panic!("must not attempt migrate-back while keyring is failing"),
+            &path,
+        )
+        .unwrap();
+
+        assert_eq!(got.as_deref(), Some("vbk_file_key_long_enough"));
+        assert!(path.exists(), "file remains while keyring is down");
+    }
+
+    #[test]
+    fn linux_get_migrates_file_back_to_keyring_on_miss() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_file_key_long_enough").unwrap();
+        let mut stored = None;
+        let got = get_api_key_linux_with(
+            || Ok(None),
+            |k| {
+                stored = Some(k.to_string());
+                Ok(())
+            },
+            &path,
+        )
+        .unwrap();
+        assert_eq!(got.as_deref(), Some("vbk_file_key_long_enough"));
+        assert_eq!(stored.as_deref(), Some("vbk_file_key_long_enough"));
+        assert!(!path.exists(), "file deleted after successful migrate-back");
+    }
+
+    #[test]
+    fn linux_get_keeps_file_when_migrate_back_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_file_key_long_enough").unwrap();
+
+        let got = get_api_key_linux_with(
+            || Ok(None),
+            |_k| Err("Secret Service unavailable".into()),
+            &path,
+        )
+        .unwrap();
+
+        assert_eq!(got.as_deref(), Some("vbk_file_key_long_enough"));
+        assert!(path.exists(), "file kept when migrate-back cannot write keyring");
+    }
+
+    #[test]
+    fn linux_get_returns_none_when_keyring_fails_and_no_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        let got = get_api_key_linux_with(
+            || Err("Secret Service unavailable".into()),
+            |_k| panic!("no file to migrate"),
+            &path,
+        )
+        .unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn linux_set_writes_file_when_keyring_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        assert_eq!(
+            set_api_key_linux_with(
+                |_k| Err("Secret Service unavailable".into()),
+                &path,
+                "vbk_set_key_long_enough",
+            )
+            .unwrap(),
+            LinuxApiKeyWrite::FileFallback,
+        );
+        assert_eq!(
+            read_linux_api_key_file(&path).as_deref(),
+            Some("vbk_set_key_long_enough"),
+        );
+    }
+
+    #[test]
+    fn linux_set_deletes_file_when_keyring_succeeds() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_old_file_key_enough").unwrap();
+        set_api_key_linux_with(|_| Ok(()), &path, "vbk_new_keyring_key_ok").unwrap();
+        assert!(!path.exists(), "file deleted after successful keyring write");
+    }
+
+    #[test]
+    fn linux_clear_deletes_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        write_linux_api_key_file(&path, "vbk_clear_key_long_enough").unwrap();
+        delete_linux_api_key_file(&path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn linux_set_creates_missing_parent_dir_and_0600_file() {
+        let home = tempfile::TempDir::new().unwrap();
+        let config_home = home.path().join(".verboo");
+        assert!(!config_home.exists(), "HOME must start without ~/.verboo");
+        let path = linux_api_key_fallback_path_in(&config_home);
+        assert_eq!(
+            set_api_key_linux_with(
+                |_k| Err("Secret Service: no result found".into()),
+                &path,
+                "vbk_nested_dir_key_ok",
+            )
+            .unwrap(),
+            LinuxApiKeyWrite::FileFallback,
+        );
+        assert!(config_home.is_dir(), "fallback must create the parent directory");
+        assert_eq!(
+            read_linux_api_key_file(&path).as_deref(),
+            Some("vbk_nested_dir_key_ok"),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn linux_set_returns_unavailable_code_when_file_and_keyring_fail() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blocker = dir.path().join(".verboo");
+        std::fs::write(&blocker, b"not-a-directory").unwrap();
+        let path = blocker.join("desktop-api-key");
+        let err = set_api_key_linux_with(
+            |_k| Err("Secret Service: no result found".into()),
+            &path,
+            "vbk_cannot_write_here_ok",
+        )
+        .unwrap_err();
+        assert_eq!(err, SECRET_SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn secret_service_errors_are_detected_without_false_positives() {
+        assert!(is_secret_service_error(
+            "Couldn't access platform secure storage: Secret Service: no result found"
+        ));
+        assert!(is_secret_service_error("Falha ao ler API key: Secret Service: no result found"));
+        assert!(!is_secret_service_error("Keychain error -25293"));
+        assert!(!is_secret_service_error("A chave API está vazia."));
+        // dbus-secret-service 4.1.0 Error::Dbus is "DBus error: {err}" —
+        // no "Secret Service:" prefix. keyring wraps that as
+        // "Couldn't access platform secure storage: {inner}".
+        assert!(is_secret_service_error(
+            "The name org.freedesktop.secrets was not provided by any .service files"
+        ));
+        assert!(is_secret_service_error(
+            "ORG.FREEDESKTOP.SECRETS was not provided by any .service files"
+        ));
+        assert!(is_secret_service_error(
+            "No such interface 'org.freedesktop.Secret.Collection'"
+        ));
+        assert!(is_secret_service_error(
+            "Couldn't access platform secure storage: DBus error: org.freedesktop.Secret.Collection"
+        ));
+        assert!(!is_secret_service_error("org.freedesktop.DBus.Error.ServiceUnknown"));
+    }
+
+    #[test]
+    fn linux_file_fallback_warning_tracks_file_presence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = linux_api_key_fallback_path_in(dir.path());
+        assert_eq!(linux_file_fallback_warning_if_present(&path), None);
+        write_linux_api_key_file(&path, "vbk_test_key_long_enough").unwrap();
+        assert_eq!(
+            linux_file_fallback_warning_if_present(&path).as_deref(),
+            Some(SECRET_SERVICE_FILE_FALLBACK),
+        );
     }
 }

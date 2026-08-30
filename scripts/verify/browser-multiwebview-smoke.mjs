@@ -88,7 +88,7 @@ export function assertRuntimeReport(report) {
     throw new Error(`snapshot produced no bytes and no snapshot error: ${JSON.stringify(report)}`)
   }
 
-  // ── Multi-tab parity contract (Tasks 3/4) ─────────────────
+  // Multi-tab parity contract (Tasks 3/4).
   if (!report.bridgeReceived) {
     throw new Error(`bridge not received: ${JSON.stringify(report)}`)
   }

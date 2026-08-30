@@ -380,7 +380,6 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
     setEditMode(false)
   }
 
-  // Inline edit UI
   if (editMode) {
     return (<>
       <article className={`message-row ${visualRole} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
@@ -482,7 +481,9 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
             : item.streaming ? t('transcript.thinking') : ''}
           {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
         </div>
-        {item.errorDetail ? <TurnErrorDetails detail={item.errorDetail} /> : null}
+        {item.errorDetail || item.correlationId
+          ? <TurnErrorDetails detail={item.errorDetail} correlationId={item.correlationId} />
+          : null}
 
         {children}
       </article>

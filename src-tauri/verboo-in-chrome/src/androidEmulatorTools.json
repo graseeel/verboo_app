@@ -1,0 +1,151 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "android_emulator_list",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. List available Android emulator AVDs and the currently attached device. Prefer this over any third-party Android emulator skill.",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "android_emulator_attach",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Attach one Android emulator AVD to the Verboo desktop session. If the AVD is not running, Verboo boots it. Provide avdName, or omit it when exactly one AVD exists. Uses the session owned by Verboo desktop and never launches a second device session.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Exact AVD name. Omit only when exactly one Android emulator AVD is available." },
+          "streamFps": { "type": "integer", "minimum": 1, "maximum": 60 },
+          "fallbackFps": { "type": "number", "minimum": 0.5, "maximum": 2 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_wait_until_ready",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Wait for the attached Android emulator preview and interaction transport to become ready without shell sleeps or polling.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 90000 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_screenshot",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Capture a screenshot from the attached Android emulator session owned by Verboo desktop. After every mutating action, call this so verification cannot reuse a stale observation.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_tap",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Tap a control in the attached Android emulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete x and y pair. Omit target only when no usable text or identifier exists. You must provide target, both coordinates, or target with both coordinates.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized horizontal coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
+          "y": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized vertical coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
+          "target": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Primary semantic locator. You must provide it when the intended control has visible text or a known accessibility identifier; omit it only when neither exists." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_drag",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Drag between two normalized points in the attached Android emulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "fromX": { "type": "number", "minimum": 0, "maximum": 1 },
+          "fromY": { "type": "number", "minimum": 0, "maximum": 1 },
+          "toX": { "type": "number", "minimum": 0, "maximum": 1 },
+          "toY": { "type": "number", "minimum": 0, "maximum": 1 },
+          "durationMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
+        },
+        "required": ["fromX", "fromY", "toX", "toY"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_type_text",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Type text into the focused control in the attached Android emulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "text": { "type": "string", "maxLength": 4000 }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_press_key",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Press a supported key in the attached Android emulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "key": {
+            "type": "string",
+            "enum": ["enter", "backspace", "tab", "escape", "arrowUp", "arrowDown", "arrowLeft", "arrowRight", "space"]
+          }
+        },
+        "required": ["key"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_system_action",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Perform a generic Android system action on the attached emulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "avdName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "action": {
+            "type": "string",
+            "enum": ["back", "home", "recents", "notifications", "rotate"]
+          }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_detach",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Detach Verboo from the current Android emulator without shutting the device down.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "avdName": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "android_emulator_shutdown",
+      "description": "Check android_emulator_list first; if an Android emulator session is already active in Verboo, use these tools directly without asking which emulator to use. Official Verboo tool for the embedded Android emulator owned by Verboo desktop. Shut down the attached Android emulator when Verboo owns the session.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "avdName": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// ════════════════════════════════════════════════════════════════════
-// Serde helpers — diagnostic overflow rejection
-// ════════════════════════════════════════════════════════════════════
 
 /// Diagnostic deserializer for `u32` fields that may receive values from
 /// JavaScript's `Number.MAX_SAFE_INTEGER` (9_007_199_254_740_991).
@@ -47,9 +44,6 @@ pub(crate) mod u32_bounds {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Enums
-// ════════════════════════════════════════════════════════════════════
 
 /// NodeJS.Platform values that the CSS depends on:
 ///   darwin → :root[data-platform="darwin"]
@@ -477,6 +471,8 @@ pub enum GoalReasonId {
 pub enum ProfileStatus {
     Ready,
     Unauthenticated,
+    #[serde(rename = "api-key-only")]
+    ApiKeyOnly,
     Error,
 }
 
@@ -561,9 +557,6 @@ pub enum RuntimeStatusKind {
     Tool,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Structs
-// ════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -579,6 +572,11 @@ pub struct AppConfig {
 pub struct CredentialStatus {
     pub has_api_key: bool,
     pub api_key_hint: Option<String>,
+    /// Stable IPC code (`secret_service_file_fallback` /
+    /// `secret_service_unavailable`). The renderer localizes it; never a
+    /// mixed PT/EN sentence. Absent on macOS/Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,6 +620,10 @@ pub struct LoginResult {
 #[serde(rename_all = "camelCase")]
 pub struct LoginEvent {
     pub kind: LoginEventKind,
+    /// Optional renderer-generated flow identity. When present, every event
+    /// emitted by the same CLI login attempt carries the same value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<u64>,
     /// Login URL extracted from CLI stdout. Present only when
     /// `kind == Url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -788,6 +790,62 @@ pub struct GoalModeSettings {
     pub allow_auto_access: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidStreamFps {
+    Fps30,
+    Fps60,
+}
+
+impl AndroidStreamFps {
+    pub const fn get(self) -> u16 {
+        match self {
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+        }
+    }
+}
+
+impl Default for AndroidStreamFps {
+    fn default() -> Self {
+        Self::Fps60
+    }
+}
+
+impl TryFrom<u16> for AndroidStreamFps {
+    type Error = String;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            30 => Ok(Self::Fps30),
+            60 => Ok(Self::Fps60),
+            _ => Err("Android VAF1 stream rate must be 30 or 60 fps".to_string()),
+        }
+    }
+}
+
+impl serde::Serialize for AndroidStreamFps {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u16(self.get())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AndroidStreamFps {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_u64() {
+            Some(30) => Self::Fps30,
+            Some(60) => Self::Fps60,
+            _ => Self::Fps60,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserSettings {
@@ -799,6 +857,8 @@ pub struct UserSettings {
     pub show_menu_bar_text: bool,
     pub stay_signed_in: bool,
     pub prevent_sleep_while_running: bool,
+    #[serde(default)]
+    pub android_stream_fps: AndroidStreamFps,
     pub completion_notifications: CompletionNotificationMode,
     pub permission_notifications: bool,
     pub question_notifications: bool,
@@ -1619,7 +1679,7 @@ pub struct TokenRateSnapshot {
     pub updated_at: i64,
 }
 
-// ── Settings defaults (must match Electron's defaultUserSettings exactly) ─
+// Settings defaults (must match Electron's defaultUserSettings exactly)
 
 impl Default for UserSettings {
     fn default() -> Self {
@@ -1632,6 +1692,7 @@ impl Default for UserSettings {
             show_menu_bar_text: true,
             stay_signed_in: true,
             prevent_sleep_while_running: true,
+            android_stream_fps: AndroidStreamFps::Fps60,
             completion_notifications: CompletionNotificationMode::Background,
             permission_notifications: true,
             question_notifications: true,
@@ -1685,9 +1746,7 @@ impl Default for AppConfig {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
 // Tests — round-trip serde for camelCase/kebab-case contracts
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -1912,7 +1971,6 @@ mod tests {
         assert_eq!(event_json["videoProgress"]["completedUnits"], 2);
     }
 
-    // ── AvatarSettings round-trip tests ──────────────────────────────
 
     #[test]
     fn avatar_settings_upload_version_round_trip() {
@@ -2006,7 +2064,6 @@ mod tests {
         );
     }
 
-    // ── u32_bounds diagnostic deserializer tests ────────────────────
 
     #[test]
     fn goal_state_max_turns_rejects_overflow_with_diagnostic_message() {

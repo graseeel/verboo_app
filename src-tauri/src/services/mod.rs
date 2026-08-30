@@ -1,4 +1,8 @@
 pub mod auth_token;
+pub mod android_emulator;
+pub mod android_emulator_bridge;
+pub mod android_emulator_mcp;
+pub mod bootstrap_diag;
 pub mod browser_bridge;
 pub mod browser_panel;
 pub mod browser_platform;
@@ -12,6 +16,7 @@ pub mod cli_spawn;
 pub mod cli_update;
 pub mod cli_subagent_transcript;
 pub mod credentials_store;
+pub mod diagnostic_log;
 pub mod feedback_service;
 pub mod file_service;
 pub mod git_service;
@@ -21,6 +26,7 @@ pub mod ios_simulator;
 #[cfg(target_os = "macos")]
 pub mod ios_simulator_mcp;
 pub mod lifecycle_service;
+pub mod linux_webview;
 pub mod manifest_cache;
 #[cfg(test)]
 pub mod markdown_wrap_contract;
@@ -53,4 +59,5 @@ pub mod update_coordinator;
 pub mod video;
 pub mod vision_fallback_service;
 pub mod whats_new_service;
+pub mod window_geometry;
 pub mod workspace_files_service;

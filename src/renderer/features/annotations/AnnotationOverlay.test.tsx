@@ -110,7 +110,6 @@ describe('AnnotationOverlay — RULE 1: the segment DOM is never mutated', () =>
     expect(probe.textContent).toBe(before.textContent)
     expect(probe.innerHTML).toBe(before.innerHTML)
     expect(probe.childNodes.length).toBe(before.childNodes)
-    // And the overlay does NOT live inside the segment:
     expect(probe.querySelector('.annotation-hl, .annotation-balloon')).toBeNull()
     probe.remove()
   })
@@ -194,11 +193,9 @@ describe('AnnotationOverlay — degradation', () => {
       </I18nProvider>,
     )
 
-    // Zero visual…
     expect(document.querySelectorAll('.annotation-hl')).toHaveLength(0)
     expect(document.querySelectorAll('.annotation-balloon')).toHaveLength(0)
     expect(document.querySelector('.annotation-overlay')).toBeNull()
-    // …but the data was NOT lost with the position:
     expect(screen.getByRole('button', { name: /annotation/i }).textContent).toContain('1 annotation')
   })
 

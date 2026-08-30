@@ -10,7 +10,7 @@ use crate::models::types::{
     AttachmentMeta, CliMediaCapabilities, EventType, LanguageCode, ModelReasoning, PersonalityMode,
     RuntimeActivity, RuntimeStatus, RuntimeStatusKind, UserSettings,
 };
-use crate::services::auth_token::{inject_api_key, resolve_token};
+use crate::services::auth_token::{inject_turn_credentials, resolve_token};
 use crate::services::cli_subagent_transcript::CliSubagentTranscriptFollower;
 use crate::services::credentials_store::CredentialsStore;
 use crate::services::prevent_sleep::PreventSleepGuard;
@@ -1328,6 +1328,21 @@ impl TurnService {
             .as_deref()
             .filter(|value| !value.trim().is_empty() && !value.trim().starts_with("vbk_"))
             .map(str::to_string);
+        // Issue #104: when OAuth wins, the saved vbk_ must still reach the
+        // child as ANTHROPIC_API_KEY — the CLI 0.15.18 post-401 fallback reads
+        // it. Read it ONLY in that case, so the vbk_-only path keeps its
+        // current behavior (and avoids an extra credential-store read).
+        let fallback_api_key = if injected_oauth_token.is_some() {
+            match credentials.get_api_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("[verboo:auth-token] failed to read API key for the turn fallback: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let sleep_guard = match settings.as_ref() {
             Some(store) => store
@@ -1338,7 +1353,7 @@ impl TurnService {
         };
 
         let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
-        let runtime_label = spawn.runtime.to_string();
+        let runtime = spawn.runtime.clone();
         let working_dir_label = working_directory.clone();
         let mut cmd = spawn.command;
         cmd.current_dir(&working_directory)
@@ -1354,7 +1369,7 @@ impl TurnService {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(crate::services::child_signal::process_creation_flags());
         }
-        let _token_file = inject_api_key(token.as_deref(), &mut cmd);
+        let _token_file = inject_turn_credentials(token.as_deref(), fallback_api_key.as_deref(), &mut cmd);
         crate::services::auth_token::augment_identity_env(&mut cmd);
 
         // Effort transport: inject `CLAUDE_CODE_EFFORT_LEVEL=<level>` for
@@ -1469,6 +1484,7 @@ impl TurnService {
                 let reader = BufReader::new(se);
                 for line in reader.lines().map_while(Result::ok) {
                     eprintln!("[verboo-cli stderr] {line}");
+                    crate::services::diagnostic_log::append_cli_stderr(&line);
                     if let Ok(mut b) = buf.lock() {
                         b.push_str(&line);
                         b.push('\n');
@@ -1496,7 +1512,7 @@ impl TurnService {
             let _token_file = _token_file;
             let _sleep_guard = sleep_guard;
             let child_handle = child_handle;
-            let runtime_label = runtime_label;
+            let runtime = runtime;
             let working_dir_label = working_dir_label;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
@@ -1744,8 +1760,10 @@ impl TurnService {
                 Some(code) => format!("exit={code}"),
                 None => "signal".to_string(),
             };
-            let diagnosis =
-                format!("({exit_display}, runtime={runtime_label}, cwd={working_dir_label})");
+            let diagnosis = visible_cli_diagnosis(&exit_display, &runtime);
+            let technical_diagnosis =
+                technical_cli_diagnosis(&exit_display, &runtime, &working_dir_label);
+            eprintln!("[turn_service] cli diagnosis {technical_diagnosis}");
             if let Some(mut failure) = terminal_failure_from_outcome(
                 assistant_error.as_ref(),
                 result_snapshot.as_ref(),
@@ -1753,6 +1771,7 @@ impl TurnService {
                 stderr_text.as_deref(),
                 &diagnosis,
             ) {
+                failure.technical_detail = Some(technical_diagnosis);
                 if failure.category == "authentication_failed" {
                     failure.recovery_ready = injected_oauth_token
                         .as_deref()
@@ -1892,6 +1911,21 @@ impl Default for TurnService {
 }
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
+    if event.event_type == EventType::Error {
+        let code = event
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("category"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("process_error");
+        crate::services::diagnostic_log::emit_error(
+            "turn",
+            code,
+            event.message.as_deref().unwrap_or(""),
+            event.turn_id.as_deref(),
+            serde_json::json!({}),
+        );
+    }
     if let Err(e) = app.emit(AGENT_EVENT_CHANNEL, event) {
         eprintln!("[turn_service] failed to emit agent event: {e}");
     }
@@ -1913,6 +1947,23 @@ struct CliTerminalFailure {
     exit_code: Option<i32>,
     session_id: Option<String>,
     recovery_ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    technical_detail: Option<String>,
+}
+
+fn visible_cli_diagnosis(
+    exit_display: &str,
+    runtime: &crate::services::cli_spawn::CliRuntime,
+) -> String {
+    format!("({exit_display}, runtime={})", runtime.short_label())
+}
+
+fn technical_cli_diagnosis(
+    exit_display: &str,
+    runtime: &crate::services::cli_spawn::CliRuntime,
+    working_dir: &str,
+) -> String {
+    format!("({exit_display}, runtime={runtime}, cwd={working_dir})")
 }
 
 fn is_assistant_error_payload(payload: &serde_json::Value) -> bool {
@@ -2021,6 +2072,7 @@ fn terminal_failure_from_outcome(
         exit_code,
         session_id,
         recovery_ready: false,
+        technical_detail: None,
     })
 }
 
@@ -2030,6 +2082,8 @@ fn infer_terminal_failure_category(normalized: &str) -> &'static str {
         || normalized.contains("invalid or expired token")
         || normalized.contains("oauth session expired")
         || normalized.contains("api error: 401")
+        || normalized.contains("não autenticado no verboo")
+        || normalized.contains("api key inválida ou expirada")
     {
         "authentication_failed"
     } else if normalized.contains("too many tokens")
@@ -2087,7 +2141,6 @@ fn build_stream_json_input(request: &AgentTurnRequest, prompt: &str) -> Option<S
         return None;
     }
 
-    // Build content blocks: text first, then images.
     let mut content = Vec::with_capacity(images.len() + 1);
     content.push(serde_json::json!({
         "type": "text",
@@ -2436,17 +2489,11 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
 /// adding it does not change the routing envelope.
 fn todowrite_language_instruction(language: LanguageCode) -> String {
     if language == LanguageCode::PtBr {
-        // PT: write steps in the conversation language; keep
-        // identifiers intact. Names of files, paths, commands, flags,
-        // identifiers, and code snippets MUST stay as-is.
         "Escreva os passos do TodoWrite (campos content e activeForm) \
          no idioma da conversa. Preserve intactos: nomes de arquivo, \
          caminhos, comandos, flags, identificadores e trechos de código."
             .to_string()
     } else {
-        // EN: write steps in the conversation language; keep
-        // identifiers intact. Filenames, paths, commands, flags,
-        // identifiers, and code snippets MUST stay as-is.
         "Write TodoWrite steps (content and activeForm fields) in the \
          conversation's language. Keep intact: filenames, paths, \
          commands, flags, identifiers, and code snippets."
@@ -2950,14 +2997,13 @@ fn personality_label(value: &PersonalityMode, language: LanguageCode) -> &'stati
     }
 }
 
-// ── Parsing helpers ─────────────────────────────────────────────────
 
 /// Strip ANSI escape sequences + DECSET 2026 (in-band mode switch that
 /// breaks JSON parsing). Mirrors Electron's `cleanTerminalText`.
 pub fn clean_terminal_text(value: &str) -> String {
-    // Body unchanged — promoted to `pub` so the research-subagent runner
-    // (services/research_subagent_runner.rs) can reuse the exact same
-    // cleaning logic that the main turn stream uses.
+    // Promoted to `pub` so the research-subagent runner
+    // (services/research_subagent_runner.rs) reuses the same cleaning
+    // logic as the main turn stream.
     clean_terminal_text_impl(value)
 }
 
@@ -4427,6 +4473,38 @@ mod tests {
     }
 
     #[test]
+    fn visible_diagnosis_omits_runtime_paths_and_cwd() {
+        let runtime = crate::services::cli_spawn::CliRuntime::InstalledNode {
+            node_path: std::path::PathBuf::from("/internal/bin/node"),
+            cli_mjs_path: std::path::PathBuf::from("/internal/cli.mjs"),
+            version: "0.15.17".into(),
+        };
+        let visible = visible_cli_diagnosis("exit=1", &runtime);
+        assert!(visible.contains("exit=1"), "{visible}");
+        assert!(!visible.contains("/internal"), "{visible}");
+        assert!(!visible.contains("cwd="), "{visible}");
+        let technical = technical_cli_diagnosis("exit=1", &runtime, "/Users/me/project");
+        assert!(technical.contains("/internal/bin/node"), "{technical}");
+        assert!(technical.contains("cwd=/Users/me/project"), "{technical}");
+    }
+
+    #[test]
+    fn terminal_failure_classifies_portuguese_headless_unauthenticated() {
+        let failure = terminal_failure_from_outcome(
+            None,
+            None,
+            Some(1),
+            Some("Não autenticado no Verboo. Execute `verboo /login` em um terminal interativo antes de usar o modo headless."),
+            "(exit=1, runtime=installed-node)",
+        )
+        .expect("headless CLI auth gate is a terminal failure");
+        assert_eq!(failure.category, "authentication_failed");
+        assert!(failure.message.contains("Não autenticado no Verboo"));
+        assert!(failure.message.contains("exit=1"));
+        assert!(!failure.message.contains("cwd="));
+    }
+
+    #[test]
     fn terminal_failure_ignores_stderr_warning_on_success() {
         let payload = json!({
             "type": "result",
@@ -4628,8 +4706,6 @@ mod tests {
         assert!(prompt.contains("Next step"));
     }
 
-    // ── build_attachment_lines tests ────────────────────────────────
-    //
     // These verify the "PDF alucinado" fix: extracted text is injected
     // inline, and when no text is available + no vision, an explicit
     // warning tells the model NOT to invent content.
@@ -6006,7 +6082,7 @@ mod tests {
         // Counterfactual: the bypass is reserved-command-only. A
         // normal message MUST still get the prefix or the existing
         // workspace-context guarantee (test
-        // `build_prompt_resume_omits_app_instructions` at line 3845)
+        // `build_prompt_resume_omits_app_instructions`)
         // silently regresses. This test is the load-bearing one for
         // "don't break the normal case".
         let req = request_with_message("Hello");

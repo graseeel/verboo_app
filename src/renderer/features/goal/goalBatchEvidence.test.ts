@@ -158,8 +158,7 @@ describe('T4 evidence stamps — done tasks cite turns + whitelisted actions', (
     expect(first.status).toBe('done')
     expect(first.turns).toBe(1)
     expect(first.evidenceCount).toBeGreaterThanOrEqual(1)
-    // Task 2 (LAST): completed at the TERMINAL write — the path that
-    // used to stamp only status/completedAt before T4.
+    // Task 2 (LAST): completed at the TERMINAL write.
     expect(last.status).toBe('done')
     expect(last.turns).toBe(1)
     expect(last.evidenceCount).toBeGreaterThanOrEqual(1)

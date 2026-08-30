@@ -1,5 +1,5 @@
 import { AlertTriangle, Bug, CheckCircle2, ExternalLink, Send, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { FeedbackCategory, FeedbackDiagnostics, FeedbackRequest, FeedbackResult } from '../../../shared/types'
 import { useI18n } from '../../i18n'
@@ -24,6 +24,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<FeedbackResult | undefined>()
   const [errors, setErrors] = useState<FeedbackErrors>({})
+  const resultRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -35,6 +36,10 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
     setResult(undefined)
     setErrors({})
   }, [defaultContact, open])
+
+  useEffect(() => {
+    if (result) resultRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [result])
 
   if (!open) return null
 
@@ -83,7 +88,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
         </header>
 
         <form className="feedback-form" onSubmit={submit} noValidate>
-          <div className="feedback-field-group">
+          <div className="feedback-field-group feedback-scroll-body">
             <div className="feedback-field">
               <label className="feedback-label" htmlFor="feedback-category">{t('feedback.type')}</label>
               <select
@@ -164,21 +169,20 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 <small>{t('feedback.includeDiagnosticsHelp')}</small>
               </span>
             </label>
+            {result && (
+              <div ref={resultRef} className={`feedback-result ${result.channel}`}>
+                {result.channel === 'supabase' ? <CheckCircle2 size={17} /> : <ExternalLink size={17} />}
+                <span>{feedbackResultMessage(result, t)}</span>
+              </div>
+            )}
+
+            {result?.error && (
+              <div className="feedback-result warning">
+                <AlertTriangle size={17} />
+                <span>{t('feedback.submitWarning')}</span>
+              </div>
+            )}
           </div>
-
-          {result && (
-            <div className={`feedback-result ${result.channel}`}>
-              {result.channel === 'supabase' ? <CheckCircle2 size={17} /> : <ExternalLink size={17} />}
-              <span>{feedbackResultMessage(result, t)}</span>
-            </div>
-          )}
-
-          {result?.error && (
-            <div className="feedback-result warning">
-              <AlertTriangle size={17} />
-              <span>{t('feedback.submitWarning')}</span>
-            </div>
-          )}
 
           <footer className="modal-actions">
             <button type="button" onClick={onClose}>{t('common.cancel')}</button>
@@ -210,9 +214,9 @@ function validateFeedback(title: string, description: string, t: (key: string) =
 function feedbackResultMessage(result: FeedbackResult, t: (key: string) => string): string {
   if (result.channel === 'supabase') return t('feedback.sentSupabase')
   // The Rust fallback now opens a pre-filled GitHub issue (feedback_service.rs
-  // build_issue_url). Precedence: the structured `code` selects localized
-  // copy, then the concrete Rust message, then the generic key.
+  // build_issue_url). Structured codes select localized copy; unknown codes
+  // use the neutral fallback and never expose a raw service message.
   if (result.code === 'supabase_unconfigured') return t('feedback.issueUnconfigured')
   if (result.code === 'supabase_failed') return t('feedback.issueFailed')
-  return result.message?.trim() ? result.message : t('feedback.mailFallback')
+  return t('feedback.mailFallback')
 }

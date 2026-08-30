@@ -102,6 +102,8 @@ import { CliBootstrapGate } from './components/CliBootstrapGate'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
+import { credentialStoreI18nKey, invokeErrorText } from './features/auth/credentialStoreMessage'
+import { retryValidateAccessUntilUnlocked } from './features/auth/completeCliLogin'
 import { VERBOO_PROVIDER, dedupModels, providerAccountName, providerDisplayName } from './features/models/providerCatalog'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
@@ -109,6 +111,7 @@ import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
 import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
 import { IosSimulatorPanel } from './features/simulator/IosSimulatorPanel'
 import { useIosSimulatorPanel } from './features/simulator/useIosSimulatorPanel'
+import type { SimulatorPlatform, SimulatorPlatformRequest } from './features/simulator/simulatorPlatform'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -117,7 +120,7 @@ import { useWorkspacePanelSuspension, type WorkspacePanelKind } from './features
 import { useTheme } from './features/theme/useTheme'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
-import { LoginScreen } from './components/LoginScreen'
+import { LoginScreen, type AuthErrorState, type LoginCliBootstrap } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript, type TranscriptMediaAttachment } from './components/Transcript'
 import { MEDIA_PREVIEW_TRANSITION_MS, MediaPreviewPanel } from './features/media-preview/MediaPreviewPanel'
@@ -232,6 +235,16 @@ const SIDEBAR_MAX_WIDTH = 420
 const SIDEBAR_COMPACT_WIDTH = 72
 const BOTTOM_STICK_THRESHOLD = 72
 const SCROLL_SETTLE_MS = 360
+const STOP_BUTTON_RELEASE_DELAY_MS = 500
+const PROVIDER_LOGIN_CONFIRMATION_ERROR = 'provider_login_confirmation_failed'
+
+function providerLoginErrorMessage(message: string | undefined, t: Translator): string {
+  if (message === PROVIDER_LOGIN_CONFIRMATION_ERROR) {
+    return t('settings.provider.confirmationError')
+  }
+  return message ?? t('settings.provider.loginError')
+}
+
 const DEFAULT_USER_SETTINGS: UserSettings = {
   language: 'en-US',
   theme: 'system',
@@ -347,8 +360,18 @@ type QueuedFollowUp = {
   id: string
   conversationId: string
   message: string
+  /** User bubble that is appended only when this entry begins dispatch.
+   *  Internal/synthetic queue entries intentionally omit it. */
+  transcriptItem?: TranscriptItem
   request: AgentTurnRequest
   sideChat?: boolean
+  /** How this entry interacts with the queue panel. TOTAL discriminator:
+   *  every constructor sets it explicitly.
+   *  - 'internal' still participates in the functional queue loop (it drains
+   *    and resumes the CLI) but never renders in the panel;
+   *  - 'visible' is user-manageable in the panel (send now / edit / remove),
+   *    regardless of who originated the message text. */
+  queueVisibility: 'visible' | 'internal'
   turnModel: {
     modelId?: string
     modelDisplayName?: string
@@ -404,13 +427,18 @@ export function App() {
   const [providerRiskNotice, setProviderRiskNotice] = useState<{ provider: string; message: string } | undefined>(undefined)
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
   const [profileLoading, setProfileLoading] = useState(false)
+  const profileRequestGenerationRef = useRef(0)
   const [activeView, setActiveView] = useState<AppView>('chat')
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [entryUnlocked, setEntryUnlocked] = useState(false)
+  const entryUnlockedRef = useRef(entryUnlocked)
+  entryUnlockedRef.current = entryUnlocked
   const [authChecking, setAuthChecking] = useState(true)
-  const [authError, setAuthError] = useState<string | undefined>()
+  // PA-37g: structured auth error — the stable `kind` discriminates the
+  // empty state ('no-session') from real failures; `message` is display-only.
+  const [authError, setAuthError] = useState<AuthErrorState | undefined>()
   // T5: raw cause of a rejected validateAccess, shown behind a
   // "Show technical details" toggle in the login warning. The friendly
   // headline lives in authError; this is the diagnostic, never bare on
@@ -426,6 +454,7 @@ export function App() {
   })
   const providerCatalogRecoveryGenerationRef = useRef(0)
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
+  const selectedModelRef = useRef(selectedModel)
   const [providerModelBlocker, setProviderModelBlocker] = useState<ProviderModelBlocker | undefined>()
   const providerModelValidationGeneration = useRef(0)
   const [providerAccountMissing, setProviderAccountMissing] = useState<{
@@ -481,6 +510,13 @@ export function App() {
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
+  // Total access state for the INITIAL snapshot read. 'checking' means the
+  // app does not yet know whether a CLI bootstrap is needed — during this
+  // window agent actions stay latched both pre- and post-login.
+  const [updateAccess, setUpdateAccess] = useState<
+    { kind: 'checking' } | { kind: 'resolved' } | { kind: 'error'; message: string }
+  >({ kind: 'checking' })
+  const updateSnapshotRef = useRef<UpdateSnapshot | undefined>(undefined)
   const [cliBootstrapSuccessVisible, setCliBootstrapSuccessVisible] = useState(false)
   const cliBootstrapInFlightRef = useRef(false)
   const cliBootstrapWasRequiredRef = useRef(false)
@@ -512,6 +548,9 @@ export function App() {
   const [runningTurnByConversation, setRunningTurnByConversation] = useState<Record<string, string>>({})
   const runningTurnByConversationRef = useRef<Record<string, string>>({})
   const runningConversations = useMemo(() => new Set(Object.keys(runningTurnByConversation)), [runningTurnByConversation])
+  const [stopLockedConversations, setStopLockedConversations] = useState<Set<string>>(() => new Set())
+  const stopTurnLocksRef = useRef(new Map<string, string>())
+  const stopTurnUnlockTimersRef = useRef(new Map<string, number>())
   const activeTurnId = activeConversationId ? runningTurnByConversation[activeConversationId] : undefined
   const anyRunningTurnId = Object.values(runningTurnByConversation)[0]
   const [performanceWarningDismissed, setPerformanceWarningDismissed] = useState(false)
@@ -673,13 +712,21 @@ export function App() {
   const review = useReviewPanel()
   const browser = useBrowserPanel()
   const simulator = useIosSimulatorPanel()
+  const [simulatorPlatformRequest, setSimulatorPlatformRequest] = useState<SimulatorPlatformRequest>()
+  const simulatorPlatformRequestIdRef = useRef(0)
+  const requestSimulatorPlatform = useCallback((platform: SimulatorPlatform) => {
+    simulatorPlatformRequestIdRef.current += 1
+    setSimulatorPlatformRequest({ id: simulatorPlatformRequestIdRef.current, platform })
+  }, [])
   const [previewMedia, setPreviewMedia] = useState<TranscriptMediaAttachment | undefined>()
   const [mediaPreviewOpen, setMediaPreviewOpen] = useState(false)
   const mediaPreviewOpenFrameRef = useRef<number | undefined>(undefined)
   const mediaPreviewCloseTimerRef = useRef<number | undefined>(undefined)
   const consumedSimulatorOpenRequestRef = useRef(0)
   const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
-  const simulatorAvailable = configLoaded && config.platform === 'darwin'
+  // PA-25: o painel agora hospeda abas por plataforma (iOS só no darwin, Android
+  // sempre) — o gate por SO do iOS vive dentro do IosSimulatorPanel via prop.
+  const simulatorAvailable = configLoaded
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -813,6 +860,11 @@ export function App() {
     annotations?: Annotation[]
   }>>({})
   const autoApprovalSent = useRef<Set<string>>(new Set())
+  // TurnIds whose trusted-command prompt was already STAGED (latched) for
+  // auto-approval. detectPermissionRequest runs over the ACCUMULATED turn
+  // text on every stdout chunk, so once a prompt is consumed any later
+  // chunk re-matches the same request — this latch prevents restaging it.
+  const autoApprovalLatchedTurnIds = useRef<Set<string>>(new Set())
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
   const turnTextSegmentCount = useRef<Record<string, number>>({})
   const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
@@ -960,25 +1012,28 @@ export function App() {
     restorePanel: restoreWorkspacePanel,
   })
 
-  useEffect(() => {
-    const request = simulator.agentOpenRequest
-    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
-    consumedSimulatorOpenRequestRef.current = request
+  const openSimulatorForAgent = useCallback((platform: SimulatorPlatform) => {
+    if (!simulatorAvailable) return
+    if (platform === 'ios' && config.platform !== 'darwin') return
     setActiveView('chat')
     terminal.close()
     review.close()
     browser.close()
     clearMediaPreview()
     setSelectedSubagentId(undefined)
+    requestSimulatorPlatform(platform)
     simulator.open()
+  }, [browser.close, clearMediaPreview, config.platform, requestSimulatorPlatform, review.close, simulator.open, simulatorAvailable, terminal.close])
+
+  useEffect(() => {
+    const request = simulator.agentOpenRequest
+    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
+    consumedSimulatorOpenRequestRef.current = request
+    openSimulatorForAgent('ios')
   }, [
-    browser.close,
-    clearMediaPreview,
-    review.close,
+    openSimulatorForAgent,
     simulator.agentOpenRequest,
-    simulator.open,
     simulatorAvailable,
-    terminal.close,
   ])
   const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
@@ -1135,6 +1190,10 @@ export function App() {
         try { window.localStorage.removeItem(EFFORT_BY_MODEL_KEY) } catch { /* noop */ }
       }
       setSelectedModel(settings.lastSelectedModelId)
+      // Sync the ref NOW (same idiom as goalRef below): validateAccess runs
+      // before the next commit, so the effect-based mirror would still read
+      // undefined when the startup reconciliation decides on a migration.
+      selectedModelRef.current = settings.lastSelectedModelId
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
       setConfigLoaded(true)
@@ -1143,15 +1202,16 @@ export function App() {
       if (settings.staySignedIn && readRememberedAuthSession()) {
         setEntryUnlocked(true)
       }
+      const startupTranslator = createTranslator(settings.language)
       void (async () => {
-        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn)
+        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn, startupTranslator)
         // Cold-start hardening (B1): on a fresh launch the first keychain read
         // / CLI-token refresh can lose a race and report "no session". Retry
         // once with a forced refresh before leaving the user on the login
         // screen. validateAccess already no-ops the UI if it succeeds.
         if (!ok && !cancelled) {
           await new Promise(resolve => setTimeout(resolve, 700))
-          if (!cancelled) await validateAccess(true, settings.staySignedIn)
+          if (!cancelled) await validateAccess(true, settings.staySignedIn, startupTranslator)
         }
       })()
     }
@@ -1176,7 +1236,7 @@ export function App() {
   }, [])
 
   // F4: provider login progress (provider-login:event, shape verified in
-  // provider_login_pty.rs:45-58). The CLI owns the browser flow; the renderer
+  // provider_login_pty.rs). The CLI owns the browser flow; the renderer
   // reflects outcomes — connected refreshes the catalog + bridge universe,
   // error surfaces the message (D1 rule: every failure visible).
   useEffect(() => {
@@ -1205,7 +1265,7 @@ export function App() {
         void providerAccountsRef.current.reloadAccounts()
         toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
       } else if (event.state === 'error') {
-        toast(event.message ?? t('settings.provider.connectError', { message: '' }), 'error')
+        toast(providerLoginErrorMessage(event.message, t), 'error')
       }
     })
     // The bridge returns a cleanup fn; anything else (incomplete test mock)
@@ -1292,35 +1352,66 @@ export function App() {
     })
   }, [])
 
+  // Single writer for the snapshot: keeps the ref mirror and marks the
+  // initial access as resolved no matter which path produced the value.
+  const applyUpdateSnapshot = useCallback((snapshot: UpdateSnapshot | undefined) => {
+    updateSnapshotRef.current = snapshot
+    setUpdateSnapshot(snapshot)
+    setUpdateAccess({ kind: 'resolved' })
+  }, [])
+
   const runCliBootstrap = useCallback(async () => {
     if (cliBootstrapInFlightRef.current) return
     cliBootstrapInFlightRef.current = true
+    // A retry started without an authoritative snapshot returns the
+    // presentation to checking instead of keeping a stale error pinned.
+    if (updateSnapshotRef.current === undefined) {
+      setUpdateAccess({ kind: 'checking' })
+    }
     try {
-      setUpdateSnapshot(await window.verboo.bootstrapCli())
+      applyUpdateSnapshot(await window.verboo.bootstrapCli())
     } catch (error) {
-      setUpdateSnapshot(current => current ? {
-        ...current,
-        status: 'error',
-        target: 'cli',
-        cliBootstrapRequired: true,
-        error: error instanceof Error ? error.message : String(error),
-      } : current)
+      const message = error instanceof Error ? error.message : String(error)
+      if (updateSnapshotRef.current === undefined) {
+        setUpdateAccess({ kind: 'error', message })
+      } else {
+        const current = updateSnapshotRef.current
+        applyUpdateSnapshot({
+          ...current,
+          status: 'error',
+          target: 'cli',
+          cliBootstrapRequired: true,
+          error: message,
+        })
+      }
     } finally {
       cliBootstrapInFlightRef.current = false
     }
-  }, [])
+  }, [applyUpdateSnapshot])
 
   useEffect(() => {
     let mounted = true
-    void window.verboo.getUpdateStatus().then(snapshot => {
-      if (!mounted || !snapshot) return
-      setUpdateSnapshot(snapshot)
-      if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
-        void runCliBootstrap()
-      }
-    })
+    void window.verboo.getUpdateStatus()
+      .then(snapshot => {
+        if (!mounted) return
+        // undefined (legacy mocks / no bootstrap feature) counts as resolved:
+        // the surface simply behaves as ready.
+        applyUpdateSnapshot(snapshot)
+        if (!snapshot) return
+        if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
+          void runCliBootstrap()
+        }
+      })
+      .catch(error => {
+        // A rejected getUpdateStatus is a REAL bootstrap failure: capture it
+        // locally (no unhandled rejection) and let the card show the cause.
+        // A LATE rejection after the live stream already delivered a
+        // snapshot is ignored — the snapshot remains the authority.
+        if (!mounted || updateSnapshotRef.current !== undefined) return
+        setUpdateAccess({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      })
     const unsubscribe = window.verboo.onUpdateStatus(snapshot => {
-      setUpdateSnapshot(snapshot)
+      applyUpdateSnapshot(snapshot)
       if (snapshot.status === 'downloaded') {
         toast(t('updates.readyToast'))
       }
@@ -1331,7 +1422,7 @@ export function App() {
       mounted = false
       unsubscribe()
     }
-  }, [runCliBootstrap, t, toast])
+  }, [applyUpdateSnapshot, runCliBootstrap, t, toast])
 
   const cliBootstrapRequired = updateSnapshot?.cliBootstrapRequired === true
 
@@ -1361,7 +1452,27 @@ export function App() {
     }
   }, [])
 
-  const cliAgentActionsBlocked = cliBootstrapRequired || cliBootstrapSuccessVisible
+  // Single derivation of the bootstrap presentation for BOTH surfaces.
+  // An existing snapshot is the AUTHORITY and wins over any initial-access
+  // state; checking/error access only describe the pre-snapshot window.
+  const loginCliBootstrap: LoginCliBootstrap =
+    updateSnapshot !== undefined
+      ? cliBootstrapSuccessVisible
+        ? { phase: 'success', stage: updateSnapshot.bootstrapStage ?? 'cli' }
+        : updateSnapshot.cliBootstrapRequired === true
+          ? updateSnapshot.status === 'error'
+            ? { phase: 'error', stage: updateSnapshot.bootstrapStage ?? 'cli', error: updateSnapshot.error }
+            : { phase: 'installing', stage: updateSnapshot.bootstrapStage ?? 'cli', percent: updateSnapshot.percent }
+          : { phase: 'ready', stage: updateSnapshot.bootstrapStage ?? 'cli' }
+      : updateAccess.kind === 'checking'
+        ? { phase: 'checking', stage: 'runtime' }
+        : updateAccess.kind === 'error'
+          ? { phase: 'error', stage: 'runtime', error: updateAccess.message }
+          : { phase: 'ready', stage: 'cli' }
+
+  // Unknown (checking) and errored bootstrap latch agent actions exactly like
+  // an in-progress download — the shell may render, but never act.
+  const cliAgentActionsBlocked = loginCliBootstrap.phase !== 'ready'
   const whatsNewReady = configLoaded
     && settingsLoaded
     && updateSnapshot !== undefined
@@ -1421,6 +1532,11 @@ export function App() {
   useEffect(() => {
     sideChatRef.current = sideChat
   }, [sideChat])
+
+  useEffect(() => () => {
+    for (const timer of stopTurnUnlockTimersRef.current.values()) window.clearTimeout(timer)
+    stopTurnUnlockTimersRef.current.clear()
+  }, [])
 
   // Escape may only act on a conversation that is still rendered in the lane
   // that last received focus. Navigation can leave a previous conversation
@@ -1486,6 +1602,10 @@ export function App() {
     userSettingsRef.current = userSettings
   }, [userSettings])
 
+  useEffect(() => {
+    selectedModelRef.current = selectedModel
+  }, [selectedModel])
+
   useLayoutEffect(() => {
     if (shouldShowLogin || activeView !== 'chat' || !hasConversation || !workspaceRef.current) return undefined
 
@@ -1542,11 +1662,7 @@ export function App() {
   }, [questionPromptTurnId])
 
   useEffect(() => {
-    return window.verboo.onRefreshDataRequest(() => {
-      void refreshModels(true)
-      void refreshProfile()
-      void validateAccess(true)
-    })
+    return window.verboo.onRefreshDataRequest(() => void validateAccess(true))
   }, [])
 
   useEffect(() => {
@@ -1583,7 +1699,6 @@ export function App() {
   const selectedContextWindow = selectedModelInfo?.contextWindow
     ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
 
-  // ── Reasoning effort ──────────────────────────────────────────
   const selectedModelReasoning = selectedModelInfo ? getModelReasoning(selectedModelInfo) : undefined
   const selectedEffortLevels = selectedModelReasoning?.effortLevels ?? []
   /** Wire value: only set when the user has a saved, still-valid preference
@@ -1623,6 +1738,11 @@ export function App() {
 
   useEffect(() => {
     function handleEscapeInterrupt(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      // A local menu owns Escape while it is open. The TopBar registers its
+      // own window/capture listener to dismiss and restore focus; skipping
+      // here prevents the same key from arming the agent ESC×2 flow first.
+      if (document.querySelector('[data-topbar-simulator-menu-open="true"]')) return
       const targetConversationId = resolveEscapeConversation({
         activeConversationId: activeConversationIdRef.current,
         sideChatConversationId: sideChatRef.current?.conversation.id,
@@ -1630,18 +1750,25 @@ export function App() {
         focusedLane: focusedConversationLaneRef.current,
         lifecycle: { runningTurnByConversation: runningTurnByConversationRef.current },
       })
-      if (event.key !== 'Escape' || !targetConversationId) return
+      if (!targetConversationId) return
       event.preventDefault()
       event.stopPropagation()
       const now = Date.now()
       if (now - lastEscapeAt.current <= 1300) {
         lastEscapeAt.current = 0
         if (targetConversationId === activeConversationIdRef.current) goalAbortRef.current?.abort()
-        void interruptForUser(targetConversationId)
+        const turnId = runningTurnByConversationRef.current[targetConversationId]
+        // Esc×2 intentionally bypasses the button's short lock so the
+        // existing keyboard interrupt remains immediate and lane-targeted.
+        void interruptForUser(targetConversationId).then(interrupted => {
+          if (!interrupted && turnId && runningTurnByConversationRef.current[targetConversationId] === turnId) {
+            toast(t('composer.stopFailed'), 'error')
+          }
+        })
         // User ESC×2 is deliberate: dismiss the question wizard entirely
         // (not just minimize). The auto-interrupt from presentTurnQuestions
-        // (line ~2251) does NOT go through this handler — that path must
-        // keep the wizard open for AskUserQuestion flow.
+        // does NOT go through this handler — that path must keep the wizard
+        // open for AskUserQuestion flow.
         clearQuestionPromptsForConversation(targetConversationId)
         return
       }
@@ -1788,9 +1915,15 @@ export function App() {
     const result = await window.verboo.listModels(forceRefresh)
     const deduped = { ...result, models: dedupModels(result.models) }
     setModelResult(deduped)
-    setSelectedModel(current => {
-      return resolveSelectedModel(deduped.models, current, userSettingsRef.current.lastSelectedModelId)
-    })
+    // The settings write stays OUT of the state updater (G-C5 rule): the
+    // updater recomputes the pure decision with the freshest `current`,
+    // while the ref-based decision only drives the migration persist.
+    const persistedModelId = userSettingsRef.current.lastSelectedModelId
+    const persistDecision = reconcileSelectedModel(deduped, selectedModelRef.current, persistedModelId)
+    setSelectedModel(current => reconcileSelectedModel(deduped, current, persistedModelId).modelId)
+    if (persistDecision.persistModelId && persistDecision.persistModelId !== persistedModelId) {
+      void updateUserSettings({ lastSelectedModelId: persistDecision.persistModelId })
+    }
     return deduped
   }
 
@@ -2077,16 +2210,22 @@ export function App() {
     return validateAccess(true)
   }
 
-  async function refreshProfile() {
+  const refreshProfile = useCallback(async () => {
+    const generation = ++profileRequestGenerationRef.current
     setProfileLoading(true)
     try {
-      setProfile(await window.verboo.getProfile())
+      const nextProfile = await window.verboo.getProfile()
+      if (profileRequestGenerationRef.current === generation) setProfile(nextProfile)
+    } catch (error) {
+      if (profileRequestGenerationRef.current === generation) {
+        setProfile({ status: 'error', error: invokeErrorText(error) })
+      }
     } finally {
-      setProfileLoading(false)
+      if (profileRequestGenerationRef.current === generation) setProfileLoading(false)
     }
-  }
+  }, [])
 
-  async function startCliLogin() {
+  async function startCliLogin(flowId?: number) {
     // A1: non-blocking — the Rust command spawns the CLI and returns in
     // <1s (suite Rust A1: 30s fake CLI, command returns immediately).
     // result.ok now means "spawned", NOT "authenticated", and
@@ -2096,10 +2235,12 @@ export function App() {
     // failure, and never unlock. Progress arrives via the login:event
     // channel (LoginScreen), and completion triggers the real
     // re-validation via onLoginComplete below.
-    return window.verboo.startCliLogin()
+    return window.verboo.startCliLogin(flowId)
   }
 
   async function logout() {
+    profileRequestGenerationRef.current += 1
+    setProfileLoading(false)
     setAuthChecking(true)
     try {
       const result = await window.verboo.logout()
@@ -2112,16 +2253,23 @@ export function App() {
       forgetRememberedAuthSession()
       setEntryUnlocked(false)
       setActiveView('chat')
-      setAuthError(result.ok ? undefined : t('login.logoutFailed'))
+      setAuthError(result.ok ? undefined : { kind: 'error', message: t('login.logoutFailed') })
     } finally {
       setAuthChecking(false)
     }
   }
 
-  async function validateAccess(forceRefresh: boolean, allowRememberedSession = userSettings.staySignedIn): Promise<boolean> {
+  async function validateAccess(
+    forceRefresh: boolean,
+    allowRememberedSession = userSettings.staySignedIn,
+    translate: Translator = createTranslator(userSettingsRef.current.language),
+  ): Promise<boolean> {
     setAuthChecking(true)
     setAuthError(undefined)
     setAuthErrorDetail(undefined)
+    const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
+    const profileRefreshStarted = entryUnlockedRef.current || Boolean(rememberedSession)
+    if (profileRefreshStarted) void refreshProfile()
 
     try {
       const [credentialStatus, cliStatus, modelDiscovery] = await Promise.all([
@@ -2135,28 +2283,31 @@ export function App() {
       setModelResult(dedupedDiscovery)
       // F4: provider auth is non-critical — fire-and-forget, never gates entry.
       void reloadProviderAuth()
-      setSelectedModel(current => {
-        return resolveSelectedModel(dedupedDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
-      })
+      const persistedModelId = userSettingsRef.current.lastSelectedModelId
+      const persistDecision = reconcileSelectedModel(dedupedDiscovery, selectedModelRef.current, persistedModelId)
+      setSelectedModel(current => reconcileSelectedModel(dedupedDiscovery, current, persistedModelId).modelId)
+      if (persistDecision.persistModelId && persistDecision.persistModelId !== persistedModelId) {
+        void updateUserSettings({ lastSelectedModelId: persistDecision.persistModelId })
+      }
 
       const unlocked = isVerifiedModelDiscovery(dedupedDiscovery)
       setEntryUnlocked(unlocked)
       if (unlocked) {
         writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, dedupedDiscovery)
-        await refreshProfile()
+        if (!profileRefreshStarted) void refreshProfile()
         return true
       }
 
-      const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
       if (rememberedSession && !isAuthoritativelySignedOut(credentialStatus, cliStatus)) {
         setEntryUnlocked(true)
-        setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
-        void refreshProfile()
+        setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
         return true
       }
 
+      profileRequestGenerationRef.current += 1
+      setProfileLoading(false)
       if (!allowRememberedSession) forgetRememberedAuthSession()
-      setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
+      setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, translate))
       return false
     } catch (error) {
       // T5: a rejected Rust command (Result<_, String> → Tauri invoke
@@ -2166,8 +2317,13 @@ export function App() {
       // Surface a friendly headline and stash the raw cause behind a
       // details toggle. Never re-throw: the caller (checkExistingAuth)
       // owns the status-message lifecycle.
-      setAuthError(t('login.sessionCheckFailed'))
-      setAuthErrorDetail(error instanceof Error ? error.message : String(error))
+      const text = invokeErrorText(error) ?? String(error)
+      const storeKey = credentialStoreI18nKey(text)
+      setAuthError({
+        kind: 'error',
+        message: storeKey ? translate(storeKey) : translate('login.sessionCheckFailed'),
+      })
+      setAuthErrorDetail(storeKey ? undefined : (error instanceof Error ? error.message : String(error)))
       return false
     } finally {
       setAuthChecking(false)
@@ -2545,7 +2701,7 @@ export function App() {
           // (same segment the model's own text would use); the turn header
           // + "Trabalhou" sit above it as a normal response. No second block,
           // no colored band. finishAssistantMessage closes the segment when
-          // the interrupt's error/done event lands (:2574 / :2771).
+          // the interrupt's error/done event lands.
           appendAssistantText(conversationId, event.turnId, quotaMessage)
           void interruptForUser(conversationId)
           setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
@@ -2932,7 +3088,9 @@ export function App() {
             // User-requested interruption: already renders as assistant (no
             // "Sistema" label, no badge — Transcript.tsx visualRole override).
             // Keep the system row; the T19 guard still suppresses its text
-            // when the body already carries a parseable API error.
+            // when the body already carries a parseable API error. Pending
+            // follow-ups have no transcript row yet, so the state-driven flush
+            // appends their user bubble only after this marker.
             appendConversationItem(conversationId, {
               id: `${event.turnId}:error`,
               role: 'system',
@@ -2940,6 +3098,7 @@ export function App() {
                 ? ''
                 : errorPresentation.text,
               errorDetail: errorPresentation.technicalDetail,
+              correlationId: errorPresentation.correlationId,
               presentation: 'interruption',
               timestamp: Date.now(),
             })
@@ -2973,7 +3132,12 @@ export function App() {
                 : rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
               appendAssistantText(conversationId, event.turnId, text)
             }
-            stampErrorDetailOnAssistantText(conversationId, event.turnId, errorPresentation.technicalDetail)
+            stampErrorDetailOnAssistantText(
+              conversationId,
+              event.turnId,
+              errorPresentation.technicalDetail,
+              errorPresentation.correlationId,
+            )
           }
         }
       }
@@ -3247,14 +3411,13 @@ export function App() {
       ? draftsForConversation(annotationDraftsRef.current, activeConversationId)
       : []
     if (!trimmed && pendingAnnotations.length === 0) return
-    if (sendMessageLock.current) return // already in flight
+    if (sendMessageLock.current) return
     sendMessageLock.current = true
     try {
     const conversationId = ensureActiveConversation()
     const selectedProvider = selectedModelInfo?.provider
     let turnAttachments = attachedFiles
 
-    // ── Vision fallback consent check ──
     const hasImages = turnAttachments.some(isVisualAttachment)
     const modelNeedsFallback = hasImages && !selectedModelInfo?.supportsVision
     if (modelNeedsFallback) {
@@ -3264,7 +3427,6 @@ export function App() {
         turnAttachments = turnAttachments.filter(file => !isVisualAttachment(file))
         filterAttachments(file => !isVisualAttachment(file))
       } else if (consent === 'ask') {
-        // Show consent modal — wait for user choice.
         const fbState: VisionFallbackState = await window.verboo.getVisionFallbackState()
         const choice = await new Promise<{ allowOnce: boolean } | { persist: VisionFallbackConsent }>(resolve => {
           visionFallbackResolveRef.current = resolve
@@ -3274,7 +3436,6 @@ export function App() {
         visionFallbackResolveRef.current = undefined
 
         if ('persist' in choice) {
-          // Persist the user's choice and apply it immediately.
           setUserSettings(current => {
             const next = { ...current, visionFallbackConsent: choice.persist }
             void window.verboo.updateUserSettings(next).catch(() => {})
@@ -3290,7 +3451,6 @@ export function App() {
       }
     }
 
-    // ── Video fallback consent check ──────────────────────────
     // The current truthful route sends sampled frames and a transcript made
     // locally from the audio. It never sends the original video file.
     const route: VideoUnderstandingRoute = 'sampledFramesWithTranscript'
@@ -3313,7 +3473,6 @@ export function App() {
     })
     if (videoSendBlocked) return
 
-    // ── OCR race gate ────────────────────────────────────────
     // Wait for pending OCR to finish (up to 15s) so images already in
     // the process don't go unread. Non-blocking for attachments that
     // haven't started OCR yet.
@@ -3328,7 +3487,6 @@ export function App() {
       ])
     }
 
-    // ── Skill approval gate ───────────────────────────────────
     if (selectedSkillsUnion.length) {
       const unapproved = await window.verboo.checkSkillApproval(selectedSkillsUnion)
       if (unapproved.length) {
@@ -3340,12 +3498,10 @@ export function App() {
         skillApprovalResolveRef.current = undefined
 
         if ('cancel' in choice) {
-          // Remove the unapproved skills from the selection and warn the user.
           const unapprovedIds = new Set(unapproved.map(s => s.id))
           setTokenSkills(current => current.filter(s => !unapprovedIds.has(s.id)))
           toast(t('skillApproval.skippedWarning'))
         } else if ('trust' in choice) {
-          // Persist trust and keep the skill for this turn.
           void window.verboo.approveSkill(choice.trust).catch(() => {})
           // Keep all selected skills — the backend already approved this one.
         }
@@ -3415,20 +3571,8 @@ export function App() {
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
-    setActiveView('chat')
-    stickToBottomRef.current = true
-    setShowJumpToLatest(false)
-    setPendingPermissionPrompts(current => {
-      const next = Object.fromEntries(Object.entries(current).filter(([, prompt]) => prompt.conversationId !== conversationId))
-      return Object.keys(next).length === Object.keys(current).length ? current : next
-    })
-
-    // F3: envio SÓ-anotação não cria bolha de usuário vazia — o registro do
-    // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
-    // confirmação; bolha vazia seria ruído sem conteúdo (o veto de produto a
-    // mensagem redundante segue valendo). Com texto, a bolha é a de sempre.
     if (trimmed) {
-      appendConversationItem(conversationId, {
+      queued.transcriptItem = {
         id: `user:${Date.now()}`,
         role: 'user',
         text: trimmed,
@@ -3437,8 +3581,15 @@ export function App() {
         // Persist a slim version of attachments — just path/name/kind — so the
         // transcript can render chips/thumbnails on reload without base64 bloat.
         attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
-      }, titleFromMessage(trimmed))
+      }
     }
+    setActiveView('chat')
+    stickToBottomRef.current = true
+    setShowJumpToLatest(false)
+    setPendingPermissionPrompts(current => {
+      const next = Object.fromEntries(Object.entries(current).filter(([, prompt]) => prompt.conversationId !== conversationId))
+      return Object.keys(next).length === Object.keys(current).length ? current : next
+    })
 
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
@@ -3446,6 +3597,7 @@ export function App() {
       return
     }
 
+    appendQueuedUserTranscriptItem(queued)
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
     // D-D item 2: reply-to-resume. The reply already landed in the
@@ -3498,6 +3650,56 @@ export function App() {
     const interrupted = await window.verboo.interrupt(conversationId).catch(() => false)
     if (!interrupted && turnId) userInterruptedTurnsRef.current.delete(turnId)
     return interrupted
+  }
+
+  async function stopConversationForUser(conversationId: string): Promise<void> {
+    // Capture the turn identity synchronously with the click. The lock is
+    // stop-only: Esc, automatic question interrupts and video cancel keep
+    // their existing interruptForUser behavior.
+    const turnId = runningTurnByConversationRef.current[conversationId]
+    if (!turnId || runningTurnByConversationRef.current[conversationId] !== turnId) return
+
+    const lockedTurnId = stopTurnLocksRef.current.get(conversationId)
+    if (lockedTurnId === turnId) return
+    if (lockedTurnId) {
+      const unlockTimer = stopTurnUnlockTimersRef.current.get(conversationId)
+      if (unlockTimer !== undefined) {
+        window.clearTimeout(unlockTimer)
+        stopTurnUnlockTimersRef.current.delete(conversationId)
+      }
+      stopTurnLocksRef.current.delete(conversationId)
+    }
+
+    stopTurnLocksRef.current.set(conversationId, turnId)
+    setStopLockedConversations(current => {
+      const next = new Set(current)
+      next.add(conversationId)
+      return next
+    })
+
+    try {
+      const interrupted = await interruptForUser(conversationId)
+      if (!interrupted && runningTurnByConversationRef.current[conversationId] === turnId) {
+        toast(t('composer.stopFailed'), 'error')
+      }
+    } finally {
+      // Product decision: stopping does not remove queued follow-ups. The
+      // short lock blocks repeats for the same turn and transient-idle submit;
+      // a click after A hands over to B is re-armed by the branch above.
+      if (stopTurnLocksRef.current.get(conversationId) !== turnId) return
+      const timer = window.setTimeout(() => {
+        stopTurnUnlockTimersRef.current.delete(conversationId)
+        if (stopTurnLocksRef.current.get(conversationId) !== turnId) return
+        stopTurnLocksRef.current.delete(conversationId)
+        setStopLockedConversations(current => {
+          if (!current.has(conversationId)) return current
+          const next = new Set(current)
+          next.delete(conversationId)
+          return next
+        })
+      }, STOP_BUTTON_RELEASE_DELAY_MS)
+      stopTurnUnlockTimersRef.current.set(conversationId, timer)
+    }
   }
 
   function clearPermissionPromptForTurn(turnId: string) {
@@ -3569,6 +3771,7 @@ export function App() {
       id: `queue:${crypto.randomUUID()}`,
       conversationId,
       message,
+      queueVisibility: 'visible',
       sideChat,
       turnModel,
       // applyAnnotations com lista vazia devolve a MESMA referência (a chave
@@ -3644,6 +3847,15 @@ export function App() {
     setQueuedFollowUpsList(current => [...current, item])
   }
 
+  function appendQueuedUserTranscriptItem(item: QueuedFollowUp) {
+    if (!item.transcriptItem) return
+    appendConversationItem(
+      item.conversationId,
+      { ...item.transcriptItem, timestamp: Date.now() },
+      titleFromMessage(item.transcriptItem.text),
+    )
+  }
+
   async function flushQueuedFollowUps() {
     if (queuedFollowUpsRef.current.length === 0) return
     const runningConversationIds = new Set(Object.keys(runningTurnByConversationRef.current))
@@ -3653,6 +3865,7 @@ export function App() {
     if (!next) return
     const rest = queuedFollowUpsRef.current.filter((_, index) => index !== nextIndex)
     setQueuedFollowUpsList(() => rest)
+    appendQueuedUserTranscriptItem(next)
     await runTurn(next)
   }
 
@@ -3661,16 +3874,14 @@ export function App() {
   // resumes with the new input as context. The model sees the interjection
   // in its history and can pivot or continue as it sees fit.
   async function interjectMessage(queueItemId: string) {
-    if (interjectDeferred.current) return // already interjecting
+    if (interjectDeferred.current) return
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
     const conversationId = item.conversationId
 
-    // Find the active turnId for this conversation
     const activeTurnEntry = Object.entries(turnConversationIds.current).find(([, convId]) => convId === conversationId)
     const currentTurnId = activeTurnEntry?.[0]
 
-    // Remove from queue
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
     updateConversation(conversationId, conversation => ({
       ...conversation,
@@ -3678,7 +3889,7 @@ export function App() {
     }))
 
     if (!currentTurnId) {
-      // No active turn for this conversation — just send normally
+      appendQueuedUserTranscriptItem(item)
       appendDowngradeActivity(conversationId)
       await runTurn(item)
       return
@@ -3700,7 +3911,7 @@ export function App() {
     }
     await interruptedTurn
 
-    // Now send the interjected message with the conversation's sessionId
+    appendQueuedUserTranscriptItem(item)
     appendDowngradeActivity(conversationId)
     await runTurn(item)
   }
@@ -3719,14 +3930,24 @@ export function App() {
       const target = idx + direction
       if (target < 0 || target >= current.length) return current
       const next = [...current]
-      // Swap elements in the queue array.
       ;[next[idx], next[target]] = [next[target], next[idx]]
       return next
     })
   }
 
   function editQueuedItem(queueItemId: string, newText: string) {
-    setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId ? { ...q, message: newText } : q))
+    setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId
+      ? {
+          ...q,
+          message: newText,
+          transcriptItem: q.transcriptItem ? { ...q.transcriptItem, text: newText } : undefined,
+          request: {
+            ...q.request,
+            message: newText,
+            responseLanguage: inferResponseLanguage(newText, conversationLanguageFallback(q.conversationId)),
+          },
+        }
+      : q))
   }
 
   // Edit a user's sent message: update the transcript text, remove all
@@ -3736,7 +3957,6 @@ export function App() {
     updateConversation(conversationId, conversation => {
       const idx = conversation.items.findIndex(i => i.id === itemId)
       if (idx === -1) return conversation
-      // Update the user message text.
       const items = conversation.items.map(i =>
         i.id === itemId ? { ...i, text: newText } : i
       )
@@ -3746,7 +3966,6 @@ export function App() {
       const kept = [...items.slice(0, idx + 1), ...items.slice(removeEnd)]
       return { ...conversation, items: kept, updatedAt: Date.now() }
     })
-    // Queue a new turn with the edited text.
     const queued = createQueuedFollowUp(conversationId, newText)
     enqueueFollowUp(queued)
   }
@@ -3930,6 +4149,10 @@ export function App() {
 
     const command = turnLastCommand.current[turnId] ?? extractCommandFromPermissionText(combined)
     const trusted = command ? findTrustedCommand(command, userSettingsRef.current) : undefined
+    // A latched turn must not restage its trusted prompt: later chunks of the
+    // same accumulated stdout re-match the request. Manual prompts (untrusted
+    // commands) are unaffected.
+    if (trusted && autoApprovalLatchedTurnIds.current.has(turnId)) return
 
     setPendingPermissionPrompts(current => {
       if (Object.values(current).some(prompt => prompt.turnId === turnId)) return current
@@ -3943,6 +4166,7 @@ export function App() {
       }
       return { ...current, [prompt.id]: prompt }
     })
+    if (trusted) autoApprovalLatchedTurnIds.current.add(turnId)
   }
 
   async function respondToPermissionPrompt(
@@ -3982,7 +4206,12 @@ export function App() {
       conversationLanguageFallback(prompt.conversationId),
     )
     const message = buildPermissionFollowUpMessage(prompt, decision, automatic, responseLanguage)
-    const followUp = createPermissionFollowUp(prompt.conversationId, message, responseLanguage)
+    const followUp = createPermissionFollowUp(
+      prompt.conversationId,
+      message,
+      responseLanguage,
+      automatic ? 'internal' : 'visible',
+    )
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
 
@@ -3994,7 +4223,12 @@ export function App() {
     await runTurn(followUp)
   }
 
-  function createPermissionFollowUp(conversationId: string, message: string, responseLanguage: LanguageCode): QueuedFollowUp {
+  function createPermissionFollowUp(
+    conversationId: string,
+    message: string,
+    responseLanguage: LanguageCode,
+    queueVisibility: QueuedFollowUp['queueVisibility'] = 'visible',
+  ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
@@ -4005,6 +4239,7 @@ export function App() {
       id: `queue:${crypto.randomUUID()}`,
       conversationId,
       message,
+      queueVisibility,
       turnModel,
       request: {
         conversationId,
@@ -4520,10 +4755,10 @@ export function App() {
         // G-C8-FIX item 4: the transcript sent to the evaluator must
         // be the OWNER's transcript, not the active conversation's.
         // conversationItemsRef.current tracks the active conversation
-        // (App.tsx:587, updated at :902) — using it here would feed
-        // the evaluator the wrong conversation when the user has
-        // switched away. We resolve the owner's items from the store
-        // ref directly. (See the parecer in the cycle report for why
+        // (updated at every store write) — using it here would feed the
+        // evaluator the wrong conversation when the user has switched
+        // away. We resolve the owner's items from the store ref directly.
+        // (See the parecer in the cycle report for why
         // this is the right call.)
         const ownerConversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
         const conversationItems = ownerConversation?.items ?? []
@@ -4948,7 +5183,12 @@ export function App() {
   async function attachFiles() {
     const batch = attachmentQueueRef.current.reserve()
     try {
-      const attachments = await window.verboo.pickFiles()
+      const attachments = await window.verboo.pickFiles({
+        title: t('dialogs.attachFilesTitle'),
+        imagesFilter: t('dialogs.imagesFilter'),
+        videosFilter: t('dialogs.videosFilter'),
+        allFilesFilter: t('dialogs.allFilesFilter'),
+      })
       completeAttachmentBatch(batch, attachments)
     } catch (error) {
       failAttachmentBatch(batch)
@@ -5180,13 +5420,13 @@ export function App() {
   }
 
   async function openProjectFolder() {
-    const path = await window.verboo.pickFolder()
+    const path = await window.verboo.pickFolder(t('dialogs.selectFolderTitle'))
     if (!path) return
     selectProjectPath(path)
   }
 
   async function createProjectFolder() {
-    const path = await window.verboo.createProjectFolder()
+    const path = await window.verboo.createProjectFolder(t('dialogs.createProjectParentTitle'))
     if (!path) return
     selectProjectPath(path)
   }
@@ -5666,17 +5906,24 @@ export function App() {
     }))
   }
 
-  /** T23: stamp errorDetail on the turn's open assistant text segment so the
+  /** T23: stamp technical diagnostics on the turn's open assistant text segment so the
    *  "Mostrar detalhes técnicos" toggle (TurnErrorDetails, Transcript.tsx:461)
    *  renders on the turn body — not a separate "Sistema" badge. No-op when
-   *  there is no open segment or no detail to attach. */
-  function stampErrorDetailOnAssistantText(conversationId: string, turnId: string, errorDetail: string | undefined) {
-    if (!errorDetail) return
+   *  there is no open segment or no diagnostic metadata to attach. */
+  function stampErrorDetailOnAssistantText(
+    conversationId: string,
+    turnId: string,
+    errorDetail: string | undefined,
+    correlationId: string | undefined,
+  ) {
+    if (!errorDetail && !correlationId) return
     const segId = turnOpenTextSegment.current[turnId]
     if (!segId) return
     updateConversation(conversationId, conversation => ({
       ...conversation,
-      items: conversation.items.map(item => item.id === segId ? { ...item, errorDetail } : item),
+      items: conversation.items.map(item => item.id === segId
+        ? { ...item, errorDetail, correlationId }
+        : item),
       updatedAt: Date.now(),
     }))
   }
@@ -5936,6 +6183,9 @@ export function App() {
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
+    // The latch dies with its siblings: a NEW logical turn (new turnId) may
+    // stage its own auto-approval; the Set must not grow for the whole session.
+    autoApprovalLatchedTurnIds.current.delete(turnId)
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -6138,19 +6388,17 @@ export function App() {
     browser.toggle()
   }, [browser, browserAvailable, simulator, terminal, review, clearMediaPreview, workspacePanelsEnabled])
 
-  const handleToggleSimulator = useCallback(() => {
+  const handleOpenSimulator = useCallback((platform: SimulatorPlatform) => {
     if (!simulatorAvailable || !workspacePanelsEnabled) return
-    if (simulator.simulatorOpen) {
-      simulator.close()
-      return
-    }
+    if (platform === 'ios' && config.platform !== 'darwin') return
     terminal.close()
     review.close()
     browser.close()
     clearMediaPreview()
     setSelectedSubagentId(undefined)
+    requestSimulatorPlatform(platform)
     simulator.open()
-  }, [browser, review, simulator, simulatorAvailable, terminal, clearMediaPreview, workspacePanelsEnabled])
+  }, [browser, clearMediaPreview, config.platform, requestSimulatorPlatform, review, simulator, simulatorAvailable, terminal, workspacePanelsEnabled])
 
   const handleOpenMediaPreview = useCallback((media: TranscriptMediaAttachment) => {
     if (!workspacePanelsEnabled) return
@@ -6344,9 +6592,13 @@ export function App() {
             // verified) — the event's status snapshot is just a fast
             // hint, never the unlock authority. authChecking shows the
             // "validating" progress on the login screen meanwhile.
+            // Two short retries cover a durable secret-tool/file write
+            // that is not readable on the first listModels.
             if (event.status) setCliAuth(event.status)
-            void validateAccess(true)
+            return retryValidateAccessUntilUnlocked(() => validateAccess(true))
           }}
+          cliBootstrap={loginCliBootstrap}
+          onCliBootstrapRetry={() => { void runCliBootstrap() }}
         />
         <FeedbackDialog
           open={feedbackOpen}
@@ -6378,7 +6630,8 @@ export function App() {
         simulatorAvailable={simulatorAvailable}
         simulatorOpen={visibleSimulatorOpen}
         recordingActive={simulator.recordingActive}
-        onToggleSimulator={handleToggleSimulator}
+        platform={config.platform}
+        onOpenSimulator={handleOpenSimulator}
         workspacePanelsEnabled={workspacePanelsEnabled}
       />
 
@@ -6432,7 +6685,6 @@ export function App() {
               peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
               onOpenSettings={() => {
-                setSettingsTab('security')
                 setActiveView('settings')
               }}
               onOpenSearch={() => setPaletteOpen(true)}
@@ -6573,6 +6825,7 @@ export function App() {
                 onPetToggle={togglePet}
                 onPetSizeChange={updatePetSize}
                 browserAvailable={browserAvailable}
+                platform={config.platform}
                 onOpenDashboard={() => window.verboo.openDashboard()}
                 onRefreshProfile={refreshProfile}
                 onManagePlan={() => window.verboo.openSubscriptions()}
@@ -6651,16 +6904,12 @@ export function App() {
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
-        {activeView === 'chat' && cliAgentActionsBlocked && (
+        {activeView === 'chat' && loginCliBootstrap.phase !== 'ready' && (
           <CliBootstrapGate
-            phase={cliBootstrapSuccessVisible
-              ? 'success'
-              : updateSnapshot?.status === 'error'
-                ? 'error'
-                : 'installing'}
-            stage={updateSnapshot?.bootstrapStage ?? 'cli'}
-            percent={updateSnapshot?.percent}
-            error={updateSnapshot?.error}
+            phase={loginCliBootstrap.phase}
+            stage={loginCliBootstrap.stage}
+            percent={loginCliBootstrap.percent}
+            error={loginCliBootstrap.error}
             onRetry={() => { void runCliBootstrap() }}
             onOpenSettings={() => {
               setSettingsTab('security')
@@ -6670,9 +6919,14 @@ export function App() {
         )}
         <SideChatSurface
           sideChat={sideChat}
-          busy={sideChat ? runningConversations.has(sideChat.conversation.id) : false}
+          busy={sideChat
+            ? runningConversations.has(sideChat.conversation.id) || stopLockedConversations.has(sideChat.conversation.id)
+            : false}
           disabled={cliAgentActionsBlocked}
           onSubmit={message => { void sendSideChatMessage(message) }}
+          onStop={() => {
+            if (sideChat) void stopConversationForUser(sideChat.conversation.id)
+          }}
           onClose={closeSideChat}
           onFocusConversation={() => {
             focusedConversationLaneRef.current = 'side'
@@ -6796,10 +7050,13 @@ export function App() {
       )}
       {simulatorAvailable && (
         <IosSimulatorPanel
+          platform={config.platform}
           simulatorOpen={visibleSimulatorOpen}
           simulatorWidth={effectiveBrowserWidth}
           onSetWidth={setBrowserWidth}
           onClose={simulator.close}
+          onAndroidOpenRequested={() => openSimulatorForAgent('android')}
+          platformRequest={simulatorPlatformRequest}
           requirements={simulator.requirements}
           requirementsLoading={simulator.requirementsLoading}
           attachedUdid={simulator.attachedUdid}
@@ -7045,8 +7302,11 @@ export function App() {
             onPasteFiles={attachPastedFiles}
             onRemoveAttachment={removeAttachment}
             onSubmit={sendMessage}
+            onStop={() => {
+              if (activeConversationId) void stopConversationForUser(activeConversationId)
+            }}
             onGoalCommand={handleGoalCommand}
-            queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId)}
+            queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId && item.queueVisibility !== 'internal')}
             onQueueSendNow={queueItemId => { void interjectMessage(queueItemId) }}
             onQueueEdit={editQueuedItem}
             onQueueRemove={removeQueuedItem}
@@ -7065,7 +7325,9 @@ export function App() {
             }
             value={composerValue}
             onValueChange={setComposerValue}
-            busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
+            busy={activeConversationId
+              ? runningConversations.has(activeConversationId) || stopLockedConversations.has(activeConversationId)
+              : false}
             leftToolbar={
               <AccessSelector
                 value={accessMode}
@@ -7324,15 +7586,19 @@ function isVerifiedModelDiscovery(result: ModelDiscoveryResult): boolean {
   return !result.stale && result.models.length > 0 && (result.source === 'cli' || result.source === 'api-key')
 }
 
-function authAccessMessage(modelError: string | undefined, cliError: string | undefined, t: Translator): string {
+function authAccessMessage(modelError: string | undefined, cliError: string | undefined, t: Translator): AuthErrorState {
   const error = modelError ?? cliError
   if (/401|expired token|invalid.*token/i.test(error ?? '')) {
-    return t('model.expired')
+    return { kind: 'error', message: t('model.expired') }
   }
   if (/network|fetch|timeout|tempo limite/i.test(error ?? '')) {
-    return t('model.networkError')
+    return { kind: 'error', message: t('model.networkError') }
   }
-  return t('login.sessionInvalid')
+  // PA-37g: the empty state is classified HERE, at the producer, with a
+  // stable kind — the login UI never pattern-matches the translated text
+  // (a language switch materializes the message in the old language and
+  // any text equality breaks, resurrecting the red banner on first load).
+  return { kind: 'no-session', message: t('login.sessionInvalid') }
 }
 
 function resolveSelectedModel(
@@ -7350,6 +7616,47 @@ function resolveSelectedModel(
   // The persisted choice gets the same protection at startup under a degraded
   // catalog. models[0] only when no explicit selection exists (first paint).
   return currentModelId ?? preferredModelId ?? models[0]?.id
+}
+
+/** Base of a model id: the segment after the last '/'. The leading prefix is
+ *  the account's PLAN namespace ("max/", "ultra/", … — an open set, new plans
+ *  keep appearing), so reconciliation must never name one; comparing bases is
+ *  the plan-agnostic way to match an old-generation id against the catalog. */
+function modelIdBase(id: string): string {
+  const slash = id.lastIndexOf('/')
+  return slash === -1 ? id : id.slice(slash + 1)
+}
+
+/** Issue #103: reconcile a RETAINED selection (one the catalog no longer
+ *  lists) against an AUTHORITATIVE catalog for the account's own provider.
+ *  Only verboo entries (no `provider` field) are candidates: provider
+ *  catalogs attach per refresh and degrade silently, so a missing provider
+ *  id proves nothing.
+ *
+ *  - exact match → keep (no reconciliation);
+ *  - exactly ONE verboo catalog id shares the id base → adopt that canonical
+ *    id (migration); the caller persists it;
+ *  - MORE THAN ONE plan carries the same base → ambiguous: never guess —
+ *    clear the selection (the user picks again) and persist nothing;
+ *  - ZERO candidates → the id may belong to a provider segment missing from
+ *    a silently degraded snapshot → retain.
+ *
+ *  Degraded snapshots (stale/cache/empty — isVerifiedModelDiscovery) NEVER
+ *  reconcile: the retention pinned by App.providerModelSelect.test.tsx stays
+ *  intact. */
+function reconcileSelectedModel(
+  result: ModelDiscoveryResult,
+  currentModelId: string | undefined,
+  preferredModelId: string | undefined,
+): { modelId: string | undefined; persistModelId?: string } {
+  const resolved = resolveSelectedModel(result.models, currentModelId, preferredModelId)
+  if (!resolved || !isVerifiedModelDiscovery(result)) return { modelId: resolved }
+  if (result.models.some(model => model.id === resolved)) return { modelId: resolved }
+  const base = modelIdBase(resolved)
+  const candidates = result.models.filter(model => !model.provider && modelIdBase(model.id) === base)
+  if (candidates.length === 1) return { modelId: candidates[0].id, persistModelId: candidates[0].id }
+  if (candidates.length > 1) return { modelId: undefined }
+  return { modelId: resolved }
 }
 
 /** The CLI emits `{"type":"system","subtype":"api_retry","attempt":N,

@@ -1115,18 +1115,27 @@
   color: var(--bg);
 }
 
-.cli-bootstrap-gate--installing .cli-bootstrap-state-icon svg {
+.cli-bootstrap-card--installing .cli-bootstrap-state-icon svg,
+.cli-bootstrap-card--checking .cli-bootstrap-state-icon svg {
   animation: cli-bootstrap-spin 900ms linear infinite;
 }
 
-.cli-bootstrap-gate--error .cli-bootstrap-state-icon {
+.cli-bootstrap-card--error .cli-bootstrap-state-icon {
   background: var(--danger);
   color: white;
 }
 
-.cli-bootstrap-gate--success .cli-bootstrap-state-icon {
+.cli-bootstrap-card--success .cli-bootstrap-state-icon {
   background: var(--green);
   color: var(--bg);
+}
+
+/* Embedded presentation on the login surface: the same card, sized into the
+   login panel instead of the fullscreen chat overlay. */
+.login-cli-bootstrap {
+  display: grid;
+  justify-items: center;
+  margin: 2px 0;
 }
 
 .cli-bootstrap-copy {
@@ -1211,7 +1220,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .cli-bootstrap-aura,
-  .cli-bootstrap-gate--installing .cli-bootstrap-state-icon svg {
+  .cli-bootstrap-card--installing .cli-bootstrap-state-icon svg,
+  .cli-bootstrap-card--checking .cli-bootstrap-state-icon svg {
     animation: none;
   }
 }

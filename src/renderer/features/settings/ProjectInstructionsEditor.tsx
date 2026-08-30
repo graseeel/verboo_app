@@ -66,7 +66,6 @@ export function ProjectInstructionsEditor({ workingDirectory }: ProjectInstructi
     }
   }, [workingDirectory, whichFile])
 
-  // Load (and reload) when the active project or file changes.
   useEffect(() => {
     void reload()
   }, [reload])

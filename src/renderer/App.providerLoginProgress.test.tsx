@@ -213,17 +213,14 @@ describe('App provider card — live progress during the login flow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Connect$/i }))
     await waitFor(() => expect(providerLoginStart).toHaveBeenCalledWith('codex'))
-    // Flow started, no event yet: "Connecting…" disabled + enabled Cancel.
     expect(await screen.findByRole('button', { name: /Connecting…/i })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: /^Cancel$/i })).toHaveProperty('disabled', false)
 
-    // The real event flips the card to "Waiting for browser…".
     fireLoginEvent({ provider: 'codex', state: 'awaiting_browser' })
     expect(await screen.findByRole('button', { name: /Waiting for browser…/i })).toHaveProperty('disabled', true)
 
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }))
     await waitFor(() => expect(providerLoginCancel).toHaveBeenCalledTimes(1))
-    // Card returns to the static disconnected state.
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toHaveProperty('disabled', false)
   })
 
@@ -261,6 +258,31 @@ describe('App provider card — live progress during the login flow', () => {
     expect(await screen.findByText(/Conclua o login no navegador/)).toBeInTheDocument()
     expect(screen.queryByText(/Finish signing in in the browser/)).toBeNull()
   })
+
+  it.each([
+    ['en-US', 'Settings', 'Providers', 'Could not confirm the provider login. Try again.'],
+    ['pt-BR', 'Configurações', 'Provedores', 'Não foi possível confirmar o login do provedor. Tente novamente.'],
+  ] as const)(
+    '%s locale: a stable confirmation failure renders localized copy, never the IPC code',
+    async (language, settingsLabel, providersLabel, expectedMessage) => {
+      settingsLanguage = language
+      render(<ToastProvider><App /></ToastProvider>)
+      fireEvent.click(await screen.findByRole('button', { name: /Ada/ }))
+      fireEvent.click(screen.getByRole('button', { name: settingsLabel }))
+      fireEvent.click(await screen.findByRole('button', { name: providersLabel }))
+      await screen.findByText('Codex')
+      await waitFor(() => expect(providerLoginForward).toBeDefined())
+
+      fireLoginEvent({
+        provider: 'codex',
+        state: 'error',
+        message: 'provider_login_confirmation_failed',
+      })
+
+      expect(await screen.findByText(expectedMessage)).toBeInTheDocument()
+      expect(screen.queryByText(/provider_login_confirmation_failed|provider_protocol_error/)).toBeNull()
+    },
+  )
 
   it('risk_notice keeps the card in progress; cancelling via the dialog returns it to Conectar', async () => {
     authList = [{ provider: 'claude', connected: false }]

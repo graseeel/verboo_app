@@ -3,6 +3,10 @@ import { getReleaseCopy, releaseTagUrl } from './releaseCatalog'
 
 describe('releaseCatalog', () => {
   it('returns approved copy in the active locale', () => {
+    expect(getReleaseCopy('0.8.0-beta', 'pt-BR')?.title).toBe(
+      'Verboo Code 0.8.0-beta — Simulador de Android e correção da tela preta no Linux',
+    )
+    expect(getReleaseCopy('0.8.0-beta', 'en-US')?.items).toHaveLength(5)
     expect(getReleaseCopy('0.7.3-beta', 'pt-BR')?.title).toBe(
       'Verboo Code 0.7.3-beta — login no Windows e onboarding do simulador',
     )

@@ -93,9 +93,7 @@ describe('GoalActivePanel — evaluator error message (G-C6-FIX-UI)', () => {
     })
     renderPanel(goal)
 
-    // Generic label still present.
     expect(screen.getByText(/Evaluator infrastructure error|infraError/i)).toBeTruthy()
-    // No detail line.
     expect(screen.queryByText(/Last error:/)).toBeNull()
   })
 
@@ -235,7 +233,6 @@ describe('GoalActivePanel — T5 batch edit lock (v1)', () => {
       name: 'Objective editing is disabled while a batch runs (v1)',
     })
     fireEvent.click(button)
-    // EFEITO: no edit textarea opens, no callback fires.
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(onEditObjective).not.toHaveBeenCalled()
   })

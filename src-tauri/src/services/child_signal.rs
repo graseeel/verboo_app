@@ -20,11 +20,6 @@ pub fn interrupt_child(child: &mut Child) -> Result<(), String> {
     {
         let pid = child.id() as i32;
         if pid > 0 {
-            // signal_process_tree tries the process GROUP first
-            // (`kill(-pid, SIGINT)`), then falls back to the direct
-            // child (`kill(pid, SIGINT)`) if the group signal failed
-            // (ESRCH — child not a group leader). See the helper's
-            // doc comment for the full rationale.
             if unsafe { signal_process_tree(pid, libc::SIGINT) } {
                 return Ok(());
             }
@@ -465,7 +460,7 @@ mod tests {
         let _ = flags;
     }
 
-    // ────── A2-FIX2 VARREDURA: every production spawn has creation_flags ──────
+    // A2-FIX2 VARREDURA: every production spawn has creation_flags
     //
     // This test FAILS when a future change adds a `Command::new(` (or
     // `TokioCommand::new(`, or `std::process::Command::new(`) in
@@ -519,6 +514,14 @@ mod tests {
         //
         // Order matters for stable diffs (alphabetical).
         const FILES_WITH_SPAWNS: &[&str] = &[
+            "src/services/android_emulator/media.rs",
+            "src/services/android_emulator/mod.rs",
+            "src/services/android_emulator/requirements.rs",
+            "src/services/android_emulator/session.rs",
+            "src/services/android_emulator/session/boot.rs",
+            "src/services/android_emulator/sdk.rs",
+            "src/services/android_emulator/setup.rs",
+            "src/services/android_emulator_mcp.rs",
             "src/services/auth_token.rs",
             "src/services/chrome_integration/cli_mcp.rs",
             "src/services/chrome_integration/installer.rs",
@@ -537,6 +540,7 @@ mod tests {
             "src/services/provider_accounts.rs",
             "src/services/provider_catalog.rs",
             "src/services/research_subagent_runner.rs",
+            "src/services/terminal_service.rs",
             "src/services/turn_service.rs",
             "src/services/video/prepare.rs",
             "src/services/video/probe.rs",
@@ -561,7 +565,7 @@ mod tests {
             ),
         ];
 
-        // ── ETAPA 1: COMPLETUDE ──
+        // ETAPA 1: COMPLETUDE
         //
         // A2-FIX3 (2026-07-29): a lista FILES_WITH_SPAWNS era mantida
         // à mão. Se alguém adicionasse `Command::new` num arquivo NOVO
@@ -620,8 +624,14 @@ mod tests {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
+                    if path.file_name().and_then(|n| n.to_str()) == Some("tests") {
+                        continue;
+                    }
                     collect_rs_files(&path, out);
                 } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if path.file_stem().and_then(|n| n.to_str()) == Some("tests") {
+                        continue;
+                    }
                     out.push(path);
                 }
             }
@@ -669,7 +679,7 @@ mod tests {
             );
         }
 
-        // ── ETAPA 2: VARREDURA POR ARQUIVO ──
+        // ETAPA 2: VARREDURA POR ARQUIVO
         for path in FILES_WITH_SPAWNS {
             let full_src = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("varredura: could not read {path}: {e}"));
@@ -695,7 +705,6 @@ mod tests {
                 None => &full_src[..],
             };
 
-            // Check if file is exempt.
             let exempt_reason = EXEMPT
                 .iter()
                 .find(|(p, _)| p == path)

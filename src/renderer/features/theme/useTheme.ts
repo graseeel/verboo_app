@@ -24,7 +24,6 @@ export function useTheme() {
   const [theme, setThemeState] = useState<ThemeMode>(readTheme)
   const [resolved, setResolved] = useState<'dark' | 'light'>(() => resolveTheme(readTheme()))
 
-  // Apply the resolved theme to the DOM + persist the preference.
   useEffect(() => {
     document.documentElement.dataset.theme = resolved
   }, [resolved])

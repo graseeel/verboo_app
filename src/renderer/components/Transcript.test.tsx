@@ -55,7 +55,6 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
     expect(recap).toBeTruthy()
     expect(recap?.textContent).toContain('I fixed the bug by correcting the type annotation.')
 
-    // Click the expand button
     const collapseBtn = container.querySelector('.turn-collapsed')
     expect(collapseBtn).toBeTruthy()
     fireEvent.click(collapseBtn!)
@@ -74,7 +73,6 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
       },
     ]
     const { container } = render(<Transcript items={items} />)
-    // Text-only turns still show the recap (the "static" span variant)
     expect(container.querySelector('.turn-recap')).toBeTruthy()
   })
 
@@ -241,6 +239,42 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
     expect(container).toHaveTextContent(rawDiagnostic)
   })
 
+  it('shows the event correlation id inside the expandable technical details', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-correlated:error',
+          role: 'system',
+          text: 'Could not complete the turn.',
+          errorDetail: '(exit=1, runtime=bundled-node)',
+          correlationId: 'turn-correlated-109',
+          timestamp: 0,
+        }]}
+      />,
+    )
+
+    const details = container.querySelector('details.turn-error-details') as HTMLDetailsElement
+    expect(details).toHaveTextContent('transcript.correlationId')
+    expect(details).toHaveTextContent('turn-correlated-109')
+  })
+
+  it('does not show a correlation row when the error event has no correlation id', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-legacy:error',
+          role: 'system',
+          text: 'Could not complete the turn.',
+          errorDetail: '(exit=1, runtime=bundled-node)',
+          timestamp: 0,
+        }]}
+      />,
+    )
+
+    const details = container.querySelector('details.turn-error-details') as HTMLDetailsElement
+    expect(details).not.toHaveTextContent('transcript.correlationId')
+  })
+
   it('renders an interruption with the assistant treatment while keeping a real failure highlighted', () => {
     const interruptionText = 'Turn interrupted by the user.'
     const failureText = '(signal, runtime=bundled-node, cwd=/project)'
@@ -277,7 +311,6 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
   })
 })
 
-// --- Vazamento de </think> cru no transcript ----------------------------------
 // Insumos: as CINCO formas medidas pelo Maestro no histórico persistido real
 // (verboo:chat-store:v1, 36 ocorrências), verbatim. Alegação vale pelo insumo.
 describe('</think> vazado — limpeza na exibição (função pura)', () => {
@@ -575,8 +608,6 @@ describe('F3 (N3) — annotation turn card reaches the DOM', () => {
   })
 
   it('OLD-APP STORE: an item with a FUTURE unknown kind degrades to a normal bubble (never breaks, never invisible)', () => {
-    // Simulates an old build opening a store written by a newer one: the kind
-    // is unknown, so the generic message path renders the readable text.
     const future = {
       id: 'future:1',
       role: 'user',
@@ -746,7 +777,6 @@ describe('T7: a linha de Sistema nunca é verde — erro usa a linguagem de erro
     )
     const article = container.querySelector('article.message-row.system')!
     expect(article, 'system row must render').toBeTruthy()
-    // A variante de erro (não verde) é disparada por is-turn-error.
     expect(article).toHaveClass('is-turn-error')
     expect(article).toHaveClass('system')
   })
@@ -778,12 +808,10 @@ describe('T7: a linha de Sistema nunca é verde — erro usa a linguagem de erro
     const here = dirname(fileURLToPath(import.meta.url))
     const css = readFileSync(resolve(here, '../styles/surfaces.css'), 'utf8')
 
-    // Base rule: .message-row.system { ... } (NOT .is-turn-error)
     const baseMatch = css.match(/\.message-row\.system\s*\{([^}]*)\}/)
     expect(baseMatch, '.message-row.system base rule must exist').toBeTruthy()
     expect(baseMatch![1], 'base .message-row.system must not paint green (field photo)').not.toMatch(/--green/)
 
-    // T23: the .is-turn-error variant must NOT exist — the colored band is gone.
     const errorMatch = css.match(/\.message-row\.system\.is-turn-error\s*\{([^}]*)\}/)
     expect(errorMatch, '.message-row.system.is-turn-error must be removed (T23: no colored badge)').toBeNull()
   })

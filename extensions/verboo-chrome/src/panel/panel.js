@@ -47,7 +47,6 @@ import { stripUntrustedBrowserBoundaryForDisplay } from '../agent/untrustedConte
 import { matchSlashQuery, parseSlashInvocation } from '../routines/slashCommands.js'
 import { MAX_AGENT_TURN_MS } from '../agent/turnBudget.js'
 
-// ── i18n ────────────────────────────────────────────────────────
 import EN_US from '../i18n/en-US.js'
 import PT_BR from '../i18n/pt-BR.js'
 
@@ -91,7 +90,6 @@ function applyI18n(root) {
   }
 }
 
-// ── Auth (login-first gate) ───────────────────────────────────────
 
 /**
  * Session is active when accessToken is present and not expired.
@@ -166,9 +164,6 @@ function showLoginError(message) {
   }
 }
 
-/**
- * @param {boolean} loading
- */
 function setLoginLoading(loading) {
   const btn = document.getElementById('login-submit')
   if (!btn) return
@@ -212,7 +207,6 @@ function sendMessage(message) {
   })
 }
 
-// ── Model picker ─────────────────────────────────────────────────
 
 /** @type {Array<{ id: string, name?: string, displayName?: string, supportsVision?: boolean, description?: string, provider?: string }>} */
 let availableModels = []
@@ -457,7 +451,7 @@ async function hydrateAuthFromBackground() {
   }
 }
 
-// ── Mode selector (inline chip next to composer) ────────────────
+// Mode selector — inline chip rendered next to the composer.
 
 async function initModes() {
   const mode = await loadMode()
@@ -472,7 +466,6 @@ async function initModes() {
   }
 }
 
-// ── Routines and slash commands ─────────────────────────────────
 
 /** @type {Array<Record<string, any>>} */
 let routines = []
@@ -816,8 +809,6 @@ async function initRoutines() {
   if (recordingResponse?.ok) renderRecordingState(recordingResponse.state)
 }
 
-// ── Chat transcript ──────────────────────────────────────────────
-//
 // Verboo activity model (one current action + optional compact details):
 //   - user bubble
 //   - [Working…] header (pulse) while the turn is in flight
@@ -1143,7 +1134,6 @@ function riskLabel(risk) {
 }
 
 function toolNameLabel(name) {
-  // i18n lookup with fallback to the raw tool name.
   const key = `tool_name_${name}`
   const bundle = pickLocaleBundle()
   return bundle[key]?.message ?? EN_US[key]?.message ?? name
@@ -1156,7 +1146,6 @@ function renderToolCard(toolCall, policyDecision) {
   card.dataset.toolCallId = toolCall.id
   card.dataset.state = policyDecision?.needsApproval ? 'awaiting' : (policyDecision?.reason === 'hard_block' || policyDecision?.reason === 'site_denied' ? 'denied' : 'info')
 
-  // Header: tool name + risk badge
   const header = document.createElement('div')
   header.className = 'tool-card-header'
   const name = document.createElement('span')
@@ -1168,13 +1157,11 @@ function renderToolCard(toolCall, policyDecision) {
   header.append(name, badge)
   card.appendChild(header)
 
-  // Params
   const params = document.createElement('div')
   params.className = 'tool-card-params'
   params.textContent = formatParams(toolCall)
   card.appendChild(params)
 
-  // Reasoning (if any)
   if (toolCall.reasoning) {
     const reasoning = document.createElement('div')
     reasoning.className = 'tool-card-reasoning'
@@ -1182,7 +1169,6 @@ function renderToolCard(toolCall, policyDecision) {
     card.appendChild(reasoning)
   }
 
-  // Policy reason
   if (policyDecision?.reason) {
     const reason = document.createElement('div')
     reason.className = 'tool-card-policy'
@@ -1191,7 +1177,6 @@ function renderToolCard(toolCall, policyDecision) {
     card.appendChild(reason)
   }
 
-  // Approval actions (only when needsApproval)
   if (policyDecision?.needsApproval) {
     const actions = document.createElement('div')
     actions.className = 'tool-card-actions'
@@ -1277,7 +1262,6 @@ function markToolExecuting(toolCallId, toolName) {
   if (!card) return
   card.dataset.state = 'executing'
 
-  // Replace actions with executing indicator
   const actions = card.querySelector('.tool-card-actions')
   if (actions) actions.remove()
 
@@ -1320,7 +1304,6 @@ function renderToolResult(toolResult) {
 function closeApprovalCard(toolCallId, decision) {
   const card = toolCards.get(toolCallId)
   if (!card) return
-  // If still awaiting (user responded), remove action buttons
   const actions = card.querySelector('.tool-card-actions')
   if (actions) {
     const note = document.createElement('div')
@@ -1330,7 +1313,6 @@ function closeApprovalCard(toolCallId, decision) {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
 
 function formatParams(toolCall) {
   const p = toolCall.params
@@ -1484,7 +1466,6 @@ function policyReasonLabel(decision) {
   }
 }
 
-// ── Chat send ────────────────────────────────────────────────────
 
 /** True while an agent turn is in flight (disables the send button). */
 let turnInFlight = false
@@ -1667,7 +1648,6 @@ function resizeChatInput(input) {
   input.dataset.overflow = scrollHeight > CHAT_INPUT_MAX_HEIGHT ? 'true' : 'false'
 }
 
-// ── Workspace tab indicator ──────────────────────────────────────
 // The agent acts on a dedicated, unfocused workspace tab. This chip tells the
 // user which tab that is; focusing it only ever happens on an explicit click.
 
@@ -1896,7 +1876,6 @@ function initChat() {
     await ensureConversationHydrated()
     const text = input.value.trim()
     if (!text) return
-    // Ignore double-submit while a turn is already running.
     if (turnInFlight) return
 
     const slashInvocation = parseSlashInvocation(text)
@@ -1970,7 +1949,6 @@ function initChat() {
   })
 }
 
-// ── Agent event listener ─────────────────────────────────────────
 
 function handleToolRequest(message) {
   if (!message.toolCall?.id) return
@@ -2163,7 +2141,6 @@ function openPrivacy() {
   void chrome.tabs.create({ url: chrome.runtime.getURL('privacy.html') })
 }
 
-// ── Init ─────────────────────────────────────────────────────────
 
 function resolveBrandAssets() {
   // Extension-root paths so mascot/icons resolve regardless of panel nesting.

@@ -7,7 +7,7 @@ const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), '../..')
 
 export function sidecarFilename(binaryName, targetTriple, platform = process.platform) {
-  if (!['verboo-in-chrome', 'verboo-ios-simulator'].includes(binaryName)) {
+  if (!['verboo-in-chrome', 'verboo-ios-simulator', 'verboo-android-emulator'].includes(binaryName)) {
     throw new Error(`Invalid sidecar binary name: ${binaryName || '<empty>'}`)
   }
   if (
@@ -58,7 +58,7 @@ export async function buildChromeHelper({
   const destinationDirectory = path.join(repositoryRoot, 'src-tauri/binaries')
   await mkdir(destinationDirectory, { recursive: true })
   const destinations = []
-  for (const binaryName of ['verboo-in-chrome', 'verboo-ios-simulator']) {
+  for (const binaryName of ['verboo-in-chrome', 'verboo-ios-simulator', 'verboo-android-emulator']) {
     const executable = platform === 'win32' || targetTriple.includes('windows')
       ? `${binaryName}.exe`
       : binaryName

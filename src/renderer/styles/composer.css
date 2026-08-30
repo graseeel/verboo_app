@@ -869,6 +869,14 @@
   background: color-mix(in srgb, var(--accent-strong) 88%, white);
 }
 
+.send-button.is-stop {
+  background: var(--danger);
+}
+
+.send-button.is-stop:hover {
+  background: color-mix(in srgb, var(--danger) 88%, white);
+}
+
 .send-button:disabled {
   /* Keep the purple ball visible even when disabled (empty composer). Earlier
      login.css overrode `.send-button:disabled` with `background: transparent;

@@ -22,30 +22,32 @@ use tauri::{Emitter, Manager};
 // RECORDING_STOP_TIMEOUT (8 s); WDA graceful escalation is bounded by
 // WDA_SIGINT_GRACE_PERIOD (5 s) plus WDA_SIGTERM_GRACE_PERIOD (2 s), leaving
 // 1 s of margin when no recording consumes it.
-// Recording and the cumulative shutdown pass over N ledger-owned UDIDs share
-// this same absolute deadline, so their worst-case maxima are not additive. N
-// is runtime ledger data, never a hardcoded owner/device count; remeasure the
-// end-to-end envelope before changing this value.
-#[cfg(target_os = "macos")]
-const IOS_SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+// iOS and Android cleanup share one absolute deadline, so their worst-case
+// maxima are not additive. The process owner (cli.mjs) controls the outer
+// shutdown window and prefers a fast bounded exit to perfect cleanup.
+const SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
 
-#[cfg(target_os = "macos")]
-fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
-    let deadline = std::time::Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
-    let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+fn stop_simulators_for_app_exit(app_handle: &tauri::AppHandle) {
+    let deadline = std::time::Instant::now() + SIMULATOR_CLEANUP_BUDGET;
+
+    #[cfg(target_os = "macos")]
+    {
+        let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+        service.begin_exit();
+        app_handle
+            .state::<services::ios_simulator::IosSimulatorBridge>()
+            .stop();
+        let _ = service.stop_for_app_exit(deadline);
+    }
+
+    let service = app_handle.state::<services::android_emulator::AndroidEmulatorService>();
     service.begin_exit();
     app_handle
-        .state::<services::ios_simulator::IosSimulatorBridge>()
+        .state::<services::android_emulator_bridge::AndroidEmulatorBridge>()
         .stop();
     let _ = service.stop_for_app_exit(deadline);
 }
 
-#[cfg(not(target_os = "macos"))]
-fn stop_ios_simulator_for_app_exit(_app_handle: &tauri::AppHandle) {}
-
-// ════════════════════════════════════════════════════════════════════
-// AppState — will be fleshed out in later phases
-// ════════════════════════════════════════════════════════════════════
 
 struct AppState {
     config: Mutex<AppConfig>,
@@ -60,7 +62,6 @@ impl AppState {
     }
 }
 
-// ── Helper wrapper for evaluate_goal return type ────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,9 +91,6 @@ impl From<crate::services::goal_evaluator::EvaluationResult> for EvaluationResul
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Config
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn get_config(
@@ -100,23 +98,20 @@ fn get_config(
     settings_store: tauri::State<'_, SettingsStore>,
 ) -> Result<AppConfig, String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
-    // Refresh access_mode from persisted settings (matches Electron's
-    // `accessMode: (await userSettings.getSettings()).defaultAccessMode`).
+    // Matches Electron's `accessMode: (await userSettings.getSettings()).defaultAccessMode`.
     let settings = settings_store.get()?;
     config.access_mode = settings.default_access_mode.clone();
     Ok(config.clone())
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Auth
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn start_cli_login(
     app: tauri::AppHandle,
     cli: tauri::State<'_, CliService>,
+    flow_id: Option<u64>,
 ) -> Result<LoginResult, String> {
-    cli.start_cli_login_nonblocking(app)
+    cli.start_cli_login_nonblocking(app, flow_id)
 }
 
 #[tauri::command]
@@ -187,9 +182,6 @@ fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> 
         .map_err(|e| format!("Falha ao abrir URL: {e}"))
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Verboo in Chrome
-// ════════════════════════════════════════════════════════════════════
 
 // These operations read manifests and spawn helper/CLI processes; on the
 // Tauri main thread they beachball the whole UI, so every command hops to
@@ -220,7 +212,9 @@ async fn chrome_integration_configure(
     request: ChromeIntegrationRequest,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, move |service| service.configure(request)).await
+    let result = with_chrome_service(service, move |service| service.configure(request)).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
@@ -228,21 +222,40 @@ async fn chrome_integration_repair(
     request: ChromeIntegrationRequest,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, move |service| service.repair(request)).await
+    let result = with_chrome_service(service, move |service| service.repair(request)).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
 async fn chrome_integration_test(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeConnectionTestResult, String> {
-    with_chrome_service(service, |service| service.test_connection()).await
+    let result = with_chrome_service(service, |service| service.test_connection()).await;
+    match &result {
+        Ok(test) => {
+            if let Some(code) = test.error_code.as_deref() {
+                services::diagnostic_log::emit_error(
+                    "chrome",
+                    code,
+                    code,
+                    None,
+                    serde_json::json!({}),
+                );
+            }
+        }
+        Err(error) => log_chrome_err(error),
+    }
+    result
 }
 
 #[tauri::command]
 async fn chrome_integration_remove(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    with_chrome_service(service, |service| service.remove()).await
+    let result = with_chrome_service(service, |service| service.remove()).await;
+    log_chrome_status(&result);
+    result
 }
 
 #[tauri::command]
@@ -250,13 +263,42 @@ fn open_chrome_extension_store(
     app: tauri::AppHandle,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
-    let url = service.store_url().ok_or("chrome_store_url_missing")?;
+    let url = match service.store_url() {
+        Some(url) => url,
+        None => {
+            log_chrome_err("chrome_store_url_missing");
+            return Err("chrome_store_url_missing".into());
+        }
+    };
     open_external_url(&app, url)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Credentials
-// ════════════════════════════════════════════════════════════════════
+
+fn log_chrome_status(result: &Result<ChromeIntegrationStatus, String>) {
+    match result {
+        Ok(status) => {
+            if let Some(code) = status.error_code.as_deref() {
+                services::diagnostic_log::emit_error(
+                    "chrome",
+                    code,
+                    code,
+                    None,
+                    serde_json::json!({}),
+                );
+            }
+        }
+        Err(error) => log_chrome_err(error),
+    }
+}
+
+fn log_chrome_err(error: &str) {
+    let code = if error.starts_with("chrome_") || error == "multiple_browser_sessions" {
+        error
+    } else {
+        "chrome_integration_unknown_error"
+    };
+    services::diagnostic_log::emit_error("chrome", code, error, None, serde_json::json!({}));
+}
 
 #[tauri::command]
 fn get_credential_status(
@@ -280,9 +322,6 @@ fn clear_api_key(
     credentials.clear_api_key()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Models
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn list_models(
@@ -305,39 +344,34 @@ async fn list_models(
     result
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Profile
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn get_profile(
     _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ProfileResult, String> {
-    // Resolve the bearer token (CLI OAuth first, API key fallback) on a
-    // blocking thread — the CLI token read may hit the keychain, and the
-    // refresh may POST to /oauth/token. The `_credentials` parameter
+    // Resolve the account credential on a blocking thread — the CLI OAuth
+    // read may hit the keychain, and refresh may POST to /oauth/token. An
+    // inference-only API key remains a typed state and never becomes the
+    // bearer for `/api/me*`. The `_credentials` parameter
     // is unused at runtime (we instantiate a fresh `CredentialsStore`
     // inside the spawned task so it can cross the await boundary), but
     // we still declare it so Tauri's command resolver continues to find
     // the dependency in the state graph.
     let credentials_clone = CredentialsStore::new();
-    let token = tokio::task::spawn_blocking(move || {
-        crate::services::auth_token::resolve_token(&credentials_clone)
+    let credential = tokio::task::spawn_blocking(move || {
+        crate::services::auth_token::resolve_account_credential(&credentials_clone)
     })
     .await
     .map_err(|e| format!("Falha ao resolver token: {e}"))?;
     let svc = ProfileService::new();
     // Run the HTTP fetches on a blocking thread — reqwest::blocking panics
     // if called from an async runtime.
-    let result = tokio::task::spawn_blocking(move || svc.get_profile(token.as_deref()))
+    let result = tokio::task::spawn_blocking(move || svc.get_profile(credential))
         .await
         .map_err(|e| format!("Falha ao carregar perfil: {e}"))?;
     Ok(result)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Feedback
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn send_feedback(
@@ -367,9 +401,6 @@ fn send_feedback(
     )
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Settings
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn get_user_settings(store: tauri::State<'_, SettingsStore>) -> Result<UserSettings, String> {
@@ -423,7 +454,6 @@ async fn get_vision_fallback_state(
         serde_json::to_value(&settings.vision_fallback_consent).map_err(|e| e.to_string())?;
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
-    // Run the blocking model list fetch on a background thread.
     let app_data_dir_clone = app_data_dir.clone();
     let helper_preview = tauri::async_runtime::spawn_blocking(move || {
         let model_service = crate::services::model_service::ModelService::new(app_data_dir_clone);
@@ -489,9 +519,6 @@ fn apply_runtime_settings(
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Menu bar
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn update_menu_bar(
@@ -572,9 +599,6 @@ fn render_mascot_frames() -> Vec<tauri::image::Image<'static>> {
         .collect()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Skills
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn list_skills(working_directory: String) -> Result<Vec<SkillSummary>, String> {
@@ -587,6 +611,32 @@ fn list_skills(working_directory: String) -> Result<Vec<SkillSummary>, String> {
 fn open_user_skills_folder() -> Result<String, String> {
     let path = crate::services::skills_service::SkillsService::open_user_skills_folder()?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_diagnostic_logs_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = services::diagnostic_log::resolve_log_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("Falha ao criar pasta de logs: {error}"))?;
+    let path = dir.to_string_lossy().to_string();
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|error| format!("Falha ao abrir pasta de logs: {error}"))?;
+    Ok(path)
+}
+
+#[tauri::command]
+fn diagnostic_log_status() -> services::diagnostic_log::DiagnosticLogStatus {
+    services::diagnostic_log::status()
+}
+
+#[tauri::command]
+fn diagnostic_package(max_lines: Option<u32>) -> Result<String, String> {
+    services::diagnostic_log::diagnostic_package(
+        max_lines
+            .map(|n| n as usize)
+            .unwrap_or(services::diagnostic_log::DEFAULT_PACKAGE_LINES),
+    )
 }
 
 /// Returns the untrusted skills (from a list) that need approval before
@@ -650,7 +700,6 @@ fn fire_completion_notification(
     use tauri_plugin_notification::NotificationExt;
 
     let settings = store.get()?;
-    // Check if the main window is focused.
     let window_focused = app
         .get_webview_window("main")
         .map(|w| w.is_focused().unwrap_or(false))
@@ -661,8 +710,6 @@ fn fire_completion_notification(
         settings.completion_notifications
     );
 
-    // If the conversation is active AND the window is focused, don't notify
-    // — the user is already looking at it.
     if is_active_conversation && window_focused {
         eprintln!("[verboo:notification] skipping: user is looking at this conversation");
         return Ok(false);
@@ -728,9 +775,6 @@ fn get_default_working_directory() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-// ════════════════════════════════════════════════════════════════════
-// @-mention file listing (quick-win #1)
-// ════════════════════════════════════════════════════════════════════
 
 /// Lists files in `working_directory` for `@`-mention autocomplete.
 ///
@@ -753,9 +797,6 @@ async fn list_workspace_files(working_directory: String) -> Result<Vec<String>, 
     .map_err(|e| format!("Falha ao listar arquivos do workspace: {e}"))?
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Project instruction files (QW2)
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn list_project_instruction_files(
@@ -807,9 +848,6 @@ fn get_bundled_cli_version() -> String {
     crate::services::cli_spawn::bundled_cli_version().unwrap_or_else(|| "unknown".to_string())
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Workspace
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn get_workspace_changes(working_directory: String) -> Result<WorkspaceChangeSummary, String> {
@@ -883,9 +921,6 @@ async fn push_workspace_changes(working_directory: String) -> Result<WorkspacePu
     .map_err(|e| format!("Falha ao fazer push: {e}"))
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Stale file detector (Multichat Fase A)
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn record_file_read(
@@ -981,9 +1016,6 @@ fn open_external_file(
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Goal
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn evaluate_goal(
@@ -994,44 +1026,36 @@ fn evaluate_goal(
     let result = crate::services::goal_evaluator::GoalEvaluator::evaluate(input, token.as_deref());
     match result {
         Ok(r) => Ok(r.into()),
-        // 2026-07-31 field fix: propagate the Err to the FE instead of
-        // fabricating a Pause+InfraError envelope. The previous behavior
-        // bypassed the scheduler's retry mesh (1s/2s/4s/8s backoff in
-        // goalScheduler.ts) by returning Ok — the FE caught the
-        // reasonId=infraError and paused IMMEDIATELY on the first parse
-        // failure, never giving the unwrap retry a chance. The contract
-        // documented at goalScheduler.ts:111-117 ("Callers must NOT
-        // swallow errors into a fake continue decision") was already
-        // explicit on the FE side; this side was the violator.
-        //
-        // Propagating Err lets the scheduler count consecutive failures
-        // (catch at line 557), retry with backoff, and pause at the 3rd
-        // consecutive failure with the message visible in the panel.
-        // The Err message includes the first 500 chars of the raw CLI
-        // output (truncated at extract_evaluation_json) so operators can
-        // diagnose intermittent fence-wrapped outputs.
+        // Propagate the Err instead of wrapping it in an Ok envelope:
+        // goalScheduler.ts retries with backoff and pauses only on
+        // consecutive Errs (contract at goalScheduler.ts:111-117); an Ok
+        // Pause+InfraError envelope bypasses that mesh and pauses instantly.
         Err(e) => Err(e.to_string()),
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Files
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn pick_files(
     app: tauri::AppHandle,
+    title: String,
+    images_filter: String,
+    videos_filter: String,
+    all_files_filter: String,
 ) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
     use tauri_plugin_dialog::DialogExt;
     let paths = app
         .dialog()
         .file()
+        // macOS renders this as the NSOpenPanel message because its title bar is not
+        // configurable; Linux and Windows render it as the dialog title.
+        .set_title(title)
         .add_filter(
-            "Images",
+            images_filter,
             &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"],
         )
-        .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
-        .add_filter("All files", &["*"])
+        .add_filter(videos_filter, &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
+        .add_filter(all_files_filter, &["*"])
         .blocking_pick_files();
     let paths = paths.unwrap_or_default();
     let path_strings: Vec<String> = paths
@@ -1122,19 +1146,16 @@ fn inspect_pasted_image(
 ) -> Result<Vec<AttachmentMeta>, String> {
     use base64::Engine;
 
-    // Decode base64. Reject if invalid.
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64.trim())
         .map_err(|e| format!("invalid base64: {e}"))?;
 
-    // Resolve app_data_dir for the temp file.
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolve app_data_dir: {e}"))?;
     let pasted_dir = app_data_dir.join("pasted_images");
 
-    // Delegate to the testable core function.
     let meta =
         services::file_service::write_pasted_image_and_inspect(&bytes, &filename, &pasted_dir)?;
     Ok(vec![meta])
@@ -1154,29 +1175,26 @@ fn inspect_pasted_image(
 fn save_avatar_blob(base64: String, mime: String, app: tauri::AppHandle) -> Result<String, String> {
     use base64::Engine;
 
-    // Decode base64. Reject if invalid.
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64.trim())
         .map_err(|e| format!("invalid base64: {e}"))?;
 
-    // Resolve app_data_dir.
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolve app_data_dir: {e}"))?;
 
-    // Delegate to the testable core function.
     let path = services::file_service::save_avatar_blob_core(&bytes, &mime, &app_data_dir)?;
     Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_folder(app: tauri::AppHandle, title: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let folder = app
         .dialog()
         .file()
-        .set_title("Selecionar pasta")
+        .set_title(title)
         .blocking_pick_folder();
     Ok(folder
         .and_then(|p| p.into_path().ok())
@@ -1184,18 +1202,19 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn create_project_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn create_project_folder(
+    app: tauri::AppHandle,
+    title: String,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    // Prompt user to pick a parent directory, then create a new subfolder there.
     let parent = app
         .dialog()
         .file()
-        .set_title("Selecionar pasta pai para o novo projeto")
+        .set_title(title)
         .blocking_pick_folder();
     let Some(parent_path) = parent.and_then(|p| p.into_path().ok()) else {
         return Ok(None);
     };
-    // Generate a unique folder name (verboo-project-<timestamp>)
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -1206,9 +1225,6 @@ async fn create_project_folder(app: tauri::AppHandle) -> Result<Option<String>, 
     Ok(Some(new_path.to_string_lossy().to_string()))
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Agent
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn send_turn(
@@ -1245,9 +1261,6 @@ fn interrupt(
     turn_service.interrupt(conversation_id)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Updates
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn get_whats_new_status(
@@ -1869,8 +1882,6 @@ fn terminal_get_state(
     terminal_service.get_state()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Provider login (F4) — ponte por pseudo-terminal.
 
 /// Inicia o login interativo do provedor (ex.: codex/claude) num PTY.
 /// Gate: exige sessão Verboo ativa — o próprio CLI exige; propagamos o erro
@@ -1998,9 +2009,6 @@ async fn provider_account_remove(provider: String, account_id: String) -> Result
     .map_err(|e| format!("Falha ao remover conta: {e}"))?
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Clipboard
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
@@ -2019,9 +2027,7 @@ fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<bool, Str
     Ok(true)
 }
 
-// ════════════════════════════════════════════════════════════════════
 // Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md)
-// ════════════════════════════════════════════════════════════════════
 //
 // Thin shell-out wrappers around `verboo plugin …` and
 // `verboo plugin marketplace …`. Rust owns: command translation, timeout,
@@ -2158,7 +2164,6 @@ async fn marketplace_remove(
 async fn plugin_detail(
     id: String,
 ) -> Result<services::plugin_detail_service::PluginDetail, models::plugins::PluginError> {
-    // Fetch the installed plugin row from the CLI, then enrich it.
     let plugins = services::plugins_service::plugin_list().await?;
     let plugin = plugins
         .into_iter()
@@ -2216,13 +2221,11 @@ async fn plugin_icon(
     settings_store: tauri::State<'_, services::settings_store::SettingsStore>,
     plugin_id: String,
 ) -> Result<services::plugin_icon_service::PluginIconResult, models::plugins::PluginError> {
-    // Read the loadWebIcons toggle. If false, return None without network.
     let load_web_icons = settings_store
         .get()
         .map(|s| s.load_web_icons)
         .unwrap_or(true);
 
-    // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
     let app_data_dir =
         app.path()
             .app_data_dir()
@@ -2246,9 +2249,6 @@ async fn plugin_icon(
     .await
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Video understanding components
-// ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
 async fn get_video_component_state(
@@ -2352,14 +2352,15 @@ fn complete_video_ocr_batch(
     waiters.complete(&job_id, results)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// App entry point
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux WebKitGTK black-screen mitigation: must run before any webview
+    // is created (see services::linux_webview).
+    #[cfg(target_os = "linux")]
+    services::linux_webview::apply_webkit_dmabuf_workaround();
+
     let app = tauri::Builder::default()
-        // ── Plugins ────────────────────────────────────────────
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -2367,7 +2368,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        // ── State ──────────────────────────────────────────────
         .manage(AppState::new())
         .manage(services::browser_panel::BrowserPanelState::default())
         .setup(|app| {
@@ -2377,6 +2377,17 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
+
+            services::diagnostic_log::try_init(
+                services::diagnostic_log::resolve_log_dir(app.handle()),
+                serde_json::json!({
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "app_version": app.package_info().version.to_string(),
+                    "cli_version": services::cli_spawn::session_cli_version(&app_data_dir),
+                    "node_version": services::cli_update::PINNED_NODE_VERSION,
+                }),
+            );
 
             let whats_new_preview = std::env::var("VERBOO_WHATS_NEW_PREVIEW")
                 .map(|value| value == "1")
@@ -2428,6 +2439,36 @@ pub fn run() {
                     }
                 });
             }
+            // Android emulator service (PA-24): requirements/setup probes are per-OS inside the service.
+            let android_service =
+                services::android_emulator::AndroidEmulatorService::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?;
+            app.manage(android_service.clone());
+            app.manage(
+                services::android_emulator::AndroidEmulatorCaptureStore::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
+            let android_cache_dir = app.path().app_cache_dir().map_err(std::io::Error::other)?;
+            let android_bridge = services::android_emulator_bridge::AndroidEmulatorBridge::start(
+                android_cache_dir,
+                app.package_info().version.to_string(),
+                app.handle().clone(),
+                android_service,
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(android_bridge);
+            let android_mcp_app_data = app_data_dir.clone();
+            let android_mcp_version = app.package_info().version.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = services::android_emulator_mcp::AndroidEmulatorMcpService::new(
+                    android_mcp_app_data,
+                    android_mcp_version,
+                )
+                .and_then(|service| service.ensure_registered());
+                if let Err(error) = result {
+                    eprintln!("[verboo:android-emulator-mcp] setup skipped: {error}");
+                }
+            });
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2544,7 +2585,6 @@ pub fn run() {
             // StaleFileDetector — tracks file snapshots per conversation
             app.manage(crate::services::stale_file_detector::StaleFileDetector::new());
 
-            // ── System tray (macOS menubar / Win+Linux notification area) ──────
             // The tray icon shows the Verboo logo on Win/Linux and the animated
             // title on macOS (which puts a text title next to the icon). Matches
             // Electron's trayStatusService.
@@ -2593,7 +2633,6 @@ pub fn run() {
                         if tray_service.should_reset() {
                             tray_service.reset_to_idle();
                         }
-                        // Honor settings: hide tray entirely when disabled.
                         let enabled = tray_service.is_enabled();
                         let _ = tray_icon.set_visible(enabled);
                         if !enabled {
@@ -2631,8 +2670,8 @@ pub fn run() {
                 });
             }
 
-            // ── Close always requests an app exit ───────────────────
             if let Some(window) = app.get_webview_window("main") {
+                services::window_geometry::clamp_main_window_to_work_area(&window);
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -2667,11 +2706,8 @@ pub fn run() {
 
             Ok(())
         })
-        // ── Commands (47) ──────────────────────────────────────
         .invoke_handler(tauri::generate_handler![
-            // Config
             get_config,
-            // Browser panel
             services::browser_panel::browser_set_bounds,
             services::browser_panel::browser_drain_messages,
             services::browser_panel::browser_snapshot,
@@ -2682,7 +2718,6 @@ pub fn run() {
             services::browser_panel::browser_cleanup_capture_owners,
             services::browser_panel::browser_evaluate_script,
             services::browser_panel::browser_healthcheck,
-            // Browser panel (Task 4 — multi-tab atomic runtime commands)
             services::browser_panel::browser_session_open,
             services::browser_panel::browser_session_snapshot,
             services::browser_panel::browser_session_set_visible,
@@ -2697,7 +2732,6 @@ pub fn run() {
             services::browser_panel::browser_tab_set_media_suspended,
             services::browser_panel::browser_tab_evict,
             services::browser_panel::browser_tab_reactivate,
-            // iOS Simulator visual panel
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_requirements,
             #[cfg(target_os = "macos")]
@@ -2706,6 +2740,30 @@ pub fn run() {
             services::ios_simulator::ios_simulator_setup_start,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_setup_cancel,
+            services::android_emulator::android_emulator_requirements,
+            services::android_emulator::android_emulator_setup_start,
+            services::android_emulator::android_emulator_setup_cancel,
+            services::android_emulator::android_emulator_attach,
+            services::android_emulator::android_emulator_read_frame,
+            services::android_emulator::android_emulator_detach,
+            services::android_emulator::android_emulator_end,
+            services::android_emulator::android_emulator_set_visible,
+            services::android_emulator::android_emulator_set_stream_rate,
+            services::android_emulator::android_emulator_set_fallback_rate,
+            services::android_emulator::android_emulator_tap,
+            services::android_emulator::android_emulator_drag,
+            services::android_emulator::android_emulator_type_text,
+            services::android_emulator::android_emulator_press_key,
+            services::android_emulator::android_emulator_system_action,
+            services::android_emulator::android_emulator_accessibility_snapshot,
+            services::android_emulator::android_emulator_inspect_point,
+            services::android_emulator::android_emulator_capture_screen,
+            services::android_emulator::android_emulator_capture_annotation,
+            services::android_emulator::android_emulator_capture_promote,
+            services::android_emulator::android_emulator_capture_delete,
+            services::android_emulator::android_emulator_capture_cleanup,
+            services::android_emulator::android_emulator_recording_start,
+            services::android_emulator::android_emulator_recording_stop,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
             #[cfg(target_os = "macos")]
@@ -2754,62 +2812,49 @@ pub fn run() {
             services::ios_simulator::ios_simulator_delete_capture_owner,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_cleanup_capture_owners,
-            // Auth
             start_cli_login,
             get_cli_auth_status,
             logout,
             open_dashboard,
             open_subscriptions,
             open_signup,
-            // Windows Git onboarding (issue #71, contrato-71-gitbash)
             check_windows_login_prereqs,
             install_git_windows,
-            // Verboo in Chrome
             chrome_integration_status,
             chrome_integration_configure,
             chrome_integration_repair,
             chrome_integration_test,
             chrome_integration_remove,
             open_chrome_extension_store,
-            // Credentials
             get_credential_status,
             set_api_key,
             clear_api_key,
-            // Models
             list_models,
-            // Profile
             get_profile,
-            // Feedback
             send_feedback,
-            // Settings
             get_user_settings,
             update_user_settings,
             reset_user_settings,
-            // Vision fallback (FASE 1)
             get_vision_fallback_state,
             set_vision_fallback_consent,
-            // Video understanding components
             get_video_component_state,
             download_video_transcriber,
             remove_video_transcriber,
             complete_video_ocr_batch,
             read_video_frame,
-            // Menu bar
             update_menu_bar,
             force_idle_menu_bar,
             heartbeat_menu_bar,
-            // Skills
             list_skills,
             open_user_skills_folder,
-            // Skill approval gating (item 1.8)
+            open_diagnostic_logs_dir,
+            diagnostic_log_status,
+            diagnostic_package,
             check_skill_approval,
             approve_skill,
-            // Background turn completion notification (item 1.5)
             fire_completion_notification,
-            // Defaults
             get_default_working_directory,
             get_bundled_cli_version,
-            // Workspace
             get_workspace_changes,
             get_workspace_branches,
             switch_workspace_branch,
@@ -2824,9 +2869,7 @@ pub fn run() {
             get_file_diff,
             revert_file,
             open_external_file,
-            // Goal
             evaluate_goal,
-            // Files
             pick_files,
             inspect_files,
             allow_media_preview_file,
@@ -2838,18 +2881,14 @@ pub fn run() {
             save_avatar_blob,
             pick_folder,
             create_project_folder,
-            // @-mention file listing (quick-win #1)
             list_workspace_files,
-            // Project instruction files (QW2)
             list_project_instruction_files,
             read_project_instruction_file,
             write_project_instruction_file,
-            // Agent
             send_turn,
             run_research_subagents,
             cancel_research_subagents,
             interrupt,
-            // Updates
             get_whats_new_status,
             acknowledge_whats_new,
             get_update_status,
@@ -2857,7 +2896,6 @@ pub fn run() {
             check_for_updates,
             download_update,
             install_update,
-            // Terminal
             terminal_start,
             terminal_write,
             terminal_resize,
@@ -2873,10 +2911,8 @@ pub fn run() {
             provider_account_models,
             provider_account_set_default,
             provider_account_remove,
-            // Clipboard
             clipboard_read_text,
             clipboard_write_text,
-            // Plugins (P5 / Wave 2)
             plugin_list,
             plugin_available,
             plugin_install,
@@ -2888,7 +2924,6 @@ pub fn run() {
             marketplace_list,
             marketplace_add,
             marketplace_remove,
-            // Plugins — rich detail (Wave 2 P5+)
             plugin_detail,
             plugin_skills,
             marketplace_manifests,
@@ -2902,7 +2937,7 @@ pub fn run() {
 
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            stop_ios_simulator_for_app_exit(app_handle);
+            stop_simulators_for_app_exit(app_handle);
         }
         tauri::RunEvent::MainEventsCleared => {
             if let Some(report_path) = runtime_smoke_report.take() {
@@ -2915,6 +2950,56 @@ pub fn run() {
 
 #[cfg(test)]
 mod platform_contract_tests {
+    #[test]
+    fn diagnostic_log_must_not_abort_tauri_setup() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains("diagnostic_log::try_init("),
+            "setup must initialize diagnostic logs through try_init so a missing log dir cannot abort boot"
+        );
+        assert!(
+            !setup.contains("diagnostic_log::resolve_log_dir(app.handle())\n                .map_err(std::io::Error::other)?"),
+            "resolve_log_dir must not use ? inside Tauri setup"
+        );
+    }
+
+    #[test]
+    fn native_dialog_labels_are_supplied_by_the_renderer() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("production source before tests");
+
+        assert!(
+            production.matches(".set_title(title)").count() >= 3,
+            "every native file/folder dialog must use its renderer-supplied title"
+        );
+        for supplied_filter in ["images_filter", "videos_filter", "all_files_filter"] {
+            assert!(
+                production.matches(supplied_filter).count() >= 2,
+                "native dialog filter must use its renderer-supplied label: {supplied_filter}"
+            );
+        }
+        let forbidden_labels = [
+            ["Selecionar", " pasta"].concat(),
+            ["\"", "Imag", "es", "\""].concat(),
+            ["\"", "Vid", "eos", "\""].concat(),
+            ["\"", "All", " files", "\""].concat(),
+        ];
+        for forbidden in forbidden_labels {
+            assert!(
+                !production.contains(&forbidden),
+                "native dialog copy must not be hardcoded in Rust: {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn ios_simulator_runtime_is_registered_only_on_macos() {
         let source = include_str!("lib.rs").replace("\r\n", "\n");
@@ -2941,6 +3026,93 @@ mod platform_contract_tests {
                 prefix.lines().last().map(str::trim),
                 Some("#[cfg(target_os = \"macos\")]"),
                 "iOS simulator command is exposed without a macOS gate: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn android_emulator_mcp_is_registered_on_every_platform() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains("AndroidEmulatorBridge::start"),
+            "the Android emulator MCP bridge must start in setup"
+        );
+        assert!(
+            setup.contains("AndroidEmulatorMcpService::new"),
+            "the Android emulator MCP helper must be registered in setup"
+        );
+        let macos_block_end = setup
+            .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+            .and_then(|offset| setup[offset..].find("\n            }"))
+            .map(|relative| {
+                setup
+                    .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+                    .unwrap()
+                    + relative
+            })
+            .expect("macOS-only simulator block");
+        let android_start = setup
+            .find("AndroidEmulatorBridge::start")
+            .expect("android bridge");
+        assert!(
+            android_start > macos_block_end,
+            "Android emulator MCP must not be trapped inside the macOS-only iOS block"
+        );
+        assert!(
+            !setup[macos_block_end..android_start].contains("#[cfg(target_os = \"macos\")]"),
+            "Android emulator MCP must register on every platform"
+        );
+    }
+
+    #[test]
+    fn android_emulator_capture_store_is_registered_on_every_platform() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        let handler = &source[invoke_start..];
+        assert!(
+            setup.contains("AndroidEmulatorCaptureStore::new"),
+            "the Android capture store must be created in setup"
+        );
+        let macos_block_end = setup
+            .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+            .and_then(|offset| setup[offset..].find("\n            }"))
+            .map(|relative| {
+                setup
+                    .find("services::ios_simulator_mcp::IosSimulatorMcpService")
+                    .unwrap()
+                    + relative
+            })
+            .expect("macOS-only simulator block");
+        let store_start = setup
+            .find("AndroidEmulatorCaptureStore::new")
+            .expect("android capture store");
+        assert!(
+            store_start > macos_block_end,
+            "Android capture store must not be trapped inside the macOS-only iOS block"
+        );
+        for command in [
+            "services::android_emulator::android_emulator_capture_annotation",
+            "services::android_emulator::android_emulator_capture_promote",
+            "services::android_emulator::android_emulator_capture_delete",
+            "services::android_emulator::android_emulator_capture_cleanup",
+        ] {
+            let offset = handler
+                .find(command)
+                .unwrap_or_else(|| panic!("missing invoke handler command: {command}"));
+            let prefix = &handler[..offset];
+            assert_ne!(
+                prefix.lines().last().map(str::trim),
+                Some("#[cfg(target_os = \"macos\")]"),
+                "Android capture command is macOS-gated: {command}"
             );
         }
     }

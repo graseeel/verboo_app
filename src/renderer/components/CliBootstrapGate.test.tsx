@@ -48,6 +48,78 @@ describe('CliBootstrapGate', () => {
     expect(onRetry).toHaveBeenCalledOnce()
   })
 
+  it('shows the real Node download cause next to the friendly copy', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: managed Node download failed: HTTP 403 from https://nodejs.org/dist/v24.19.0/node.zip"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't prepare Verboo")
+    expect(alert).toHaveTextContent('Check your connection and try again')
+    const detail = document.querySelector('.cli-bootstrap-error-detail')
+    expect(detail).toHaveTextContent('HTTP 403')
+    expect(detail).toHaveTextContent('nodejs.org')
+  })
+
+  it('hides exact opaque bootstrap codes after the CLI prefix', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't prepare Verboo")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toBeNull()
+  })
+
+  it('hides a double-prefixed opaque bootstrap code', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="runtime"
+          error="CLI: CLI: runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't prepare Verboo")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toBeNull()
+  })
+
+  it('still shows a real diagnostic that mentions an opaque code token', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="cli"
+          error="CLI: receipt rejected; previous status was runtime_install_failed"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't install the Verboo CLI")
+    expect(document.querySelector('.cli-bootstrap-error-detail')).toHaveTextContent('receipt rejected')
+  })
+
   it('confirms that the CLI is ready before the gate disappears', () => {
     render(
       <I18nProvider language="en-US">
@@ -92,5 +164,69 @@ describe('CliBootstrapGate', () => {
       </I18nProvider>,
     )
     expect(screen.getByText('Installing the Verboo CLI')).toBeVisible()
+  })
+
+  it('checking phase: honest neutral copy with a spinner, never download claims', () => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="checking"
+          stage="runtime"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByText('Checking Verboo')).toBeVisible()
+    expect(
+      screen.getByText('Verboo is checking the local setup. CLI sign-in stays paused until preparation is complete.'),
+    ).toBeVisible()
+    // No download/runtime claims before the first authoritative snapshot.
+    expect(screen.queryByText('Installing the Verboo CLI')).toBeNull()
+    expect(screen.queryByText('The runtime is ready. Verboo is now installing and validating the CLI.')).toBeNull()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    // The checking icon carries the phase class and a spinning svg element;
+    // jsdom cannot prove real movement, only the wiring.
+    const card = document.querySelector('.cli-bootstrap-card--checking')
+    expect(card).toBeTruthy()
+    expect(card!.querySelector('.cli-bootstrap-state-icon svg')).toBeTruthy()
+  })
+
+  it('actions live INSIDE the card in both presentations (containment)', () => {
+    const { container } = render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="error"
+          stage="cli"
+          error="CLI: offline"
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    const retry = screen.getByRole('button', { name: 'Try again' })
+    const configure = screen.getByRole('button', { name: 'Configure the app' })
+    expect(retry.closest('.cli-bootstrap-card')).toBeTruthy()
+    expect(configure.closest('.cli-bootstrap-card')).toBeTruthy()
+    expect(container.querySelector('.cli-bootstrap-gate')).toBeTruthy()
+  })
+
+  it.each(['success', 'error'] as const)('aria-busy is false in %s', phase => {
+    render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase={phase}
+          stage="cli"
+          error={phase === 'error' ? 'boom' : undefined}
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole(phase === 'error' ? 'alert' : 'status')).toHaveAttribute('aria-busy', 'false')
   })
 })

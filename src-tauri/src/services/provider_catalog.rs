@@ -78,7 +78,6 @@ pub fn list_provider_models() -> Result<Vec<VerbooModel>, String> {
 ///     sabemos se o formato varia por versão/TTY.
 fn parse_models_stdout(stdout: &str) -> Vec<VerbooModel> {
     let trimmed = stdout.trim();
-    // (a) Tenta o array primeiro (formato real do CLI autenticado).
     if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(trimmed)
     {
         return arr
@@ -87,7 +86,6 @@ fn parse_models_stdout(stdout: &str) -> Vec<VerbooModel> {
             .map(to_verboo_model)
             .collect();
     }
-    // (b) Fallback: JSON-por-linha.
     stdout
         .lines()
         .filter_map(|line| parse_cli_line(line))

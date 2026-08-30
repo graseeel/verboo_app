@@ -152,7 +152,7 @@ export function hardBlockMessage(label, lang) {
 
 /**
  * Check if a tool/action description matches any Hard Block.
- * @param {string} input — tool name + params as a single string to check
+ * @param {import('./protocol.js').ToolCall | string} input — the ToolCall as dispatched by execute(), or a pre-rendered input string
  * @returns {{ blocked: boolean; matchedLabel?: string }}
  */
 export function checkHardBlock(input) {

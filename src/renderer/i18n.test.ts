@@ -30,6 +30,53 @@ describe('@-mention + voice i18n keys', () => {
   })
 })
 
+describe('diagnostic logs copy', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'settings.diagnosticLogs': 'Diagnostic logs',
+        'settings.diagnosticLogsBody': 'Local sanitized logs for support. Nothing is sent over the network.',
+        'settings.copyDiagnostics': 'Copy diagnostics',
+        'settings.copyingDiagnostics': 'Copying diagnostics...',
+        'settings.diagnosticCopySuccess': 'Diagnostic package copied.',
+        'settings.diagnosticCopyError': 'Could not copy the diagnostic package.',
+        'settings.diagnosticLogsDegraded': 'Diagnostic logging is degraded. Some recent events may be missing.',
+        'settings.openLogsFolder': 'Open logs folder',
+        'transcript.correlationId': 'Correlation ID',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'settings.diagnosticLogs': 'Logs de diagnóstico',
+        'settings.diagnosticLogsBody': 'Logs locais sanitizados para suporte. Nada é enviado pela rede.',
+        'settings.copyDiagnostics': 'Copiar diagnóstico',
+        'settings.copyingDiagnostics': 'Copiando diagnóstico...',
+        'settings.diagnosticCopySuccess': 'Pacote de diagnóstico copiado.',
+        'settings.diagnosticCopyError': 'Não foi possível copiar o pacote de diagnóstico.',
+        'settings.diagnosticLogsDegraded': 'O registro de diagnóstico está degradado. Alguns eventos recentes podem estar ausentes.',
+        'settings.openLogsFolder': 'Abrir pasta de logs',
+        'transcript.correlationId': 'Identificador de correlação',
+      },
+    },
+  ])('provides complete translated copy for $language', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
+  })
+})
+
+describe('Android emulator F2 copy', () => {
+  it.each([
+    ['en-US', 'ADB PNG'],
+    ['pt-BR', 'PNG via ADB'],
+  ] as const)('provides the %s stream label', (language, expected) => {
+    expect(createTranslator(language)('androidEmulator.stream.adb')).toBe(expected)
+  })
+})
+
 describe('Chrome settings copy', () => {
   it.each([
     {
@@ -40,6 +87,7 @@ describe('Chrome settings copy', () => {
         'chrome.accountLoginBody': 'You must be signed in to your Verboo account to use Chrome tools.',
         'chrome.cliConnection': 'CLI connection',
         'chrome.cliConnectionBody': 'The Verboo CLI connects to Chrome through the local helper and the Verboo extension. Keep the extension side panel open while a task runs.',
+        'chrome.error.chrome_integration_record_missing': 'Integration record missing; leftover local artifact.',
         'common.remove': 'Remove',
       },
     },
@@ -51,6 +99,7 @@ describe('Chrome settings copy', () => {
         'chrome.accountLoginBody': 'Você precisa estar logado na sua conta Verboo para usar as ferramentas do Chrome.',
         'chrome.cliConnection': 'Conexão do CLI',
         'chrome.cliConnectionBody': 'O CLI Verboo se conecta ao Chrome pelo helper local e pela extensão Verboo. Mantenha o painel lateral da extensão aberto enquanto uma tarefa estiver em execução.',
+        'chrome.error.chrome_integration_record_missing': 'Registro da integração ausente; artefato local residual.',
         'common.remove': 'Remover',
       },
     },
@@ -137,6 +186,38 @@ describe('Settings navigation copy', () => {
       },
     },
   ])('points obsolete settings navigation to the new $language tab', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
+  })
+})
+
+describe('native dialog copy (issue #96)', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'dialogs.attachFilesTitle': 'Select files to attach',
+        'dialogs.selectFolderTitle': 'Select folder',
+        'dialogs.createProjectParentTitle': 'Select a parent folder for the new project',
+        'dialogs.imagesFilter': 'Images',
+        'dialogs.videosFilter': 'Videos',
+        'dialogs.allFilesFilter': 'All files',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'dialogs.attachFilesTitle': 'Selecionar arquivos para anexar',
+        'dialogs.selectFolderTitle': 'Selecionar pasta',
+        'dialogs.createProjectParentTitle': 'Selecionar pasta pai para o novo projeto',
+        'dialogs.imagesFilter': 'Imagens',
+        'dialogs.videosFilter': 'Vídeos',
+        'dialogs.allFilesFilter': 'Todos os arquivos',
+      },
+    },
+  ])('provides every producer-controlled native dialog label in $language', ({ language, expected }) => {
     const t = createTranslator(language)
     for (const [key, value] of Object.entries(expected)) {
       expect(t(key)).toBe(value)

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { Bell, GalleryHorizontal, Home, RotateCw, SlidersHorizontal } from 'lucide-react'
 import { describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../i18n'
 import type {
@@ -8,12 +9,21 @@ import type {
 } from './iosSimulatorApi'
 import { SimulatorControlDock } from './SimulatorControlDock'
 
-function renderDock(overrides: Partial<React.ComponentProps<typeof SimulatorControlDock>> = {}) {
-  const props: React.ComponentProps<typeof SimulatorControlDock> = {
+type IosDockProps = React.ComponentProps<typeof SimulatorControlDock<IosSimulatorSystemAction>>
+
+function renderDock(overrides: Partial<IosDockProps> = {}) {
+  const props: IosDockProps = {
     deviceName: 'iPhone 17 Pro',
     ownership: 'external',
     interactionReady: true,
     busy: false,
+    actions: [
+      { action: 'home', label: 'Início', icon: Home },
+      { action: 'appSwitcher', label: 'Apps abertos', icon: GalleryHorizontal },
+      { action: 'notifications', label: 'Notificações', icon: Bell },
+      { action: 'controlCenter', label: 'Central de Controle', icon: SlidersHorizontal },
+      { action: 'rotateClockwise', label: 'Girar aparelho', icon: RotateCw },
+    ],
     recording: { state: 'idle' },
     lastMediaFile: undefined,
     onSystemAction: vi.fn<(action: IosSimulatorSystemAction) => void>(),
@@ -144,5 +154,66 @@ describe('SimulatorControlDock', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+
+
+describe('SimulatorControlDock android actions (PA-27)', () => {
+  function renderAndroidDock(overrides: Record<string, unknown> = {}) {
+    const props = {
+      deviceName: 'Pixel 8',
+      ownership: 'verboo' as const,
+      interactionReady: true,
+      busy: false,
+      actions: [
+        { action: 'back', label: 'Voltar', icon: Bell },
+        { action: 'home', label: 'Início', icon: Home },
+        { action: 'recents', label: 'Recentes', icon: GalleryHorizontal },
+        { action: 'notifications', label: 'Notificações', icon: Bell },
+        { action: 'rotate', label: 'Girar aparelho', icon: RotateCw },
+      ] as const,
+      mediaControls: false,
+      onSystemAction: vi.fn(),
+      onEnd: vi.fn(),
+      ...overrides,
+    }
+    render(
+      <I18nProvider language="pt-BR">
+        <SimulatorControlDock {...props} />
+      </I18nProvider>,
+    )
+    return props
+  }
+
+  it('renders the injected android system actions and dispatches the frozen action ids', () => {
+    const props = renderAndroidDock()
+
+    for (const name of ['Voltar', 'Início', 'Recentes', 'Notificações', 'Girar aparelho']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument()
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Voltar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recentes' }))
+    expect(props.onSystemAction).toHaveBeenNthCalledWith(1, 'back')
+    expect(props.onSystemAction).toHaveBeenNthCalledWith(2, 'recents')
+  })
+
+  it('hides the shared media group when mediaControls is false', () => {
+    renderAndroidDock()
+
+    expect(screen.queryByRole('button', { name: 'Capturar tela' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Iniciar gravação' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Desanexar' })).not.toBeInTheDocument()
+    // The iOS default controls must NOT leak into the android dock.
+    expect(screen.queryByRole('button', { name: 'Central de Controle' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the owned end-session confirmation for android', () => {
+    const props = renderAndroidDock()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Encerrar simulação' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Encerrar a simulação do Pixel 8?')
+    fireEvent.click(screen.getByRole('button', { name: 'Encerrar' }))
+    expect(props.onEnd).toHaveBeenCalledTimes(1)
   })
 })

@@ -274,6 +274,15 @@
   opacity: 0.42;
 }
 
+.sidechat-send.is-stop {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.sidechat-send.is-stop:hover {
+  background: color-mix(in srgb, var(--danger) 88%, white);
+}
+
 @media (max-width: 900px) {
   .sidechat-panel {
     position: fixed;

@@ -290,6 +290,13 @@ impl UpdateService {
 
     /// Records a check failure. Returns the resulting snapshot.
     pub fn mark_error(&self, error: String) -> UpdateSnapshot {
+        crate::services::diagnostic_log::emit_error(
+            "updater",
+            "update_check_failed",
+            &error,
+            None,
+            serde_json::json!({}),
+        );
         if let Ok(mut state) = self.state.lock() {
             state.checking = false;
             state.snapshot.status = UpdateStatus::Error;
@@ -734,6 +741,25 @@ mod tests {
     }
 
     #[test]
+    fn mark_error_logs_update_check_failed_not_runtime_install_failed() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
+        crate::services::diagnostic_log::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::services::diagnostic_log::init(dir.path().to_path_buf(), serde_json::json!({}))
+            .unwrap();
+        let s = service(true);
+        s.mark_error("network down".into());
+        let raw = std::fs::read_to_string(
+            dir.path()
+                .join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        assert!(raw.contains("update_check_failed"), "{raw}");
+        assert!(!raw.contains("runtime_install_failed"), "{raw}");
+        crate::services::diagnostic_log::reset_for_test();
+    }
+
+    #[test]
     fn mark_available_populates_release_fields() {
         let s = service(true);
         let snap = s.mark_available(
@@ -956,7 +982,6 @@ mod tests {
         // status stays Checking — the active-channel probe is still in
         // flight; the stable probe's 404 must not preempt it.
         assert_eq!(snap.status, UpdateStatus::Checking);
-        // No error string is set.
         assert!(snap.error.is_none());
         // last_checked_at is NOT stamped by this call — it's stamped by
         // mark_available / mark_not_available / mark_error for the active
@@ -979,12 +1004,11 @@ mod tests {
         s.mark_error("active channel down".into());
         let snap = s.set_stable_channel_available(false);
         assert!(!snap.stable_channel_available);
-        // Active-channel error is preserved.
         assert_eq!(snap.error.as_deref(), Some("active channel down"));
         assert_eq!(snap.status, UpdateStatus::Error);
     }
 
-    // ────── run_stable_probe: orchestration wiring tests ──────
+    // run_stable_probe: orchestration wiring tests
     //
     // These tests exercise the orchestrator that `check_for_updates` in
     // `src-tauri/src/lib.rs` calls. They prove two things:

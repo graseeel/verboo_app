@@ -17,9 +17,6 @@ use std::path::Path;
 
 use crate::models::plugins::{Plugin, PluginError};
 
-// ════════════════════════════════════════════════════════════════════
-// Public types
-// ════════════════════════════════════════════════════════════════════
 
 /// A skill discovered in an installed plugin's `skills/` directory.
 /// Parsed from `skills/<dir>/SKILL.md` frontmatter.
@@ -75,9 +72,6 @@ pub struct PluginDetail {
     pub manifest_description: Option<String>,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Public API
-// ════════════════════════════════════════════════════════════════════
 
 /// Builds a `PluginDetail` for an installed plugin. Reads:
 ///   - `skills/*/SKILL.md` frontmatter (name + description per skill)
@@ -180,9 +174,6 @@ fn walk_skills_dir(dir: &Path, out: &mut Vec<PluginSkill>) {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: SKILL.md frontmatter parsing
-// ════════════════════════════════════════════════════════════════════
 
 /// Parses a SKILL.md file's YAML frontmatter. Returns a `PluginSkill` with
 /// `name` (falls back to directory name) and `description` (optional).
@@ -226,11 +217,9 @@ fn parse_skill_md(path: &Path) -> Result<PluginSkill, String> {
 fn parse_frontmatter(raw: &str, dir_name: &str) -> (String, Option<String>) {
     let lines: Vec<&str> = raw.lines().collect();
     if lines.is_empty() || lines[0].trim() != "---" {
-        // No frontmatter — use dir name.
         return (dir_name.to_string(), None);
     }
 
-    // Find the closing `---`.
     let end = lines
         .iter()
         .skip(1)
@@ -263,9 +252,6 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> (String, Option<String>) {
     (name.unwrap_or_else(|| dir_name.to_string()), description)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: plugin.json parsing
-// ════════════════════════════════════════════════════════════════════
 
 /// Metadata extracted from `.claude-plugin/plugin.json`. All fields are
 /// optional — the manifest is third-party and may omit any field.
@@ -363,9 +349,6 @@ fn read_plugin_json(install_path: &Path) -> PluginJsonMeta {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -392,7 +375,6 @@ mod tests {
         }
     }
 
-    // ── parse_frontmatter ─────────────────────────────────────────────
 
     #[test]
     fn parse_frontmatter_real_superpowers_fixture() {
@@ -453,7 +435,6 @@ mod tests {
         assert_eq!(desc.as_deref(), Some("keep-desc"));
     }
 
-    // ── discover_skills (filesystem) ──────────────────────────────────
 
     #[test]
     fn discover_skills_real_structure() {
@@ -517,7 +498,6 @@ mod tests {
         assert_eq!(skills[0].name, "real");
     }
 
-    // ── read_plugin_json (filesystem) ─────────────────────────────────
 
     #[test]
     fn read_plugin_json_real_superpowers_fixture() {
@@ -582,7 +562,6 @@ mod tests {
         assert!(meta.author.is_none());
     }
 
-    // ── build_plugin_detail (integration) ────────────────────────────
 
     #[test]
     fn build_plugin_detail_full_integration() {

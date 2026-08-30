@@ -88,7 +88,6 @@ fn reset_cache() {
 ///
 /// Never panics. Returns None on any failure (caller falls back to API key).
 pub fn get_access_token() -> Option<String> {
-    // Fast path: cache hit (no keychain read).
     {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
@@ -100,9 +99,8 @@ pub fn get_access_token() -> Option<String> {
         }
     }
 
-    // Slow path: serialize the store read + possible refresh. Re-check the
-    // cache after taking the lock because another caller may have refreshed
-    // while this caller was waiting.
+    // Serialize store read + refresh behind REFRESH_LOCK; re-check the cache
+    // after taking the lock — another caller may have refreshed while waiting.
     let _refresh_guard = REFRESH_LOCK.lock().ok()?;
     {
         let cached = CACHE.lock().ok()?;
@@ -126,7 +124,6 @@ pub fn get_access_token() -> Option<String> {
         }
     };
 
-    // Update cache with what we just read.
     {
         if let Ok(mut c) = CACHE.lock() {
             *c = Some(credentials.clone());
@@ -137,8 +134,7 @@ pub fn get_access_token() -> Option<String> {
         return Some(credentials.access_token);
     }
 
-    // Refresh. On failure, fall back to the current token if it hasn't
-    // expired yet (the 60s skew gives us a buffer).
+    // On refresh failure, fall back to the still-valid current token (the 60s skew buffers).
     match refresh_access_token(&credentials) {
         Some(refreshed) => {
             {
@@ -210,10 +206,6 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 
 /// Reads the CLI credentials blob (cross-platform).
 ///
-/// macOS: reads from system Keychain via `/usr/bin/security`.
-/// Windows: reads DPAPI-encrypted file (primary) with plaintext fallback.
-/// Linux: reads Secret Service first, then the plaintext fallback.
-///
 /// (a) Windows DPAPI (2026-08-07): the CLI's `windowsCredentialStorage`
 /// writes via DPAPI (`ProtectedData.Protect` with `CurrentUser` scope)
 /// to `~/.verboo/Verboo_Code-credentials.secure.dpapi`. The plaintext
@@ -247,7 +239,6 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     if cfg!(target_os = "macos") {
         read_keychain_blob()
     } else if cfg!(target_os = "windows") {
-        // (a) Windows: DPAPI primary, plaintext fallback.
         #[cfg(windows)]
         {
             read_windows_dpapi_blob().or_else(read_file_blob)
@@ -327,9 +318,6 @@ fn read_keychain_blob() -> Option<Value> {
     parse_json_blob(&output)
 }
 
-/// Writes the blob back to macOS Keychain via `/usr/bin/security
-/// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
-///
 /// Lê o blob de credenciais do CLI (keychain) — o blob guarda token POR
 /// PROVEDOR (`{ codex: {...}, claude: {...} }` — medido no clone verboo-cli:
 /// CODEX_STORAGE_KEY='codex'). Fonte da evidência de conexão por provedor
@@ -342,6 +330,9 @@ pub(crate) fn read_provider_credentials_blob() -> Option<Value> {
     read_credentials_blob()
 }
 
+/// Writes the blob back to macOS Keychain via `/usr/bin/security
+/// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
+///
 /// Always scopes to `$USER`/`$LOGNAME` so we never update the Desktop
 /// `api-key` Keychain item that shares this service name.
 fn write_keychain_blob(blob: &Value) -> bool {
@@ -400,21 +391,36 @@ fn write_file_blob(blob: &Value) -> bool {
     let Some(path) = cli_credentials_file_path() else {
         return false;
     };
+    write_file_blob_to(&path, blob)
+}
+
+/// Path-injected write so tests can prove a missing `~/.verboo` is created
+/// (issue #83 ENOENT). Used on Linux and as the Windows DPAPI fallback.
+fn write_file_blob_to(path: &std::path::Path, blob: &Value) -> bool {
     let Ok(json) = serde_json::to_string_pretty(blob) else {
         return false;
     };
     let Some(parent) = path.parent() else {
         return false;
     };
-    let _ = std::fs::create_dir_all(parent);
-
-    if std::fs::write(&path, json).is_err() {
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!(
+            "[verboo:cli-creds] plaintext parent dir create FAILED ({}): {e}",
+            parent.display()
+        );
+        return false;
+    }
+    if let Err(e) = std::fs::write(path, json) {
+        eprintln!(
+            "[verboo:cli-creds] plaintext file write FAILED ({}): {e}",
+            path.display()
+        );
         return false;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     true
 }
@@ -483,7 +489,7 @@ fn write_linux_secret_blob(blob: &Value) -> bool {
     wrote && child.wait().is_ok_and(|status| status.success())
 }
 
-// ── (a) Windows DPAPI credentials ───────────────────────────────────
+// (a) Windows DPAPI credentials
 //
 // Clone `windowsCredentialStorage.ts:98-146`:
 //   - Primary store: DPAPI (`ProtectedData.Protect` with `CurrentUser`
@@ -589,8 +595,14 @@ fn log_windows_credential_diagnostics(stage: &str, detail: &str) {
     eprintln!("[verboo:credentials:win] {stage}: {detail}");
 }
 
-/// Returns the current username for DPAPI entropy. On Windows:
-/// `%USERNAME%`. On Unix (for testing): `$USER` / `$LOGNAME`.
+/// Returns the current username for DPAPI entropy and the Linux secret-tool
+/// account. On Windows: `%USERNAME%` only (DPAPI entropy must stay stable).
+/// On Unix: `$USER` / `$LOGNAME`, then — on Linux, and in `cargo test` so
+/// the Linux path is exercisable here — the real OS account, matching CLI
+/// `getUsername()` (`process.env.USER || userInfo().username`).
+///
+/// macOS production keychain does **not** call this function
+/// (`read_keychain_blob` / `write_keychain_blob` read USER/LOGNAME inline).
 fn current_username() -> Option<String> {
     if cfg!(target_os = "windows") {
         std::env::var("USERNAME").ok().filter(|s| !s.trim().is_empty())
@@ -599,7 +611,65 @@ fn current_username() -> Option<String> {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                #[cfg(any(target_os = "linux", test))]
+                {
+                    os_username()
+                }
+                #[cfg(not(any(target_os = "linux", test)))]
+                {
+                    None
+                }
+            })
     }
+}
+
+/// Node `os.userInfo().username` on Unix is `getpwuid`. No new crate.
+#[cfg(all(unix, any(target_os = "linux", test)))]
+fn os_username() -> Option<String> {
+    let uid = unsafe { libc::geteuid() };
+    let mut size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    if size <= 0 {
+        size = 4096;
+    }
+    let mut buf = vec![0u8; size as usize];
+    loop {
+        let mut pwd = unsafe { std::mem::zeroed::<libc::passwd>() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut pwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE {
+            let next = buf.len().saturating_mul(2).max(4096);
+            if next == buf.len() {
+                return None;
+            }
+            buf.resize(next, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() || pwd.pw_name.is_null() {
+            return None;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }
+            .to_str()
+            .ok()?
+            .trim();
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name.to_string());
+    }
+}
+
+#[cfg(all(not(unix), test))]
+fn os_username() -> Option<String> {
+    None
 }
 
 /// Builds the PowerShell script for DPAPI `ProtectedData.Unprotect` (read
@@ -651,11 +721,6 @@ fn build_dpapi_write_script(path: &str, entropy: &str) -> String {
     )
 }
 
-/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
-/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
-/// Returns the decrypted JSON blob, or None if the file is missing /
-/// decryption fails.
-///
 /// Renames a corrupted DPAPI file to `<name>.invalid-<timestamp>` so the
 /// login flow can restart clean instead of being stuck (issue #72). The
 /// file is PRESERVED (not deleted) for diagnosis.
@@ -681,6 +746,11 @@ fn quarantine_corrupted_dpapi_file(file_path: &std::path::Path) {
     }
 }
 
+/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
+/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
+/// Returns the decrypted JSON blob, or None if the file is missing /
+/// decryption fails.
+///
 /// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
 /// logic (`dpapi_file_path_for`, `dpapi_entropy_for`,
 /// `build_dpapi_read_script`) is tested on mac; the PowerShell call
@@ -1212,7 +1282,7 @@ mod tests {
         let _ = cli_credentials_file_path();
     }
 
-    // ─── Cold launch race regression tests ───────────────────────────
+    // Cold launch race regression tests
     //
     // Bug being prevented: on a cold launch (process start, empty cache),
     // the first call to `get_access_token()` had to read the keychain —
@@ -1267,9 +1337,9 @@ mod tests {
     /// Cold-launch contract: once the cache is populated, subsequent
     /// calls must hit the fast path and return the same token WITHOUT
     /// re-reading the store. This pins the invariant that prevents the
-    //  race: if a future refactor breaks the cache (e.g. clears it on
-    ///  every call), parallel callers would all hammer the keychain and
-    ///  race again.
+    /// race: if a future refactor breaks the cache (e.g. clears it on
+    /// every call), parallel callers would all hammer the keychain and
+    /// race again.
     #[test]
     fn cold_launch_cache_hit_returns_cached_token_without_reread() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -1289,7 +1359,6 @@ mod tests {
             *c = Some(creds.clone());
         }
 
-        // Fast path: must return the cached token, no keychain read.
         let tok = get_access_token();
         assert_eq!(
             tok.as_deref(),
@@ -1298,7 +1367,6 @@ mod tests {
              the fast path is broken and parallel callers will race on the keychain"
         );
 
-        // Cache must still hold the token (not cleared by the read).
         {
             let c = CACHE.lock().unwrap();
             assert!(
@@ -1341,8 +1409,7 @@ mod tests {
         // original token back — NOT None.
         // NOTE: this calls the real refresh_access_token which would hit
         // the network. But refresh_access_token returns None immediately
-        // when refresh_token is None/empty (line 366-369), so no network
-        // call happens.
+        // when refresh_token is None/empty, so no network call happens.
         let tok = get_access_token();
         assert_eq!(
             tok.as_deref(),
@@ -1387,7 +1454,7 @@ mod tests {
         );
     }
 
-    // ── (a) Windows DPAPI pure logic ───────────────────────────────
+    // (a) Windows DPAPI pure logic
     //
     // The pure functions (path/entropy derivation) are tested on mac.
     // The PowerShell OS call (`read_windows_dpapi_blob`) is
@@ -1642,5 +1709,92 @@ mod tests {
             ["lookup", "service", "Verboo Code-credentials", "account", "dev"]
         );
         assert_eq!(blob["verbooOauth"]["accessToken"], "token");
+    }
+
+    #[test]
+    fn plaintext_write_creates_missing_parent_dir_and_0600_file() {
+        let home = tempfile::TempDir::new().unwrap();
+        let config_home = home.path().join(".verboo");
+        assert!(!config_home.exists(), "HOME must start without ~/.verboo");
+        let path = config_home.join(".credentials.json");
+        let blob = serde_json::json!({"verbooOauth":{"accessToken":"tok"}});
+        assert!(write_file_blob_to(&path, &blob));
+        assert!(config_home.is_dir(), "plaintext write must create ~/.verboo");
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    struct UnixUserEnvGuard {
+        user: Option<String>,
+        logname: Option<String>,
+    }
+
+    impl UnixUserEnvGuard {
+        fn capture() -> Self {
+            Self {
+                user: std::env::var("USER").ok(),
+                logname: std::env::var("LOGNAME").ok(),
+            }
+        }
+    }
+
+    impl Drop for UnixUserEnvGuard {
+        fn drop(&mut self) {
+            match self.user.as_deref() {
+                Some(value) => std::env::set_var("USER", value),
+                None => std::env::remove_var("USER"),
+            }
+            match self.logname.as_deref() {
+                Some(value) => std::env::set_var("LOGNAME", value),
+                None => std::env::remove_var("LOGNAME"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn id_un() -> String {
+        let output = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .expect("id -un");
+        assert!(output.status.success(), "id -un failed");
+        String::from_utf8(output.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn current_username_falls_back_to_os_when_user_and_logname_are_unset() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let _env = UnixUserEnvGuard::capture();
+        std::env::remove_var("USER");
+        std::env::remove_var("LOGNAME");
+        let expected = id_un();
+        assert!(
+            !expected.is_empty(),
+            "id -un must yield the real account the CLI writes to secret-tool"
+        );
+        assert_eq!(current_username().as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn current_username_prefers_env_over_os() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let _env = UnixUserEnvGuard::capture();
+        if cfg!(windows) {
+            std::env::set_var("USERNAME", "from-env-user");
+            assert_eq!(current_username().as_deref(), Some("from-env-user"));
+            return;
+        }
+        std::env::set_var("USER", "from-env-user");
+        std::env::remove_var("LOGNAME");
+        assert_eq!(current_username().as_deref(), Some("from-env-user"));
     }
 }

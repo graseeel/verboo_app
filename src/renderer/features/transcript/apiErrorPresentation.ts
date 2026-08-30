@@ -89,11 +89,6 @@ export function presentUsageLimitMessage(info: ApiErrorInfo, account: string, t:
  *  below the measured reset, 120× above a 30s retry. The two don't confuse. */
 export const QUOTA_RETRY_DELAY_THRESHOLD_MS = 3_600_000
 
-/** When the CLI's declared retry wait is hour-scale, the "retry" is really a
- *  quota reset — surface the readable headline instead of sitting on a mute
- *  "Thinking…" for 43h. Returns the readable message when the wait crosses
- *  the threshold, undefined otherwise (normal retry → keep the live notice).
- *  Reuses presentUsageLimitMessage — no second formatter. */
 /** T19: unified duplication guard — the SINGLE check applied at every point
  *  where a readable headline is inserted as role system (there are 4; grep
  *  `role: 'system'` in App.tsx). If the assistant body is a recognized API
@@ -111,6 +106,11 @@ export function shouldSuppressSystemErrorText(bodyText: string): boolean {
   return parseApiErrorText(bodyText) !== undefined
 }
 
+/** When the CLI's declared retry wait is hour-scale, the "retry" is really a
+ *  quota reset — surface the readable headline instead of sitting on a mute
+ *  "Thinking…" for 43h. Returns the readable message when the wait crosses
+ *  the threshold, undefined otherwise (normal retry → keep the live notice).
+ *  Reuses presentUsageLimitMessage — no second formatter. */
 export function quotaResetMessageFromRetry(
   retryDelayMs: number | undefined,
   accountLabel: string,

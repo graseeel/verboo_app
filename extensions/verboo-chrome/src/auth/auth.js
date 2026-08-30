@@ -42,7 +42,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
  * @property {string} [provider]
  */
 
-// ── chrome.storage.local with in-memory fallback (Node tests) ────
+// chrome.storage.local, falling back to an in-memory Map under Node tests.
 
 /** @type {Map<string, unknown>} */
 const memoryStore = new Map()
@@ -99,7 +99,6 @@ async function storageRemove(keys) {
   for (const k of list) memoryStore.delete(k)
 }
 
-// ── Public API ─────────────────────────────────────────────
 
 /** Load session from chrome.storage.local. @returns {Promise<VerbooSession|null>} */
 export async function loadSession() {
@@ -270,9 +269,6 @@ export async function loadModels(forceRefresh = false) {
   return models
 }
 
-/**
- * @param {string} modelId
- */
 export async function selectModel(modelId) {
   if (!modelId || typeof modelId !== 'string') {
     throw new Error('modelId is required')
@@ -280,7 +276,6 @@ export async function selectModel(modelId) {
   await storageSet({ [SELECTED_MODEL_KEY]: modelId })
 }
 
-/** @returns {Promise<string|null>} */
 export async function getSelectedModelId() {
   try {
     const result = await storageGet(SELECTED_MODEL_KEY)
@@ -358,7 +353,6 @@ export async function ensureFreshSession(options = {}) {
   return refreshSession(options.config ?? OAUTH_CONFIG, options.dependencies ?? {})
 }
 
-// ── Router fetch + normalize ─────────────────────────────────
 
 /**
  * @param {string} token

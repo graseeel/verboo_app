@@ -38,7 +38,7 @@ describe('visibleConversations — stable sidebar order', () => {
     const store = storeWith([a, b])
 
     const before = visibleConversations(store).map(c => c.id)
-    expect(before).toEqual(['chat:b', 'chat:a']) // newer first
+    expect(before).toEqual(['chat:b', 'chat:a'])
 
     // Simulate streaming: both chats receive token deltas — updatedAt changes
     // radically but lastTurnEndedAt stays. Order must NOT reshuffle.
@@ -205,7 +205,6 @@ describe('updateConversation — identity preservation (G-C5)', () => {
       title: 'Changed',
     }))
 
-    // Identity must be preserved — same reference, no new object.
     expect(result).toBe(store)
   })
 
@@ -218,7 +217,6 @@ describe('updateConversation — identity preservation (G-C5)', () => {
       title: 'Changed',
     }))
 
-    // Identity must NOT be preserved — the conversation changed.
     expect(result).not.toBe(store)
     expect(result.conversations).not.toBe(store.conversations)
     expect(result.conversations[0].title).toBe('Changed')
@@ -237,10 +235,8 @@ describe('updateConversation — identity preservation (G-C5)', () => {
       title: 'Changed',
     }))
 
-    // The non-target conversation (b) must be the SAME object reference.
     const bResult = result.conversations.find(c => c.id === 'chat:b')
     expect(bResult).toBe(b)
-    // The target conversation (a) must be a NEW object.
     const aResult = result.conversations.find(c => c.id === 'chat:a')
     expect(aResult).not.toBe(a)
     expect(aResult?.title).toBe('Changed')

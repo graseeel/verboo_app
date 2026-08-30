@@ -20,7 +20,6 @@ type AvatarIconProps = {
   name: string
   /** Outer dimension in pixels (default 34). The avatar is always a circle. */
   size?: number
-  /** Optional CSS class added to the outer wrapper */
   className?: string
 }
 
@@ -41,7 +40,6 @@ export function AvatarIcon({ settings, name, size = 34, className = '' }: Avatar
     : undefined
   const [failedId, setFailedId] = useState<string | undefined>()
 
-  // ── Uploaded photo (with fallback) ─────────────────────────
   if (kind === 'upload' && settings?.uploadPath && imageId && failedId !== imageId) {
     const uploadPath = settings.uploadPath
     const uploadVer = settings.uploadVersion ?? 0
@@ -67,7 +65,6 @@ export function AvatarIcon({ settings, name, size = 34, className = '' }: Avatar
     )
   }
 
-  // ── Preset icon ────────────────────────────────────────────
   if (kind === 'preset' && settings?.presetId) {
     const color = settings.presetColor ?? '#6B7280'
     return (
@@ -83,7 +80,6 @@ export function AvatarIcon({ settings, name, size = 34, className = '' }: Avatar
     )
   }
 
-  // ── Initials (default) ─────────────────────────────────────
   const fontSize = Math.round(size * 0.42)
   return (
     <span

@@ -167,7 +167,7 @@ test('type: clear + text + pressEnter combine (value set through the native sett
   assert.equal(input.value, 'comprar café')
 })
 
-// ── GENERALIZAÇÃO-2: R-C1 readiness/polling, R-T4 hint, R-T5 note ──
+// GENERALIZAÇÃO-2: R-C1 readiness/polling, R-T4 hint, R-T5 note.
 
 test('type: R-C1 — an element that appears late is found by the poll', async () => {
   // The page starts WITHOUT the input (framework still mounting); it is
@@ -204,7 +204,7 @@ test('type: PÓS-CAMPO-3 — the not-found error points at the find TOOL and kee
   )
 })
 
-// ── ROUND 9: null result from the page (the func crashed in-page) ──
+// ROUND 9: null result from the page (the func crashed in-page).
 
 test('type: ROUND 9 — a null page result (func crashed in-page) fails honestly, never TypeError .handled', async () => {
   // Round-9 field crash: "Cannot read properties of null (reading

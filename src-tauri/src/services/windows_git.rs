@@ -15,7 +15,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[cfg(windows)]
-use std::process::Command;
+use std::process::{Command, Stdio};
+#[cfg(any(windows, test))]
+use std::time::{Duration, Instant};
 
 /// Response of `check_windows_login_prereqs` (camelCase over the fence).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +50,80 @@ fn default_git_bash_candidates(program_files: Option<&str>) -> Vec<PathBuf> {
     vec![PathBuf::from(root).join("Git").join("bin").join("bash.exe")]
 }
 
+/// Upper bound for the login-screen Git probe. The contract forbids a
+/// freeze: if `where git` hangs, kill it and fall back to local bash.exe
+/// candidates. Keep this well under the 5s test margin and the <1s product
+/// promise on a healthy machine.
+#[cfg(windows)]
+const WHERE_GIT_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// Polls `poll` until it returns `Some` or `timeout` elapses.
+/// Never spawns a process — the login probe and the pin share this loop.
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum DeadlineProbe {
+    Done { success: bool },
+    TimedOut,
+}
+
+#[cfg(any(windows, test))]
+fn poll_until_deadline(timeout: Duration, mut poll: impl FnMut() -> Option<bool>) -> DeadlineProbe {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(success) = poll() {
+            return DeadlineProbe::Done { success };
+        }
+        if Instant::now() >= deadline {
+            return DeadlineProbe::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Reap without an unbounded `wait()`. A stuck `wait()` after `kill()` is
+/// what can freeze the CI runner for the full job timeout.
+#[cfg(windows)]
+fn reap_child_with_timeout(child: &mut std::process::Child, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// Runs `program args` with a hard deadline. On timeout the child is
+/// killed (bounded reap) and the probe reports not-found so callers
+/// can fall back to local bash.exe candidates.
+#[cfg(windows)]
+fn probe_program_with_timeout(program: &str, args: &[&str], timeout: Duration) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    match poll_until_deadline(timeout, || {
+        child.try_wait().ok().flatten().map(|s| s.success())
+    }) {
+        DeadlineProbe::Done { success } => success,
+        DeadlineProbe::TimedOut => {
+            let _ = child.kill();
+            reap_child_with_timeout(&mut child, Duration::from_millis(200));
+            false
+        }
+    }
+}
+
 /// Detects whether Git is available for the CLI. Windows: `where git` on
 /// PATH, or `bash.exe` in the standard Git install dir. Other platforms:
 /// always available (the CLI does not need git-bash there). Never
@@ -56,17 +132,8 @@ pub fn check_windows_login_prereqs() -> WindowsLoginPrereqs {
     let platform = std::env::consts::OS.to_string();
     #[cfg(windows)]
     {
-        let mut where_cmd = Command::new("where");
-        where_cmd
-            .arg("git")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        crate::services::cli_spawn::apply_creation_flags(&mut where_cmd);
-        let where_git_found = where_cmd
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let where_git_found =
+            probe_program_with_timeout("where", &["git"], WHERE_GIT_PROBE_TIMEOUT);
         let candidates = default_git_bash_candidates(std::env::var("ProgramFiles").ok().as_deref());
         WindowsLoginPrereqs {
             git_available: is_git_available(where_git_found, &candidates),
@@ -241,10 +308,13 @@ mod tests {
     fn check_windows_login_prereqs_never_installs() {
         let start = std::time::Instant::now();
         let prereqs = check_windows_login_prereqs();
+        let elapsed = start.elapsed();
+        eprintln!("check_windows_login_prereqs elapsed={elapsed:?}");
         // Contract says <1s; 5s margin so slow CI runners do not flake.
+        // Do not raise this bound — a hang in `where git` is a product bug.
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(5),
-            "check_windows_login_prereqs must be a fast local probe (never installs)"
+            elapsed < std::time::Duration::from_secs(5),
+            "check_windows_login_prereqs must be a fast local probe (never installs) elapsed={elapsed:?}"
         );
         assert_eq!(prereqs.platform, "windows");
     }
@@ -300,6 +370,26 @@ mod tests {
         assert_eq!(
             tail(&fallback[0]),
             vec!["bash.exe".to_string(), "bin".to_string(), "Git".to_string()]
+        );
+    }
+
+    #[test]
+    fn hanging_where_probe_returns_within_deadline() {
+        // Do not spawn sleep/ping: on CI `kill()` + unbounded `wait()` after
+        // `apply_creation_flags` (Unix setpgid) can freeze the runner for
+        // the full job timeout. The pin is the deadline loop itself.
+        let timeout = std::time::Duration::from_millis(300);
+        let start = std::time::Instant::now();
+        let outcome = poll_until_deadline(timeout, || None);
+        let elapsed = start.elapsed();
+        assert_eq!(outcome, DeadlineProbe::TimedOut);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "hanging path probe must return within the deadline, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed >= timeout,
+            "deadline probe must not return before the timeout, elapsed={elapsed:?}"
         );
     }
 }

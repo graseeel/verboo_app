@@ -1,8 +1,6 @@
 /* Plugins view — marketplace lines, skeletons, modals.
-   Motion: transform + opacity only (no transition: all). Stagger max 8 lines.
-   Reduced-motion: opacity-only. */
+   Async catalog rows stay base-visible; motion is reserved for transient UI. */
 
-/* ── View shell ─────────────────────────────────────────────────── */
 .plugins-view {
   display: flex;
   flex-direction: column;
@@ -29,7 +27,6 @@
   font-size: 13px;
 }
 
-/* ── Skill icon in flat line (Skills tab) ────────────────────────── */
 .plugin-skill-icon--line {
   width: 44px;
   height: 44px;
@@ -42,9 +39,8 @@
   flex-shrink: 0;
 }
 
-/* ── Segmented control (Plugins | Habilidades) ──────────────────── */
 /* Codex-style pills: two buttons in a row, active = solid bg, inactive =
-   transparent. Crossfade 120ms opacity-only on tab content swap. */
+   transparent. */
 .plugins-tabs {
   display: flex;
   gap: 4px;
@@ -76,18 +72,6 @@
   color: var(--text);
 }
 
-/* Tab content crossfade — 120ms opacity-only. Applied to the wrapper of
-   each tab's content so the swap feels smooth, not jarring. */
-.plugins-tab-content {
-  animation: plugins-tab-fade 120ms ease-out;
-}
-
-@keyframes plugins-tab-fade {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* ── Skill group header (Skills tab) ────────────────────────────── */
 .plugin-skill-group-header {
   display: flex;
   align-items: center;
@@ -107,7 +91,6 @@
   font-weight: 600;
 }
 
-/* ── Sticky search ──────────────────────────────────────────────── */
 /* Stays fixed at top while the list scrolls. Header (title+subtitle)
    scrolls away normally. App bg + subtle bottom border for separation. */
 .plugins-search {
@@ -206,7 +189,6 @@
   pointer-events: none;
 }
 
-/* ── Restart banner ─────────────────────────────────────────────── */
 .plugins-restart-banner {
   display: flex;
   align-items: center;
@@ -232,7 +214,6 @@
   cursor: pointer;
 }
 
-/* ── Error banner ───────────────────────────────────────────────── */
 .plugins-error-banner {
   display: flex;
   align-items: center;
@@ -257,7 +238,6 @@
   cursor: pointer;
 }
 
-/* ── Section label ───────────────────────────────────────────────── */
 .plugins-section-label {
   margin: 0 0 10px;
   font-size: 11px;
@@ -385,14 +365,13 @@
   background: var(--bg-hover);
 }
 
-/* ── Lines grid (2-col, borderless) ──────────────────────────────── */
 .plugins-lines {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 4px 16px;
 }
 
-/* Grid items (the wrapper divs with animationDelay) must have min-width: 0
+/* Grid item wrappers must have min-width: 0
    so the flex children inside can truncate. Without this, long descriptions
    blow out the column width and the grid collapses to 1 col + overflows. */
 .plugins-lines > * {
@@ -414,7 +393,6 @@
   }
 }
 
-/* ── Line base (borderless row) ──────────────────────────────────── */
 .plugin-line {
   display: flex;
   align-items: center;
@@ -426,7 +404,6 @@
   min-width: 0;
   overflow: hidden;
   transition: background-color 120ms var(--dropdown-ease);
-  animation: plugin-card-enter 200ms var(--dropdown-ease) both;
 }
 
 .plugin-line:hover {
@@ -476,7 +453,6 @@
   align-items: center;
 }
 
-/* ── Monogram ────────────────────────────────────────────────────── */
 .plugin-monogram {
   display: flex;
   align-items: center;
@@ -538,7 +514,6 @@
   opacity: 1;
 }
 
-/* ── Install button (pill outline) ───────────────────────────────── */
 .plugin-install-btn {
   display: inline-flex;
   align-items: center;
@@ -583,7 +558,6 @@
   opacity: 0.85;
 }
 
-/* ── Line menu trigger (…) ───────────────────────────────────────── */
 .plugin-line-menu-trigger {
   display: inline-flex;
   align-items: center;
@@ -603,7 +577,6 @@
   color: var(--text);
 }
 
-/* ── Portal menu ────────────────────────────────────────────────── */
 .plugin-card-menu {
   min-width: 168px;
   padding: 4px;
@@ -638,7 +611,6 @@
   color: #ef4444;
 }
 
-/* ── Skeleton line ──────────────────────────────────────────────── */
 .plugin-line--skeleton {
   pointer-events: none;
   animation: plugin-skel-pulse 1.4s ease-in-out infinite;
@@ -658,7 +630,6 @@
 .plugin-skel-line--title { width: 50%; height: 14px; }
 .plugin-skel-line--desc { width: 80%; height: 11px; margin-top: 4px; }
 
-/* ── Empty states ───────────────────────────────────────────────── */
 .plugins-empty {
   display: flex;
   flex-direction: column;
@@ -695,7 +666,6 @@
   max-width: 320px;
 }
 
-/* ── Section expander ───────────────────────────────────────────── */
 .plugin-section-expander {
   display: flex;
   align-items: center;
@@ -743,7 +713,6 @@
   transform: rotate(180deg);
 }
 
-/* ── Installed section (icon-only strip) ─────────────────────────── */
 .plugins-installed-section {
   display: flex;
   flex-direction: column;
@@ -815,7 +784,6 @@
   border-radius: 12px;
 }
 
-/* ── Install modal ───────────────────────────────────────────────── */
 .plugin-install-modal {
   width: min(440px, 100%);
   display: flex;
@@ -911,7 +879,6 @@
   gap: 8px;
 }
 
-/* ── Trust badge ─────────────────────────────────────────────────── */
 .plugin-trust-badge {
   display: inline-flex;
   align-items: center;
@@ -928,7 +895,6 @@
   color: var(--accent-strong);
 }
 
-/* ── Marketplace modal ───────────────────────────────────────────── */
 .marketplace-modal {
   width: min(520px, 100%);
   max-height: min(560px, 80vh);
@@ -1070,7 +1036,6 @@
   color: #ef4444;
 }
 
-/* ── Confirm remove overlay ──────────────────────────────────────── */
 .marketplace-confirm-overlay {
   position: absolute;
 }
@@ -1100,7 +1065,6 @@
   gap: 8px;
 }
 
-/* ── Detail view ─────────────────────────────────────────────────── */
 .plugin-detail {
   display: flex;
   flex-direction: column;
@@ -1139,7 +1103,6 @@
   opacity: 0.5;
 }
 
-/* ── Detail header (sticky) ──────────────────────────────────────── */
 .plugin-detail-header {
   position: sticky;
   top: 0;
@@ -1232,7 +1195,6 @@
   flex-shrink: 0;
 }
 
-/* ── Install pill (solid black / white in dark) ──────────────────── */
 .plugin-install-pill {
   display: inline-flex;
   align-items: center;
@@ -1268,7 +1230,6 @@
   color: #111;
 }
 
-/* ── Uninstall button (red tint) ────────────────────────────────── */
 .plugin-uninstall-btn {
   display: inline-flex;
   align-items: center;
@@ -1298,7 +1259,6 @@
   transform: scale(0.97);
 }
 
-/* ── Hero band (Verboo violet mesh — luminous, not dark) ────────── */
 /* Registered @property so the browser can interpolate --mouse-x/--mouse-y
    during transitions (without @property, custom properties are discrete
    and never lerp). Resting variant uses 700ms ease, active 160ms linear. */
@@ -1467,7 +1427,6 @@
   rotate: 180deg;
 }
 
-/* ── Body description ────────────────────────────────────────────── */
 .plugin-detail-body-desc {
   margin: 0;
   font-size: 13.5px;
@@ -1476,7 +1435,6 @@
   text-wrap: pretty;
 }
 
-/* ── Skills section (installed only) ─────────────────────────────── */
 .plugin-detail-skills {
   display: flex;
   flex-direction: column;
@@ -1550,7 +1508,6 @@
   line-height: 1.4;
 }
 
-/* ── Information section ─────────────────────────────────────────── */
 .plugin-detail-info-section {
   display: flex;
   flex-direction: column;
@@ -1561,7 +1518,6 @@
   margin: 0;
 }
 
-/* External link in info table */
 .plugin-detail-link {
   display: inline-flex;
   align-items: center;
@@ -1577,7 +1533,6 @@
   opacity: 0.8;
 }
 
-/* ── Collapsible tech details (accordion) ─────────────────────────── */
 .plugin-detail-tech {
   display: flex;
   flex-direction: column;
@@ -1660,12 +1615,6 @@
   background: var(--bg-hover);
 }
 
-/* ── Keyframes ───────────────────────────────────────────────────── */
-@keyframes plugin-card-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
 @keyframes plugin-menu-pop {
   from { opacity: 0; transform: scale(0.96); }
   to   { opacity: 1; transform: scale(1); }
@@ -1691,19 +1640,13 @@
   50%      { opacity: 0.55; }
 }
 
-/* ── Reduced motion ───────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .plugin-line,
   .plugins-restart-banner,
   .plugin-detail,
   .plugin-detail-hero {
     animation: plugins-fade-in 80ms ease-out both !important;
   }
   .plugin-card-menu {
-    animation: plugins-fade-in 80ms ease-out !important;
-  }
-  /* Tab crossfade: opacity-only 80ms under reduced-motion. */
-  .plugins-tab-content {
     animation: plugins-fade-in 80ms ease-out !important;
   }
   .plugin-detail-hero-mesh {

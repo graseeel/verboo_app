@@ -101,15 +101,27 @@ impl UpdateCoordinator {
     fn construct_cli_service(&self, node_path: PathBuf) -> Result<CliUpdateService, String> {
         let service = CliUpdateService::production(&self.app_data_dir, node_path.clone())?;
         super::cli_update::runtime::configure(service.store().clone(), node_path)?;
+        if let Some(version) = super::cli_update::runtime::current_version() {
+            crate::services::diagnostic_log::note_cli_version(&version);
+        }
         Ok(service)
     }
 
     fn try_construct_cli_service(&self, node_path: PathBuf) -> Result<CliUpdateService, String> {
         self.set_cli_initialization_error(None);
         self.construct_cli_service(node_path).map_err(|detail| {
+            let detail = crate::services::bootstrap_diag::sanitize(&detail);
             eprintln!("[verboo:cli-update] initialization failed: {detail}");
-            self.set_cli_initialization_error(Some("cli_initialization_failed".to_string()));
-            "Verboo CLI preparation failed".to_string()
+            crate::services::bootstrap_diag::record(&detail);
+            crate::services::diagnostic_log::emit_error(
+                "updater",
+                "cli_initialization_failed",
+                &detail,
+                None,
+                serde_json::json!({}),
+            );
+            self.set_cli_initialization_error(Some(detail.clone()));
+            detail
         })
     }
 
@@ -391,14 +403,105 @@ mod tests {
     }
 
     #[test]
+    fn runtime_error_snapshot_keeps_url_and_status() {
+        let coordinator = coordinator_with_runtime(NodeRuntimeStatus::Error, None, None);
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.status, UpdateStatus::Error);
+        assert_eq!(snapshot.bootstrap_stage, Some(BootstrapStage::Runtime));
+        let error = snapshot.error.expect("runtime error must reach the combined snapshot");
+        assert!(error.contains("HTTP 403"), "{error}");
+        assert!(error.contains("nodejs.org"), "{error}");
+        assert!(!error.contains("runtime_install_failed"), "{error}");
+    }
+
+    #[test]
     fn cli_initialization_failure_is_retryable_in_the_cli_stage() {
         let coordinator = coordinator_with_runtime(NodeRuntimeStatus::Ready, None, None);
-        coordinator.set_cli_initialization_error(Some("cli_initialization_failed".to_string()));
+        coordinator.set_cli_initialization_error(Some(
+            "Verboo Node runtime is not executable at runtime/node/24.19.0/win-x64/node.exe"
+                .to_string(),
+        ));
         let snapshot = coordinator.snapshot();
         assert_eq!(snapshot.status, UpdateStatus::Error);
         assert!(snapshot.cli_bootstrap_required);
         assert_eq!(snapshot.bootstrap_stage, Some(BootstrapStage::Cli));
         assert_eq!(snapshot.target, Some(UpdateTarget::Cli));
+        let error = snapshot.error.expect("construct error must reach the combined snapshot");
+        assert!(error.contains("not executable"), "{error}");
+        assert!(error.contains("win-x64/node.exe"), "{error}");
+        assert!(!error.contains("cli_initialization_failed"), "{error}");
+    }
+
+    #[test]
+    fn cli_initialization_failure_exposes_the_real_construct_error_on_the_snapshot() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::cli_update::runtime::reset();
+        crate::services::bootstrap_diag::reset();
+
+        let app_data = tempfile::tempdir().unwrap();
+        let store = crate::services::cli_update::store::CliStore::open(app_data.path()).unwrap();
+        let node = app_data.path().join(if cfg!(windows) {
+            "node.exe"
+        } else {
+            "node"
+        });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&node, b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(&node, b"MZ").unwrap();
+        }
+        crate::services::cli_update::runtime::configure(store, node.clone()).unwrap();
+
+        let override_cli = app_data.path().join("override/dist/cli.mjs");
+        std::fs::create_dir_all(override_cli.parent().unwrap()).unwrap();
+        std::fs::write(&override_cli, b"entry").unwrap();
+        let previous_node = std::env::var_os("VERBOO_NODE_PATH");
+        let previous_cli = std::env::var_os("VERBOO_CLI_PATH");
+        std::env::set_var("VERBOO_NODE_PATH", &node);
+        std::env::set_var("VERBOO_CLI_PATH", &override_cli);
+
+        let coordinator = UpdateCoordinator::new_for_test(
+            UpdateService::new("0.7.0-beta".to_string(), true),
+            NodeRuntimeService::production(app_data.path()).unwrap(),
+            app_data.path().to_path_buf(),
+        );
+        let error = match coordinator.ensure_cli_service() {
+            Err(error) => error,
+            Ok(_) => panic!("expected CLI construction to fail while authority is already configured"),
+        };
+        let snapshot = coordinator.snapshot();
+
+        assert_ne!(error, "Verboo CLI preparation failed");
+        assert!(
+            error.contains("already configured"),
+            "construct error should stay specific, got {error}"
+        );
+        let snap_err = snapshot
+            .error
+            .expect("combined snapshot should carry the construct error");
+        assert!(
+            snap_err.contains("already configured"),
+            "{snap_err}"
+        );
+        assert!(!snap_err.contains("cli_initialization_failed"), "{snap_err}");
+
+        match previous_node {
+            Some(value) => std::env::set_var("VERBOO_NODE_PATH", value),
+            None => std::env::remove_var("VERBOO_NODE_PATH"),
+        }
+        match previous_cli {
+            Some(value) => std::env::set_var("VERBOO_CLI_PATH", value),
+            None => std::env::remove_var("VERBOO_CLI_PATH"),
+        }
+        crate::services::cli_update::runtime::reset();
+        crate::services::bootstrap_diag::reset();
     }
 
     #[test]

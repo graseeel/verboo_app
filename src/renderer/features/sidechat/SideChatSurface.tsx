@@ -78,6 +78,7 @@ export function SideChatSurface({
   busy,
   disabled = false,
   onSubmit,
+  onStop,
   onClose,
   onFocusConversation,
   auxiliary,
@@ -86,6 +87,7 @@ export function SideChatSurface({
   busy: boolean
   disabled?: boolean
   onSubmit: (message: string) => void
+  onStop?: () => void
   onClose: () => void
   onFocusConversation?: () => void
   auxiliary?: ReactNode
@@ -121,6 +123,7 @@ export function SideChatSurface({
         busy={busy}
         disabled={disabled}
         onSubmit={onSubmit}
+        onStop={onStop}
         onClose={requestClose}
         onFocusConversation={onFocusConversation}
         auxiliary={auxiliary}

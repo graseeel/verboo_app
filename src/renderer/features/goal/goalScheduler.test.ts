@@ -127,8 +127,8 @@ describe('runGoalCycle — happy paths', () => {
 
   it('G-C10 item 3: completion log includes formatted token count + elapsed time, and tokens survive the completion write', async () => {
     // The Maestro measured usedInputTokens=0 in the store after a real
-    // goal completed. Root cause: the token accumulator at App.tsx:1810
-    // called setGoal without synchronizing goalRef.current, so the
+    // goal completed. Root cause: the token accumulator called setGoal
+    // without synchronizing goalRef.current, so the
     // scheduler (reading via getGoal() → goalRef.current) saw a stale
     // snapshot and the completion updateGoal((prev) => ({ ...prev,
     // status: 'completed' })) preserved the zeros.
@@ -493,7 +493,7 @@ describe('runGoalCycle — pause paths', () => {
 
 describe('runGoalCycle — safety budget is DEAD CODE (no pause path)', () => {
   // Per goal-mode-out-of-beta spec: maxTurns/maxElapsed are no longer
-  // enforced. The scheduler comment at goalScheduler.ts:53-57 states:
+  // enforced. The scheduler comment in goalScheduler.ts states:
   // "No budget enforcement — tokens and time are unlimited in Verboo.
   //  maxTurns/maxElapsed fields remain on GoalState for backwards
   //  compatibility but are set to Number.MAX_SAFE_INTEGER and never
@@ -537,7 +537,6 @@ describe('runGoalCycle — infra error circuit breaker', () => {
   it('pauses after MAX_EVALUATION_ERRORS consecutive evaluator failures', async () => {
     const goal = makeGoal()
     const delegate = makeDelegate(goal, [])
-    // Override evaluateGoal to always throw
     delegate.evaluateGoal = async () => {
       throw new Error('CLI timeout')
     }
@@ -806,21 +805,21 @@ describe('runGoalCycle — cancellation', () => {
 })
 
 describe('runGoalCycle — resume after loop block', () => {
-  // Regression (G-C2-FIX): before the fix, App.tsx:2884 reset
-  // untouched. After G-C2 made the ring live, a resumed goal blocked by
+  // Regression (G-C2-FIX): before the fix, the App.tsx resume reset left
+  // the ring untouched. After G-C2 made the ring live, a resumed goal blocked by
   // loop would re-block instantly — the Resume button was useless
   // exactly in the case where it mattered most.
   //
-  // The fix in App.tsx:2884 adds recentFingerprints: [] to the resume
+  // The fix in App.tsx adds recentFingerprints: [] to the resume
   // spread, matching the other counter resets. These tests prove that
   // after applying the SAME reset shape, the cycle does not re-block,
   // and that without the reset it WOULD re-block (proving the bug was
   // real, not theoretical).
 
-  // Helper: produces the exact reset shape that App.tsx:2884 applies on
+  // Helper: produces the exact reset shape the App.tsx resume path applies
   // resume. Kept inline (not imported) because the fix lives in App.tsx,
   // not in a shared helper — coupling the test to the literal shape is
-  // the point. If App.tsx:2884 changes, this test must be updated to
+  // the point. If the App.tsx resume reset changes, this test must be updated to
   // match, surfacing the contract drift.
   const applyResumeLikeAppTsx2884 = (g: GoalState): GoalState =>
     ({ ...g, status: 'active', noProgressCount: 0, errorCount: 0, recentFingerprints: [] })
@@ -837,7 +836,7 @@ describe('runGoalCycle — resume after loop block', () => {
                            'TODO\u0001taskIncomplete\u0001Trying the same\u0001Same gap\u0001Same action'],
     })
 
-    // Step 2: apply the resume reset (same shape as App.tsx:2884).
+    // Step 2: apply the resume reset (same shape as the App.tsx resume path).
     const resumed = applyResumeLikeAppTsx2884(blocked)
     expect(resumed.status).toBe('active')
     expect(resumed.noProgressCount).toBe(0)

@@ -122,9 +122,6 @@ pub fn resolve_safe_path_public(root: &Path, file_path: &str) -> Option<PathBuf>
     resolve_safe_path(root, file_path)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Workspace changes (numstat + untracked)
-// ════════════════════════════════════════════════════════════════════
 
 /// Reads the workspace change summary for a working directory.
 /// Mirrors Electron's `readWorkspaceChangeSummary`.
@@ -215,7 +212,6 @@ fn add_untracked_entries(
         if path.is_empty() {
             continue;
         }
-        // Only add untracked entries that aren't already in the map
         if status_chars.starts_with("??") && !entries.contains_key(path) {
             let line_count = count_untracked_lines(&root.join(path));
             entries.insert(
@@ -285,9 +281,6 @@ fn empty_summary() -> WorkspaceChangeSummary {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Workspace review metadata
-// ════════════════════════════════════════════════════════════════════
 
 /// Reads metadata for the workspace review panel.
 /// Mirrors Electron's `readWorkspaceReviewMetadata`.
@@ -607,9 +600,6 @@ fn pr_result_error(error: String) -> WorkspacePullRequestResult {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Review actions: commit + PR
-// ════════════════════════════════════════════════════════════════════
 
 pub fn commit_workspace_changes(working_directory: &str, message: &str) -> WorkspaceCommitResult {
     let Some(root) = resolve_repo_root(working_directory) else {
@@ -797,9 +787,6 @@ fn extract_first_url(output: &str) -> Option<String> {
         })
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Branches
-// ════════════════════════════════════════════════════════════════════
 
 /// Reads branch info for a working directory.
 /// Mirrors Electron's `readWorkspaceBranchInfo`.
@@ -983,9 +970,6 @@ fn read_dirty_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-// ════════════════════════════════════════════════════════════════════
-// File diff + revert
-// ════════════════════════════════════════════════════════════════════
 
 /// Reads the diff for a file. Mirrors Electron's `readFileDiff`.
 pub fn read_file_diff(
@@ -1061,7 +1045,6 @@ pub fn revert_file(
             Err("Não foi possível restaurar o arquivo.".into())
         }
     } else {
-        // Untracked: delete the file
         match std::fs::remove_file(&target) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),

@@ -84,6 +84,19 @@ test('matchSiteToken: returns null when nothing matches', () => {
   assert.equal(matchSiteToken('hello world'), null)
 })
 
+test('matchSiteToken: word boundary holds for the single-letter token "x" and for long tokens alike', () => {
+  // Single-letter token matches only as a standalone word...
+  assert.equal(matchSiteToken('post this on x'), 'https://x.com')
+  // ...never inside another word.
+  assert.equal(matchSiteToken('put it in the box'), null)
+  assert.equal(matchSiteToken('xbox controller'), null)
+  // Pinned current behavior: the longer 'x.com' token wins over bare 'x'.
+  assert.equal(matchSiteToken('x.com is down'), 'https://x.com')
+  // Long tokens go through the same anchored pattern.
+  assert.equal(matchSiteToken('watch it on github'), 'https://github.com')
+  assert.equal(matchSiteToken('ask on stack overflow'), 'https://stackoverflow.com')
+})
+
 // ── planForMessage — navigate intent (EN + PT) ──────────────
 
 test('planForMessage: EN "open <url>" produces a navigate', () => {

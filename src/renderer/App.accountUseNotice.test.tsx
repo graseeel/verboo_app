@@ -195,9 +195,7 @@ describe('App — A1: switching the conversation account emits NO transcript not
     fireEvent.click(await screen.findByRole('button', { name: /^Providers$|^Provedores$/ }))
     await screen.findByText('Claude')
 
-    // The account card renders the primary action "Use here".
     fireEvent.click(await screen.findByRole('button', { name: /^Use here$|^Usar aqui$/ }))
-    // The confirm dialog closes the flow.
     const dialog = await screen.findByRole('alertdialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /^Use this account$|^Usar esta conta$/ }))
 

@@ -54,6 +54,29 @@ export function clientPointToNormalized(
   }
 }
 
+/** Maps a client point on the surface element to device-normalized
+ *  coordinates against the EXPLICIT media size (canvas mode: VAF1 header
+ *  dims; img mode: naturalWidth/Height resolved by the caller). Shared by
+ *  useSimulatorInteraction and SimulatorSurface so interact/selection modes
+ *  hit-test identically in both render paths. */
+export function pointToNormalizedOnSurface(
+  surface: HTMLElement,
+  size: Size,
+  clientX: number,
+  clientY: number,
+): NormalizedPoint | null {
+  if (size.width <= 0 || size.height <= 0) return null
+  const bounds = surface.getBoundingClientRect()
+  const painted = paintedContainRect(
+    { width: bounds.width, height: bounds.height },
+    size,
+  )
+  return clientPointToNormalized(
+    { x: clientX - bounds.left, y: clientY - bounds.top },
+    painted,
+  )
+}
+
 export function normalizedPointToDevice(point: NormalizedPoint, device: Size): DevicePoint | null {
   if (
     !finite(point.x, point.y, device.width, device.height)

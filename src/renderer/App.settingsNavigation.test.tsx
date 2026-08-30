@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 type ComposerProps = {
   leftToolbar?: ReactNode
+  onAttachFiles: () => void
 }
 
 type PluginsViewProps = {
@@ -31,7 +32,12 @@ type PluginsViewProps = {
 }
 
 vi.mock('./features/composer/Composer', () => ({
-  Composer: ({ leftToolbar }: ComposerProps) => <div data-testid="composer-stub">{leftToolbar}</div>,
+  Composer: ({ leftToolbar, onAttachFiles }: ComposerProps) => (
+    <div data-testid="composer-stub">
+      {leftToolbar}
+      <button type="button" onClick={onAttachFiles}>Attach file</button>
+    </div>
+  ),
 }))
 
 vi.mock('./features/models/ModelSelector', () => ({
@@ -85,6 +91,7 @@ class TestResizeObserver {
 }
 
 let lifecycleForward: ((event: { payload: unknown }) => void) | undefined
+let androidOpenForward: ((event: { payload: unknown }) => void) | undefined
 
 function createBridge() {
   const unsubscribe = () => {}
@@ -196,8 +203,10 @@ beforeEach(() => {
     value: {},
   })
   lifecycleForward = undefined
+  androidOpenForward = undefined
   listenMock.mockImplementation((eventName, callback) => {
     if (eventName === 'ios-simulator:lifecycle') lifecycleForward = callback
+    if (eventName === 'android-emulator:open-requested') androidOpenForward = callback
     return Promise.resolve(() => {})
   })
   ;(window as unknown as { verboo: unknown }).verboo = createBridge()
@@ -210,22 +219,71 @@ afterEach(() => {
 })
 
 describe('App settings shortcuts', () => {
+  it('opens the simulator on the Android tab when the Android agent requests it', async () => {
+    await renderApp()
+    await waitFor(() => expect(androidOpenForward).toBeDefined())
+
+    // Contrato novo (pinado nos 2 lados): payload é AndroidEmulatorPresence
+    // com o objeto completo. Null → useAndroidEmulatorPanel.ts:862 explode
+    // em `presence.generation` (gate da adoção). Ajustar a EMISSÃO ao contrato
+    // pinado (sem afrouxar as assertions abaixo — o handler `start` continua
+    // incrementando agentOpenRequest e setando agentPresence).
+    act(() => androidOpenForward?.({
+      payload: {
+        generation: 1, phase: 'start', action: 'attach',
+        target: null, start: null, end: null,
+      },
+    }))
+
+    const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
+    expect(topbar).toBeDefined()
+    if (!topbar) throw new Error('TopBar was not rendered')
+    await waitFor(() => {
+      expect(within(topbar).getByRole('button', { name: 'Simulators' })).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'Android emulator' })).toBeInTheDocument()
+    })
+  })
+
+  it('opens the panel on the platform selected from the real TopBar menu', async () => {
+    await renderApp()
+    const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
+    expect(topbar).toBeDefined()
+    if (!topbar) throw new Error('TopBar was not rendered')
+
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Android Emulator' }))
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'Android emulator' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide simulator' }))
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'iOS Simulator' }))
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument()
+    })
+  })
+
   it('restores the simulator and carries a hidden-panel lifecycle event into TopBar', async () => {
     const avatar = await renderApp()
     const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
     expect(topbar).toBeDefined()
     if (!topbar) throw new Error('TopBar was not rendered')
-    fireEvent.click(await within(topbar).findByRole('button', { name: 'Open iOS simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+    fireEvent.click(await within(topbar).findByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'iOS Simulator' }))
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument())
 
     fireEvent.click(avatar)
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument())
 
-    fireEvent.click(within(topbar).getByRole('button', { name: 'Hide iOS simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Open iOS simulator' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Hide simulator' }))
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toHaveClass('is-hidden'))
     await waitFor(() => expect(lifecycleForward).toBeDefined())
 
     const lifecycle: IosSimulatorLifecycleSnapshot = {
@@ -243,16 +301,38 @@ describe('App settings shortcuts', () => {
     expect(screen.getByLabelText('Screen recording in progress')).toBeInTheDocument()
   })
 
-  it('routes the avatar Settings shortcut to Security', async () => {
+  it('opens the avatar Settings shortcut on General by default', async () => {
     fireEvent.click(await renderApp())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
-    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
+  })
+
+  it('opens command-palette Settings on the initial General tab', async () => {
+    await renderApp()
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Open settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeInTheDocument()
+  })
+
+  it('preserves the selected tab when Settings is reopened generically', async () => {
+    fireEvent.click(await renderApp())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    expect(await screen.findByRole('heading', { name: 'Account', level: 1 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Ada/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Account', level: 1 })).toBeInTheDocument()
   })
 
   it('routes the locked Free mode shortcut to Security', async () => {
     await renderApp()
     fireEvent.click(screen.getByRole('button', { name: 'Ask for approval' }))
+    expect(screen.getByText('Enable it in Settings > Security to unlock this mode.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Free mode/ }))
 
     expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
@@ -303,5 +383,33 @@ describe('App settings shortcuts', () => {
     await renderApp()
 
     expect(screen.queryByRole('button', { name: /Archived chats/ })).not.toBeInTheDocument()
+  })
+
+  it('passes the English UI locale into every producer-controlled native dialog label', async () => {
+    const pickFiles = vi.fn(async () => [])
+    const pickFolder = vi.fn(async () => undefined)
+    const createProjectFolder = vi.fn(async () => undefined)
+    const bridge = createBridge()
+    bridge.pickFiles = pickFiles
+    bridge.pickFolder = pickFolder
+    bridge.createProjectFolder = createProjectFolder
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    await renderApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
+    expect(pickFiles).toHaveBeenCalledWith({
+      title: 'Select files to attach',
+      imagesFilter: 'Images',
+      videosFilter: 'Videos',
+      allFilesFilter: 'All files',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    expect(pickFolder).toHaveBeenCalledWith('Select folder')
+
+    fireEvent.click(screen.getByRole('button', { name: 'No project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
+    expect(createProjectFolder).toHaveBeenCalledWith('Select a parent folder for the new project')
   })
 })

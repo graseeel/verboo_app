@@ -587,44 +587,100 @@ impl InnerWebView {
     }
   }
 
+  const BOUNDS_OVERLAY_NAME: &'static str = "wry-bounds-overlay";
+  const BOUNDS_FIXED_NAME: &'static str = "wry-bounds-fixed";
+
   fn add_to_container<W>(webview: &WebView, container: &W, attributes: &WebViewAttributes) -> bool
   where
     W: IsA<gtk::Container>,
   {
-    let mut is_in_fixed_parent = false;
-
     let container_type = container.type_().name();
     if container_type == "GtkBox" {
-      container
-        .dynamic_cast_ref::<gtk::Box>()
-        .unwrap()
-        .pack_start(webview, true, true, 0);
+      let box_ = container.dynamic_cast_ref::<gtk::Box>().unwrap();
+      // Empty box: this is the window-content webview (Tauri packs it first).
+      // A later child must not pack_start beside it — that expands full-width
+      // and ignores bounds. Overlay + GtkFixed keeps window-relative x/y.
+      if box_.children().is_empty() {
+        box_.pack_start(webview, true, true, 0);
+        return false;
+      }
+      let fixed = Self::ensure_bounds_fixed(box_);
+      Self::put_in_fixed(&fixed, webview, attributes);
+      true
     } else if container_type == "GtkFixed" {
-      let scale_factor = webview.scale_factor() as f64;
-      let (width, height) = attributes
-        .bounds
-        .map(|b| b.size.to_logical::<i32>(scale_factor))
-        .map(Into::into)
-        .unwrap_or((1, 1));
-      let (x, y) = attributes
-        .bounds
-        .map(|b| b.position.to_logical::<i32>(scale_factor))
-        .map(Into::into)
-        .unwrap_or((0, 0));
-
-      webview.set_size_request(width, height);
-
-      container
-        .dynamic_cast_ref::<gtk::Fixed>()
-        .unwrap()
-        .put(webview, x, y);
-
-      is_in_fixed_parent = true;
+      let fixed = container.dynamic_cast_ref::<gtk::Fixed>().unwrap();
+      Self::put_in_fixed(fixed, webview, attributes);
+      true
     } else {
       container.add(webview);
+      false
+    }
+  }
+
+  fn ensure_bounds_fixed(box_: &gtk::Box) -> gtk::Fixed {
+    for child in box_.children() {
+      if child.widget_name() != Self::BOUNDS_OVERLAY_NAME {
+        continue;
+      }
+      let Ok(overlay) = child.downcast::<gtk::Overlay>() else {
+        continue;
+      };
+      for overlay_child in overlay.children() {
+        if overlay_child.widget_name() == Self::BOUNDS_FIXED_NAME {
+          if let Ok(fixed) = overlay_child.downcast::<gtk::Fixed>() {
+            return fixed;
+          }
+        }
+      }
     }
 
-    is_in_fixed_parent
+    let existing = box_.children();
+    for child in &existing {
+      box_.remove(child);
+    }
+
+    let overlay = gtk::Overlay::new();
+    overlay.set_widget_name(Self::BOUNDS_OVERLAY_NAME);
+    overlay.set_hexpand(true);
+    overlay.set_vexpand(true);
+
+    match existing.len() {
+      0 => {}
+      1 => overlay.add(&existing[0]),
+      _ => {
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for child in &existing {
+          inner.pack_start(child, true, true, 0);
+        }
+        overlay.add(&inner);
+      }
+    }
+
+    let fixed = gtk::Fixed::new();
+    fixed.set_widget_name(Self::BOUNDS_FIXED_NAME);
+    overlay.add_overlay(&fixed);
+    overlay.set_overlay_pass_through(&fixed, true);
+
+    box_.pack_start(&overlay, true, true, 0);
+    overlay.show_all();
+    fixed
+  }
+
+  fn put_in_fixed(fixed: &gtk::Fixed, webview: &WebView, attributes: &WebViewAttributes) {
+    let scale_factor = webview.scale_factor() as f64;
+    let (width, height) = attributes
+      .bounds
+      .map(|b| b.size.to_logical::<i32>(scale_factor))
+      .map(Into::into)
+      .unwrap_or((1, 1));
+    let (x, y) = attributes
+      .bounds
+      .map(|b| b.position.to_logical::<i32>(scale_factor))
+      .map(Into::into)
+      .unwrap_or((0, 0));
+
+    webview.set_size_request(width, height);
+    fixed.put(webview, x, y);
   }
 
   fn attach_ipc_handler(webview: WebView, attributes: &mut WebViewAttributes) {
@@ -866,6 +922,12 @@ impl InnerWebView {
     }
 
     if self.is_in_fixed_parent {
+      self.webview.set_size_request(width, height);
+      if let Some(parent) = self.webview.parent() {
+        if let Ok(fixed) = parent.downcast::<gtk::Fixed>() {
+          fixed.move_(&self.webview, x, y);
+        }
+      }
       self
         .webview
         .size_allocate(&gtk::Allocation::new(x, y, width, height));

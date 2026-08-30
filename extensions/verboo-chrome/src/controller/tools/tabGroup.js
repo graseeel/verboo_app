@@ -48,10 +48,8 @@ export async function tabGroup(tool, ctx = {}) {
       const tabIds = Array.isArray(tool.tabIds) ? tool.tabIds : []
       if (tabIds.length === 0) throw new Error('tab_group.unassign: missing tabIds')
       await assertWorkspaceTabs(tabIds, ctx.workspaceWindowId)
-      // Ungroup specific tabs by passing them to tabs.group with create
-      // (a new group) then immediately ungrouping — but the simpler API
-      // is chrome.tabs.ungroup if available. MV3 exposes it as
-      // chrome.tabs.ungroup in Chrome 116+.
+      // chrome.tabs.ungroup exists since Chrome 116; older builds fall back
+      // to a temp group that is immediately ungrouped.
       if (chrome.tabs.ungroup) {
         await chrome.tabs.ungroup(tabIds)
       } else {

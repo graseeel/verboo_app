@@ -7,7 +7,6 @@
 import { vi, expect, type Mock } from 'vitest'
 import type { VerbooModel, ModelDiscoveryResult, SkillSummary, ChromeIntegrationStatus } from '../../shared/types'
 
-// ─── Tauri invoke mock ──────────────────────────────────────────────────────
 
 export type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>
 
@@ -33,7 +32,6 @@ export function installTauriMocks(overrides?: Record<string, unknown | ((args: R
   return { invoke }
 }
 
-// ─── Window bridge mock ─────────────────────────────────────────────────────
 
 export interface VerbooBridgeMock {
   pluginList: Mock
@@ -87,7 +85,6 @@ export function installVerbooBridge(overrides?: Partial<VerbooBridgeMock>) {
   return bridge
 }
 
-// ─── Fixture factories ──────────────────────────────────────────────────────
 
 export function makeModel(overrides?: Partial<VerbooModel>): VerbooModel {
   return {
@@ -143,9 +140,7 @@ export function defaultChromeStatus(overrides?: Partial<ChromeIntegrationStatus>
   }
 }
 
-// ─── Assertion helpers ──────────────────────────────────────────────────────
 
-/** Assert that invoke was called with a specific command. */
 export function expectInvokeCalled(invoke: Mock, command: string, times?: number) {
   const calls = invoke.mock.calls.filter((call: unknown[]) => call[0] === command)
   if (times !== undefined) {
@@ -156,13 +151,11 @@ export function expectInvokeCalled(invoke: Mock, command: string, times?: number
   return calls
 }
 
-/** Assert that invoke was NOT called with a specific command. */
 export function expectInvokeNotCalled(invoke: Mock, command: string) {
   const calls = invoke.mock.calls.filter((call: unknown[]) => call[0] === command)
   expect(calls).toHaveLength(0)
 }
 
-/** Get the args of the first invoke call with a specific command. */
 export function getInvokeArgs(invoke: Mock, command: string): Record<string, unknown> | undefined {
   const call = invoke.mock.calls.find((c: unknown[]) => c[0] === command)
   return call?.[1] as Record<string, unknown> | undefined

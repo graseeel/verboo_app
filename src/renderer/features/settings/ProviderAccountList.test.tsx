@@ -42,6 +42,82 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ProviderAccou
 }
 
 describe('ProviderAccountList', () => {
+  it('keeps distinct per-account quotas and derives each window label from its reported duration', () => {
+    const rows: ProviderUsageRowState[] = [
+      {
+        account: { ...account, accountId: 'codex-a', displayLabel: 'Codex Work' },
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'codex',
+          accountId: 'codex-a',
+          plan: { id: 'plus', displayName: 'Plus' },
+          windows: [
+            {
+              id: 'codex:primary',
+              kind: 'session',
+              displayLabel: 'must not decide the duration',
+              windowMinutes: 180,
+              usedPercent: 11,
+              resetsAt: '2026-08-29T03:00:00.000Z',
+            },
+            {
+              id: 'codex:partial-hour',
+              kind: 'unknown',
+              displayLabel: 'must not decide the duration',
+              windowMinutes: 90,
+              usedPercent: 22,
+              resetsAt: '2026-08-29T04:30:00.000Z',
+            },
+            {
+              id: 'codex:legacy-session',
+              kind: 'session',
+              displayLabel: 'legacy session without duration',
+              usedPercent: 97,
+              resetsAt: '2026-08-29T05:00:00.000Z',
+            },
+          ],
+          fetchedAt: '2026-08-28T23:00:00.000Z',
+        },
+      },
+      {
+        account: { ...account, accountId: 'codex-b', displayLabel: 'Codex Personal', isDefault: false },
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'codex',
+          accountId: 'codex-b',
+          plan: { id: 'plus', displayName: 'Plus' },
+          windows: [{
+            id: 'codex:primary',
+            kind: 'session',
+            displayLabel: 'must not decide the duration',
+            windowMinutes: 480,
+            usedPercent: 73,
+            resetsAt: '2026-08-29T08:00:00.000Z',
+          }],
+          fetchedAt: '2026-08-28T23:00:01.000Z',
+        },
+      },
+    ]
+
+    renderList({ rows })
+
+    const workCard = screen.getByText('Codex Work').closest('article')!
+    const personalCard = screen.getByText('Codex Personal').closest('article')!
+    expect(within(workCard).getByText('3 hours')).toBeInTheDocument()
+    expect(within(workCard).getByText(/11% used/)).toBeInTheDocument()
+    expect(within(workCard).getByText('90 minutes')).toBeInTheDocument()
+    expect(within(workCard).getByText(/22% used/)).toBeInTheDocument()
+    expect(within(workCard).queryByText(/73% used/)).toBeNull()
+    expect(within(workCard).queryByText(/97% used/)).toBeNull()
+    expect(within(personalCard).getByText('8 hours')).toBeInTheDocument()
+    expect(within(personalCard).getByText(/73% used/)).toBeInTheDocument()
+    expect(within(personalCard).queryByText(/11% used/)).toBeNull()
+    expect(within(personalCard).queryByText(/22% used/)).toBeNull()
+    expect(within(personalCard).queryByText(/97% used/)).toBeNull()
+  })
+
   it('shows the detected usage plan when the account summary has no plan yet', () => {
     const row: ProviderUsageRowState = {
       account: { ...account, planDisplayName: undefined },
@@ -261,8 +337,7 @@ describe('ProviderAccountList', () => {
   // L1 — UX do login no caminho novo (providerAccountsV1): o card do grupo
   // precisa mostrar o estágio + Cancelar durante o fluxo, e o botão
   // Adicionar conta precisa travar para evitar dois providerLoginStart
-  // simultâneos. O App.tsx já mantém connectingProvider/providerLoginStage
-  // e o invoke provider_login_cancel já existe no caminho legacy.
+  // simultâneos.
   function codexGroup(): HTMLElement {
     return screen.getByRole('heading', { name: 'Codex' }).closest('.provider-account-group') as HTMLElement
   }
@@ -288,7 +363,6 @@ describe('ProviderAccountList', () => {
     const stageBox = stage.closest('.provider-login-stage')
     expect(stageBox).not.toBeNull()
     expect(stageBox?.querySelector('.spin-icon')).toBeTruthy()
-    // Cancelar é botão secundário padrão, clicável, mesma linha.
     const cancel = within(codexGroup()).getByRole('button', { name: /^cancel$|^cancelar$/i })
     expect(cancel).toHaveProperty('disabled', false)
     fireEvent.click(cancel)
@@ -318,8 +392,6 @@ describe('ProviderAccountList', () => {
     expect(document.querySelector('.provider-account-card [data-testid="provider-icon-codex"]')).toBeTruthy()
   })
 
-  // L2 (2) — uma única linha de ações: a ação primária (Usar aqui / Em uso)
-  // e o kebab alinhados verticalmente na MESMA row.
   it('L2: primary action and kebab share one aligned actions row', () => {
     renderList({})
     const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
@@ -379,9 +451,7 @@ describe('ProviderAccountList', () => {
     const actions = card.querySelector('.provider-account-actions') as HTMLElement
     expect(usage).not.toBeNull()
     expect(actions).not.toBeNull()
-    // Actions vêm DEPOIS (abaixo) das janelas de uso.
     expect(usage.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // Ação primeiro (à esquerda), kebab depois (à direita), mesma linha.
     const useButton = screen.getByRole('button', { name: 'Use here' })
     const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
     expect(actions.firstElementChild).toBe(useButton)

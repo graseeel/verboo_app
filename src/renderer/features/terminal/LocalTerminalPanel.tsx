@@ -48,12 +48,10 @@ export function LocalTerminalPanel({
   const resizeObserverRef = useRef<ResizeObserver | undefined>(undefined)
   const [restarting, setRestarting] = useState(false)
 
-  // Initialize xterm
   useEffect(() => {
     const termContainer = terminalRef.current
     if (!termContainer) return
 
-    // Avoid creating multiple instances
     if (xtermRef.current) return
 
     const fitAddon = new FitAddon()
@@ -97,7 +95,6 @@ export function LocalTerminalPanel({
     term.loadAddon(fitAddon)
     term.open(termContainer)
 
-    // Fit after opening
     requestAnimationFrame(() => {
       try {
         fitAddon.fit()
@@ -106,7 +103,6 @@ export function LocalTerminalPanel({
       }
     })
 
-    // Send input from terminal to PTY.
     term.onData((data: string) => {
       void onWrite(data)
     })
@@ -146,7 +142,6 @@ export function LocalTerminalPanel({
     xtermRef.current = term
 
     return () => {
-      // Cleanup xterm on unmount
       term.dispose()
       xtermRef.current = undefined
       fitAddonRef.current = undefined
@@ -160,7 +155,6 @@ export function LocalTerminalPanel({
     xtermRef.current?.clear()
   }, [session?.id])
 
-  // Handle terminal data from main process
   useEffect(() => {
     if (!xtermRef.current) return undefined
 
@@ -176,19 +170,16 @@ export function LocalTerminalPanel({
     return cleanup
   }, [onTerminalData])
 
-  // Handle terminal exit
   useEffect(() => {
     if (!xtermRef.current) return undefined
 
     const cleanup = onTerminalExit(() => {
-      // Show termination notice
       xtermRef.current?.writeln(`\r\n\x1b[90m━━━ ${t('terminal.ended')} ━━━\x1b[0m`)
     })
 
     return cleanup
   }, [onTerminalExit, t])
 
-  // Fit terminal on mount and when width changes
   useEffect(() => {
     if (!terminalOpen || !fitAddonRef.current) return
 
@@ -201,7 +192,6 @@ export function LocalTerminalPanel({
     })
   }, [terminalOpen, terminalWidth])
 
-  // ResizeObserver for terminal container
   useEffect(() => {
     if (!terminalOpen || !terminalRef.current) return
 
@@ -231,7 +221,6 @@ export function LocalTerminalPanel({
     }
   }, [terminalOpen, onResize])
 
-  // Manual resize handler
   const handleResizerPointerDown = useCallback((event: React.PointerEvent) => {
     if (event.button !== 0) return
     event.preventDefault()
@@ -259,7 +248,6 @@ export function LocalTerminalPanel({
     window.addEventListener('pointerup', stopResize)
   }, [terminalWidth, onSetWidth])
 
-  // Focus terminal when panel opens
   useEffect(() => {
     if (!terminalOpen) return
     const timer = setTimeout(() => {
@@ -275,9 +263,7 @@ export function LocalTerminalPanel({
   const handleRestart = useCallback(async () => {
     setRestarting(true)
     try {
-      // Kill existing sessions via stop
       await onStop()
-      // Start a new session via restart
       await onRestartInProject()
     } finally {
       setRestarting(false)

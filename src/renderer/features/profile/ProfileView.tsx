@@ -1,5 +1,5 @@
 import { ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
-import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { type ChangeEvent, type CSSProperties, useEffect, useRef, useState } from 'react'
 import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
 import { useToast } from '../../components/Toast'
@@ -20,10 +20,30 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
   const { toast } = useToast()
   const summary = profile.summary
   const activity = profile.activity ?? []
-  // ── Upload state ──────────────────────────────────────────
   const [pendingFile, setPendingFile] = useState<{ file: File; previewUrl: string } | undefined>()
   const [isSaving, setIsSaving] = useState(false)
   const initialProfileLoadAttempted = useRef(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  function handleAvatarFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    console.log('[avatar] file picked:', file.name, file.type, file.size)
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      console.warn('[avatar] rejected format:', file.type, file.name)
+      toast(t('settings.avatarUploadErrorType'))
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      console.warn('[avatar] rejected size:', file.size)
+      toast(t('settings.avatarUploadErrorSize'))
+      return
+    }
+    const previewUrl = URL.createObjectURL(file)
+    setPendingFile({ file, previewUrl })
+    console.log('[avatar] preview set:', previewUrl)
+    event.target.value = ''
+  }
 
   useEffect(() => {
     if (initialProfileLoadAttempted.current || profile.status === 'ready') return
@@ -41,20 +61,32 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
         </button>
       </div>
 
-      {profile.status !== 'ready' && (
-        <section className="profile-warning">
+      {profile.status === 'api-key-only' ? (
+        <section className="profile-warning profile-api-key-only">
           <ShieldCheck size={17} />
-          <span>{t('profile.warning')}</span>
+          <div>
+            <strong>{t('profile.apiKeyOnlyTitle')}</strong>
+            <span>{t('profile.apiKeyOnlyDescription')}</span>
+          </div>
         </section>
+      ) : (
+        <>
+          {profile.status !== 'ready' && (
+            <section className="profile-warning">
+              <ShieldCheck size={17} />
+              <span>{t('profile.warning')}</span>
+            </section>
+          )}
+
+          {profile.error && profile.status === 'ready' && (
+            <section className="profile-warning subtle">
+              <span>{t('profile.partialWarning')}</span>
+            </section>
+          )}
+        </>
       )}
 
-      {profile.error && profile.status === 'ready' && (
-        <section className="profile-warning subtle">
-          <span>{t('profile.partialWarning')}</span>
-        </section>
-      )}
-
-      {/* ── Avatar section ──────────────────────────────────── */}
+      {/* Avatar section */}
       <section className="profile-panel avatar-editor-panel">
         <div className="avatar-editor-main">
           <div className="avatar-editor-preview">
@@ -67,8 +99,18 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
             )}
           </div>
           <div className="avatar-editor-upload">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp"
+              className="sr-only"
+              aria-label={t('settings.avatarUpload')}
+              onChange={handleAvatarFileChange}
+            />
             {pendingFile ? (
-              <div className="avatar-editor-actions">
+              <>
+                <p className="avatar-editor-filename">{pendingFile.file.name}</p>
+                <div className="avatar-editor-actions">
                 <button type="button" className="ghost-button" disabled={isSaving} onClick={async () => {
                   setIsSaving(true)
                   try {
@@ -117,32 +159,19 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
                   <X size={14} />
                 </button>
               </div>
+              </>
             ) : (
-              <label className="avatar-editor-upload-btn">
-                <Camera size={14} />
-                <span>{t('settings.avatarUpload')}</span>
-                <input type="file" accept=".png,.jpg,.jpeg,.webp" className="sr-only" aria-label={t('settings.avatarUpload')}
-                  onChange={e => {
-                    const file = e.target.files?.[0]
-                    if (!file) return
-                    console.log('[avatar] file picked:', file.name, file.type, file.size)
-                    // Validate MIME — accept image/png, image/jpeg, image/webp.
-                    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-                      console.warn('[avatar] rejected format:', file.type, file.name)
-                      toast(t('settings.avatarUploadErrorType'))
-                      return
-                    }
-                    if (file.size > 10 * 1024 * 1024) {
-                      console.warn('[avatar] rejected size:', file.size)
-                      toast(t('settings.avatarUploadErrorSize'))
-                      return
-                    }
-                    const previewUrl = URL.createObjectURL(file)
-                    setPendingFile({ file, previewUrl })
-                    console.log('[avatar] preview set:', previewUrl)
-                  }}
-                />
-              </label>
+              <div className="avatar-editor-upload-row">
+                <button
+                  type="button"
+                  className="button button-sm button-secondary"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Camera size={14} />
+                  {t('settings.avatarUpload')}
+                </button>
+                <span className="avatar-editor-filename settings-hint">{t('settings.avatarNoFile')}</span>
+              </div>
             )}
           </div>
         </div>
@@ -181,42 +210,46 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
         )}
       </section>
 
-      <section className="profile-grid">
-        <MetricCard label={t('profile.totalTokens')} value={formatOptional(summary?.totalTokens, language, t)} />
-        <MetricCard label={t('profile.input')} value={formatOptional(summary?.tokensInTotal, language, t)} />
-        <MetricCard label={t('profile.output')} value={formatOptional(summary?.tokensOutTotal, language, t)} />
-        <MetricCard label={t('profile.requests')} value={formatOptional(summary?.reqTotal, language, t)} />
-      </section>
+      {profile.status !== 'api-key-only' && (
+        <>
+          <section className="profile-grid">
+            <MetricCard label={t('profile.totalTokens')} value={formatOptional(summary?.totalTokens, language, t)} />
+            <MetricCard label={t('profile.input')} value={formatOptional(summary?.tokensInTotal, language, t)} />
+            <MetricCard label={t('profile.output')} value={formatOptional(summary?.tokensOutTotal, language, t)} />
+            <MetricCard label={t('profile.requests')} value={formatOptional(summary?.reqTotal, language, t)} />
+          </section>
 
-      {/* Only show the activity panel when the account API actually returns a
-          per-day breakdown. The usage/summary endpoint often returns totals
-          only, and an empty "no real value" heatmap looked broken (B2). */}
-      {activity.length > 0 && (
-        <section className="profile-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>{t('profile.activityDays')}</h2>
-              <p>{t('profile.activeDays', { count: profile.activeDays ?? 0 })}</p>
-            </div>
-          </div>
-          <ActivityHeatmap days={activity} />
-        </section>
-      )}
-
-      <section className="profile-panel plan-panel">
-        <div>
-          <h2>{profile.plan?.name ?? t('profile.planUnavailable')}</h2>
-          <p>{profile.plan?.status ? t('profile.planStatus', { status: profile.plan.status }) : t('profile.planPending')}</p>
-          {profile.plan?.priceLabel && <strong>{profile.plan.priceLabel}</strong>}
-          {profile.plan?.models?.length && (
-            <p className="plan-models">{profile.plan.models.slice(0, 8).join(', ')}</p>
+          {/* Only show the activity panel when the account API actually returns a
+              per-day breakdown. The usage/summary endpoint often returns totals
+              only, and an empty "no real value" heatmap looked broken (B2). */}
+          {activity.length > 0 && (
+            <section className="profile-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>{t('profile.activityDays')}</h2>
+                  <p>{t('profile.activeDays', { count: profile.activeDays ?? 0 })}</p>
+                </div>
+              </div>
+              <ActivityHeatmap days={activity} />
+            </section>
           )}
-        </div>
-        <button className="primary-action" type="button" onClick={onManagePlan}>
-          {t('profile.managePlan')}
-          <ArrowUpRight size={15} />
-        </button>
-      </section>
+
+          <section className="profile-panel plan-panel">
+            <div>
+              <h2>{profile.plan?.name ?? t('profile.planUnavailable')}</h2>
+              <p>{profile.plan?.status ? t('profile.planStatus', { status: profile.plan.status }) : t('profile.planPending')}</p>
+              {profile.plan?.priceLabel && <strong>{profile.plan.priceLabel}</strong>}
+              {profile.plan?.models?.length && (
+                <p className="plan-models">{profile.plan.models.slice(0, 8).join(', ')}</p>
+              )}
+            </div>
+            <button className="primary-action" type="button" onClick={onManagePlan}>
+              {t('profile.managePlan')}
+              <ArrowUpRight size={15} />
+            </button>
+          </section>
+        </>
+      )}
     </div>
   )
 }

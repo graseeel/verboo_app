@@ -52,7 +52,7 @@ function unregisterOverlay(id: string) {
 
 async function captureSnapshotIfNeeded(browserOpen: boolean, browserVisible: boolean, activeTabId?: string, activeTabGeneration?: number): Promise<void> {
   if (!browserOpen || !browserVisible || snapshotPending || snapshotDataUrl) return
-  if (!activeTabId) return  // No active webview to capture
+  if (!activeTabId) return
   snapshotPending = true
   try {
     const result = await invoke<{ ms: number; bytes: number; path: string; dataUrl: string }>('browser_snapshot', {
@@ -89,11 +89,8 @@ function clearSnapshot() {
 }
 
 export type OverlayShadeState = {
-  /** Whether any overlay is currently shading the browser */
   isShading: boolean
-  /** The captured snapshot data URL, or null if no snapshot */
   snapshotDataUrl: string | null
-  /** Register an overlay. Returns an unregister function. */
   register: (shades?: boolean) => () => void
 }
 
@@ -140,7 +137,6 @@ export function useOverlayShade(browserOpen: boolean, browserVisible = browserOp
   const wantsShade = hasShadingOverlays()
   const isShading = wantsShade || restorePending
 
-  // Capture snapshot when first shading overlay opens
   useEffect(() => {
     if (wantsShade && browserOpen && browserVisible) {
       wasShadingRef.current = true
@@ -149,7 +145,6 @@ export function useOverlayShade(browserOpen: boolean, browserVisible = browserOp
     }
   }, [wantsShade, browserOpen, browserVisible])
 
-  // Clear snapshot when all shading overlays close
   useEffect(() => {
     if (wantsShade || !wasShadingRef.current) return
 

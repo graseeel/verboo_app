@@ -1,6 +1,6 @@
 [package]
 name = "verboo-desktop"
-version = "0.7.3-beta"
+version = "0.8.0-beta"
 description = "Verboo Code Desktop (Tauri v2)"
 authors = ["Gabriel Grasel de Moura <graseeel@users.noreply.github.com>"]
 license = "MIT"
@@ -53,6 +53,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 # ── Serialization ────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+quick-xml = "0.41"
+prost = "=0.13.5"
 
 # ── Power management ──────────────────────────────────────────────
 # keepawake: cross-platform (macOS IOKit, Windows SetThreadExecutionState,
@@ -62,6 +64,7 @@ keepawake = "0.6"
 
 # ── Async ────────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }
+tonic = { version = "=0.13.1", default-features = false, features = ["channel", "codegen", "prost"] }
 
 # ── Utilities ────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }
@@ -98,6 +101,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 
 # ── Terminal (PTY) ──────────────────────────────────────────────
 portable-pty = "0.8"
+
+[dev-dependencies]
+tauri = { version = "=2.11.5", features = ["test"] }
 
 # ── Unix-specific ────────────────────────────────────────────────
 [target.'cfg(unix)'.dependencies]

@@ -63,7 +63,6 @@ describe('ProviderIntegrations — cartões por provedor (universo da ponte)', (
     )
     expect(screen.getByText('Claude')).toBeTruthy()
     expect(screen.getByText(/^Connected$|^Conectado$/i)).toBeTruthy()
-    // Official brand icon replaces the old colored dot on the card.
     expect(document.querySelector('.provider-card-head [data-testid="provider-icon-claude"]')).toBeTruthy()
     // Account comes from the bridge entry (not the global CLI auth method).
     expect(screen.getByText(/user@example\.com/)).toBeTruthy()
@@ -177,11 +176,10 @@ describe('ProviderIntegrations — cartões por provedor (universo da ponte)', (
     expect(screen.queryByText(/Update the CLI to see usage windows|Atualize o CLI para ver as janelas de uso/i)).toBeNull()
   })
 
-  // L1 — Wire-up: o ramo providerAccountsV1 (caminho novo) precisa receber
-  // connectingProvider/loginStage/onCancelLogin do App, igual ao ramo legacy.
-  // Hoje ProviderIntegrations.tsx:58-72 renderiza o ProviderAccountList sem
-  // essas props — durante o login não há indicador de progresso nem Cancelar
-  // no card, e o botão "Adicionar conta" segue clicável.
+  // L1 — Wire-up: o ramo providerAccountsV1 (caminho novo) recebe
+  // connectingProvider/loginStage/onCancelLogin do App, igual ao ramo
+  // legacy: durante o login o card mostra progresso + Cancelar e o botão
+  // "Adicionar conta" fica travado.
   it('L1: passes the connecting state + cancel handler down to ProviderAccountList', () => {
     const onCancelLogin = vi.fn()
     render(

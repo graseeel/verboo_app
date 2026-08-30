@@ -1,14 +1,24 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { AttachmentMeta } from '../../../shared/types'
+import { androidEmulatorApi } from './androidEmulatorApi'
 import type { IosSimulatorAnnotationCapture } from './iosSimulatorApi'
 
 type SimulatorAnnotationKind = 'element' | 'area'
 type PromotedSimulatorFile = { from: string; to: string }
+export type SimulatorAnnotationContext = {
+  platform: 'iOS' | 'Android'
+  version: string
+  selectionImage?: 'crop' | 'viewport'
+}
 
 export function createSimulatorAnnotationAttachment(
   kind: SimulatorAnnotationKind,
   note: string | null | undefined,
   capture: IosSimulatorAnnotationCapture,
+  context: SimulatorAnnotationContext = {
+    platform: 'iOS',
+    version: capture.device.iosVersion,
+  },
 ): AttachmentMeta {
   const element = capture.element
     ? {
@@ -21,12 +31,14 @@ export function createSimulatorAnnotationAttachment(
     ? `Selected component: ${element.role}${element.label ? ` “${element.label}”` : ''}.`
     : 'Selected area of the simulator viewport.'
   const detail = [
-    `Simulator annotation (${kind}) on ${capture.device.name}, iOS ${capture.device.iosVersion}, ${capture.orientation}.`,
+    `Simulator annotation (${kind}) on ${capture.device.name}, ${context.platform} ${context.version}, ${capture.orientation}.`,
     selected,
     note
       ? `User note (authoritative instruction): ${note}.`
       : 'No written note was provided.',
-    'Treat the written instruction and selected simulator component as authoritative. Use the crop and full simulator viewport only as supporting visual context.',
+    context.selectionImage === 'viewport'
+      ? 'Treat the written instruction and selected simulator component as authoritative. Use the selected rect metadata and full simulator viewport only as supporting visual context.'
+      : 'Treat the written instruction and selected simulator component as authoritative. Use the crop and full simulator viewport only as supporting visual context.',
   ].join('\n')
 
   return {
@@ -69,6 +81,7 @@ export function expandSimulatorAnnotationSnapshots(attachments: AttachmentMeta[]
     const annotation = attachment.simulatorAnnotation
     const snapshot = annotation?.viewportSnapshot
     if (attachment.kind !== 'simulator-annotation' || !annotation || !snapshot) return [attachment]
+    if (snapshot.path === attachment.path) return [attachment]
     return [attachment, {
       path: snapshot.path,
       name: 'simulator-viewport.png',
@@ -93,10 +106,20 @@ export async function promoteSimulatorAttachments(
       .filter((path): path is string => typeof path === 'string' && isSimulatorTempPath(path))
   }))]
   if (!paths.length) return attachments
-  const promoted = await invoke<PromotedSimulatorFile[]>('ios_simulator_promote_temp_files', {
-    ownerId,
-    paths,
-  })
+  const iosPaths = paths.filter(isIosSimulatorTempPath)
+  const androidPaths = paths.filter(isAndroidSimulatorTempPath)
+  const [iosPromoted, androidPromoted] = await Promise.all([
+    iosPaths.length
+      ? invoke<PromotedSimulatorFile[]>('ios_simulator_promote_temp_files', {
+          ownerId,
+          paths: iosPaths,
+        })
+      : Promise.resolve([]),
+    androidPaths.length
+      ? androidEmulatorApi.capturePromote(ownerId, androidPaths)
+      : Promise.resolve([]),
+  ])
+  const promoted = [...iosPromoted, ...androidPromoted]
   const pathMap = new Map(promoted.map(file => [file.from, file.to]))
   return attachments.map(attachment => {
     const annotation = attachment.simulatorAnnotation
@@ -118,5 +141,13 @@ export async function promoteSimulatorAttachments(
 }
 
 export function isSimulatorTempPath(path: string): boolean {
+  return isIosSimulatorTempPath(path) || isAndroidSimulatorTempPath(path)
+}
+
+export function isIosSimulatorTempPath(path: string): boolean {
   return path.replaceAll('\\', '/').includes('/verboo-ios-simulator/')
+}
+
+export function isAndroidSimulatorTempPath(path: string): boolean {
+  return path.replaceAll('\\', '/').includes('/verboo-android-emulator/')
 }

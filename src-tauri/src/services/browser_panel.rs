@@ -639,7 +639,6 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
     });
 }
 
-// ── Internals ────────────────────────────────────────────────────────
 
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 const SMOKE_PAGE_READY_POLL: Duration = Duration::from_millis(50);
@@ -773,7 +772,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         closed_tabs: 0,
     };
 
-    // ── step: open session with bounds ────────────────────────
     eprintln!("[smoke] step: session_open starting");
     let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
     if let Err(e) = browser_session_open(app.state(), session_bounds) {
@@ -795,7 +793,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         Err(e) => { eprintln!("[smoke] step: tab1 create failed: {e}"); report.error = Some(format!("tab 1 create failed: {e}")); return Ok(report); }
     };
 
-    // Wait for tab 1 to load.
     eprintln!("[smoke] step: wait_for_page_ready tab1 starting");
     if !wait_for_page_ready(app, &tab1_id).await {
         eprintln!("[smoke] step: wait_for_page_ready tab1 failed/timeout: page not ready");
@@ -818,7 +815,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         Err(e) => { eprintln!("[smoke] step: tab2 create failed: {e}"); report.error = Some(format!("tab 2 create failed: {e}")); return Ok(report); }
     };
 
-    // Wait for tab 2 to load.
     eprintln!("[smoke] step: wait_for_page_ready tab2 starting");
     if !wait_for_page_ready(app, &tab2_id).await {
         eprintln!("[smoke] step: wait_for_page_ready tab2 failed/timeout: page not ready");
@@ -828,7 +824,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     }
     eprintln!("[smoke] step: wait_for_page_ready tab2 ok");
 
-    // ── step: evaluate document.title on the active tab (tab 2) ─
     eprintln!("[smoke] step: evaluate starting");
     let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
     match tokio::time::timeout(
@@ -840,7 +835,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         Err(_elapsed) => { eprintln!("[smoke] step: evaluate failed/timeout: timed out"); report.evaluated = false; report.error = Some("evaluate timed out".into()); }
     }
 
-    // ── step: snapshot (skippable via env var) ────────────────
     // In headless CI runners, `takeSnapshot` may block indefinitely because
     // no frame is ever composited. Setting `VERBOO_SMOKE_SKIP_SNAPSHOT=1`
     // skips both warmup + measured steps and reports `snapshotBytes: 0`
@@ -875,7 +869,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         report.snapshot_bytes = snapshot_bytes;
     }
 
-    // ── step: activate tab 1 ──────────────────────────────────
     eprintln!("[smoke] step: tab_activate starting");
     let tab1_id_clone = tab1_id.clone();
     match browser_tab_activate(app.state(), tab1_id_clone) {
@@ -883,7 +876,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         Err(e) => { eprintln!("[smoke] step: tab_activate failed/timeout: {e}"); report.error = Some(format!("tab activate failed: {e}")); }
     }
 
-    // ── step: close both tabs ─────────────────────────────────
     let mut closed = 0usize;
     eprintln!("[smoke] step: close tab1 starting");
     match browser_tab_close(app.state(), tab1_id).await {
@@ -897,7 +889,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     }
     report.closed_tabs = closed;
 
-    // ── step: verify runtime map is empty ─────────────────────
     let remaining = {
         let state = app.state::<BrowserPanelState>();
         let inner = state.lock();
@@ -954,7 +945,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
                 };
                 eprintln!("[smoke] F2-PAUSE: suspenso: {suspended}");
 
-                // DUAS METADES JUNTAS:
                 let was_playing = playing.contains("\"paused\":false");
                 let paused = suspended.contains("\"paused\":true");
                 let url_preserved = suspended.contains("youtube") && !suspended.contains("about:blank");
@@ -1149,7 +1139,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1500));
 
-                // 1. DESPEJA: entrada preservada, evicted=true, URL guardada.
                 let evicted = match browser_tab_evict(app.state(), tab.clone()).await {
                     Ok(s) => s,
                     Err(e) => { eprintln!("[smoke] F4-EVICT: evict falhou: {e}"); return Ok(report); }
@@ -1162,7 +1151,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
                 }
                 let entry_preserved = evicted_tab.as_ref().map(|t| t.evicted && t.url.contains("youtube")).unwrap_or(false);
 
-                // 2. REATIVA: webview recriado, navega para a URL guardada.
                 let reactivated = match browser_tab_reactivate(app.clone(), app.state(), tab.clone()) {
                     Ok(s) => s,
                     Err(e) => { eprintln!("[smoke] F4-EVICT: reactivate falhou: {e}"); return Ok(report); }
@@ -1208,7 +1196,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         }
     }
 
-    // ── step: destroy session ─────────────────────────────────
     eprintln!("[smoke] step: destroy starting");
     report.destroyed = destroy_smoke_webview(app).await;
     eprintln!("[smoke] step: destroy {}",
@@ -1500,12 +1487,9 @@ fn native_webview_hidden(webview: &Webview<Wry>) -> Result<bool, String> {
         .map_err(|error| format!("aguardar visibilidade nativa falhou: {error}"))
 }
 
-// ── bridge plumbing (ungated — 3 SOs) ────────────────────────────
-//
-// Each of these helpers was originally inside `#[cfg(target_os = "macos")]`
-// `mod macos_bridge` because the platform adapter was macOS-only. Since the
-// Meridiano cycle landed `browser_platform::attach_bridge` for Windows and
-// Linux, nothing in this module is macOS-specific.
+// Bridge plumbing is ungated: since the Meridiano cycle landed
+// `browser_platform::attach_bridge` for Windows and Linux, nothing in
+// this module is macOS-specific.
 mod bridge_plumbing {
     use super::*;
 
@@ -1623,7 +1607,6 @@ mod bridge_plumbing {
     }
 }
 
-// ── Multi-tab session commands (Task 4) ────────────────────────────
 
 fn smoke_create_trace(message: &str) {
     if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_some() {
@@ -2084,7 +2067,7 @@ pub fn browser_tab_activate(
     if previous == tab_id {
         return Ok(snapshot_before);
     }
-    // Hide previous, show next. If show fails, restore previous.
+    // Hide previous, show next; restore the previous tab if show fails.
     let hide_prev = {
         let inner = state.lock();
         match inner.tabs.get(&previous) {
@@ -2186,8 +2169,6 @@ pub async fn browser_tab_close(
     }
     let _unloaded = unload_and_close_webview(&state, &tab_id).await;
 
-    // Runtime confirmado como descarregado (ou teto atingido). Agora sim
-    // remove do map e fecha.
     let mut inner = state.lock();
     let runtime = match inner.tabs.remove(&tab_id) {
         Some(rt) => rt,
@@ -2418,7 +2399,7 @@ fn check_stale<T>(
     }
 }
 
-// ── Atomic multi-tab helpers (testable without a Tauri State) ───────
+// Atomic multi-tab helpers — testable without a Tauri State.
 
 fn activate_native_tab<F>(
     previous: &str,
@@ -2613,7 +2594,6 @@ where
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -2667,7 +2647,6 @@ mod tests {
         };
         let mut queue = BrowserBridgeQueue::new("tab-test".into(), "verboo".into());
         queue.expect_document("doc-1".into());
-        // Fill the queue with well-formed messages.
         for index in 0..MAX_PAGE_MESSAGES {
             let envelope = BrowserPageEnvelope {
                 tab_id: "tab-test".into(),
@@ -2829,7 +2808,6 @@ mod tests {
         // além do que o parser faz.
         let parsed = parse_url_for_panel("HTTPS://Example.COM/Path?Q=1#Frag").unwrap();
         assert_eq!(parsed.as_str(), "https://example.com/Path?Q=1#Frag");
-        // Scheme+host lowercased (RFC 3986), path/query/fragment intactos.
         assert_eq!(parsed.scheme(), "https");
         assert_eq!(parsed.host_str(), Some("example.com"));
         assert_eq!(parsed.path(), "/Path");
@@ -3486,7 +3464,6 @@ mod tests {
             "runtime ref + retained callback ref = 2"
         );
 
-        // Runtime accesses the queue via its Arc.
         stored
             .lock()
             .unwrap()
@@ -3496,7 +3473,6 @@ mod tests {
             Some("doc-1")
         );
 
-        // The retained callback also accesses the same underlying queue.
         callback("doc-2".into());
         assert_eq!(
             stored.lock().unwrap().current_document_token(),
@@ -3504,7 +3480,6 @@ mod tests {
             "observer mutation visible through shared Arc"
         );
 
-        // Queue can also accept/process messages normally.
         let envelope = BrowserPageEnvelope {
             tab_id: "tab-test".into(),
             bridge_token: "secret".into(),
@@ -3721,5 +3696,67 @@ mod tests {
 
         assert!(!setup.contains("start_runtime_smoke"));
         assert!(source.contains("tauri::RunEvent::MainEventsCleared"));
+    }
+
+    /// Issue #87: Tauri's Linux `WindowChild` always `build_gtk`s into
+    /// `default_vbox` (`GtkBox`). Wry only honors `set_bounds` under
+    /// `GtkFixed` (`is_in_fixed_parent`). This host cannot instantiate
+    /// WebKitGTK, so the seam is the vendored source contract — same
+    /// pattern as `windows_browser_tabs_keep_the_webview2_environment_on_the_ui_thread`.
+    ///
+    /// Limit: this does not prove allocation on a real `.deb`. Field gate
+    /// in the impact map still applies.
+    #[test]
+    fn linux_child_webview_in_populated_gtk_box_uses_overlay_fixed() {
+        let source = include_str!("../../vendor/wry/src/webkitgtk/mod.rs").replace("\r\n", "\n");
+        let start = source
+            .find("const BOUNDS_OVERLAY_NAME")
+            .expect("named overlay const");
+        let end = source[start..]
+            .find("\n  fn attach_ipc_handler")
+            .map(|offset| start + offset)
+            .expect("add_to_container end");
+        let add = &source[start..end];
+
+        assert!(
+            add.contains("gtk::Overlay"),
+            "a second webview in GtkBox must overlay, not pack_start-split the main webview"
+        );
+        assert!(
+            add.contains("gtk::Fixed") && add.contains("wry-bounds-fixed"),
+            "child webviews must live under a named GtkFixed so set_bounds applies"
+        );
+        assert!(
+            add.contains("set_overlay_pass_through"),
+            "the Fixed overlay must pass events through empty space to the main webview"
+        );
+        assert!(
+            add.contains("ensure_bounds_fixed") && add.contains("put_in_fixed"),
+            "the GtkBox child path must put into GtkFixed so is_in_fixed_parent is true"
+        );
+        assert!(
+            add.contains("put_in_fixed(&fixed, webview, attributes);\n      true"),
+            "the GtkBox child path must return true so set_bounds gates on is_in_fixed_parent"
+        );
+        assert!(
+            add.contains("pack_start(webview, true, true, 0);\n        return false;"),
+            "the empty-box path must return false (window-content webview, not bounds-fixed)"
+        );
+
+        let bounds_start = source.find("pub fn set_bounds").expect("set_bounds");
+        let bounds_end = source[bounds_start..]
+            .find("\n  #[cfg(feature = \"x11\")]\n  fn set_visible_x11")
+            .or_else(|| source[bounds_start..].find("\n  fn set_visible_x11"))
+            .map(|offset| bounds_start + offset)
+            .expect("set_bounds end");
+        let set_bounds = &source[bounds_start..bounds_end];
+        let fixed_apply = set_bounds
+            .split("if self.is_in_fixed_parent")
+            .nth(1)
+            .expect("set_bounds must still gate on is_in_fixed_parent");
+        assert!(
+            fixed_apply.contains("move_"),
+            "set_bounds must gtk_fixed_move so the next parent allocate keeps x/y"
+        );
     }
 }

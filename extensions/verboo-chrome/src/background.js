@@ -225,7 +225,6 @@ void disableGlobalVerbooPanel().catch((error) => {
   console.warn('[Verboo] Could not disable the global side panel:', error)
 })
 
-// ── Open side panel on toolbar click ──────────────────────────────
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab?.id) {
     try {
@@ -236,7 +235,6 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 })
 
-// ── Extension install / update ────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
   void installSelectionContextMenu().catch((error) => {
     console.error('[Verboo] Could not install the selected-text menu:', error)
@@ -278,7 +276,6 @@ chrome.notifications?.onClicked?.addListener((notificationId) => {
 
 void restoreRoutineExecutionState()
 
-// ── Pending approvals (toolCallId → resolver) ────────────────────
 /** @type {Map<string, { resolve: (grant: 'once'|'turn'|'always'|'deny'|'cancelled') => void }>} */
 const pendingApprovals = new Map()
 /** @type {Map<string, Set<string>>} */
@@ -286,7 +283,6 @@ const turnSiteGrants = new Map()
 /** @type {Map<string, Set<number>>} — abas criadas pelo agente no turno (close policy) */
 const turnCreatedTabIds = new Map()
 
-// ── Message router ────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false
 
@@ -823,8 +819,6 @@ async function handleBrowserTool(toolCall) {
   )
 }
 
-// ── Agent loop ────────────────────────────────────────────────────
-//
 // Flow per turn:
 //   1. AGENT_TURN_STARTED
 //   2. AGENT_THOUGHT (planning)
@@ -921,7 +915,6 @@ async function runAgentTurn(
     }
   }, 20_000)
 
-  /** @type {boolean} */
   let terminalSent = false
   /**
    * Emit at most one COMPLETE or ERROR so the panel always leaves Working…
@@ -1053,7 +1046,6 @@ async function runAgentTurn(
     if (browserToolsRequested && typeof presenceTabId === 'number') {
       try {
         await ensureVerbooTabGroup(presenceTabId)
-        // Frame + animated cursor from the first moment of control.
         await ensureAgentPresence(presenceTabId)
       } catch {
         // Non-controllable page or missing APIs — continue the turn.
@@ -1621,9 +1613,6 @@ async function setRoutineApprovalState(runId, status) {
   broadcast({ type: MSG.ROUTINE_RUN_CHANGED, run: updated })
 }
 
-/**
- * @param {string} turnId
- */
 function cancelTurn(turnId) {
   browserControlQueue.cancel(turnId)
   abortTurnController(turnId)

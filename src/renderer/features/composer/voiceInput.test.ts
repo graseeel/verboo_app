@@ -102,7 +102,6 @@ describe('createVoiceInput — lifecycle', () => {
     expect(mock.started).toBe(true)
     expect(mock.lang).toBe('pt-BR')
     expect(mock.continuous).toBe(true)
-    // No onInterim subscriber → interimResults should be false.
     expect(mock.interimResults).toBe(false)
     expect(onStart).toHaveBeenCalledTimes(1)
     expect(handle.isListening()).toBe(true)
@@ -180,7 +179,6 @@ describe('createVoiceInput — onresult', () => {
     const mock = new MockRecognition()
     const onInterim = vi.fn()
     createVoiceInput({ recognitionFactory: () => mock, onInterim }).start()
-    // Single event with two interim results → accumulated.
     mock.triggerResult(makeResultEvent(0, [
       ['hello ', false],
       ['world', false],
@@ -216,7 +214,6 @@ describe('createVoiceInput — onresult', () => {
     const mock = new MockRecognition()
     const onFinal = vi.fn()
     createVoiceInput({ recognitionFactory: () => mock, onFinal }).start()
-    // First event with resultIndex=0 replays just 'old'.
     mock.triggerResult(makeResultEvent(0, [['old', true]]))
     // Second event re-uses the same `results` collection but starts at 1,
     // so the loop iterates from index 1 onwards. results.length must be > 1
@@ -350,7 +347,6 @@ describe('voiceInput — valueRef chain integration', () => {
   })
 })
 
-// ── QW2 voice v2: live interim + quality helpers ──────────────────────────
 
 describe('applyVoiceInterim', () => {
   it('appends interim to committed with a space separator', () => {
@@ -484,7 +480,6 @@ describe('pickBestAlternative', () => {
   })
 })
 
-// ── Auto-restart policy ────────────────────────────────────────────────────
 
 describe('createVoiceInput — auto-restart', () => {
   it('restarts on unsolicited onend when wantsListening is true', () => {
@@ -498,7 +493,6 @@ describe('createVoiceInput — auto-restart', () => {
     expect(mock.startCount).toBe(1)
     // Simulate WKWebView ending the session early (without user stop).
     mock.fireEnd()
-    // Auto-restart should have called start() again.
     expect(mock.startCount).toBe(2)
     // onEnd should NOT have been called — the restart is transparent.
     expect(onEnd).not.toHaveBeenCalled()
@@ -516,12 +510,9 @@ describe('createVoiceInput — auto-restart', () => {
     })
     handle.start()
     expect(mock.startCount).toBe(1)
-    // Fatal error → sets fatal=true, wantsListening=false
     mock.triggerError({ error: 'not-allowed' })
     mock.fireEnd()
-    // No restart.
     expect(mock.startCount).toBe(1)
-    // onEnd fires — session truly ended.
     expect(onEnd).toHaveBeenCalledTimes(1)
     expect(handle.isListening()).toBe(false)
   })
@@ -557,7 +548,6 @@ describe('createVoiceInput — auto-restart', () => {
     // no-speech is non-fatal → onError fires but wantsListening stays true.
     mock.triggerError({ error: 'no-speech' })
     expect(onError).toHaveBeenCalledTimes(1)
-    // onend fires → auto-restart.
     mock.fireEnd()
     expect(mock.startCount).toBe(2)
     expect(onEnd).not.toHaveBeenCalled()
@@ -565,16 +555,25 @@ describe('createVoiceInput — auto-restart', () => {
 
   it('stops retrying if start() throws during auto-restart', () => {
     const mock = new MockRecognition()
-    mock.start = () => { throw new Error('invalid state') }
     const onEnd = vi.fn()
     const handle = createVoiceInput({
       recognitionFactory: () => mock,
       onEnd,
     })
     handle.start()
-    // The first start() succeeds (before we override mock.start).
-    // Actually, we overrode before start() — so the first start() throws too.
-    // Let me restructure: override after first start.
+    expect(mock.startCount).toBe(1)
+    // Override start() to throw on the NEXT call (the auto-restart attempt).
+    mock.start = () => { throw new Error('invalid state') }
+    mock.fireEnd()
+    // The failed restart ends the session for the consumer instead of
+    // restarting silently.
+    expect(onEnd).toHaveBeenCalledTimes(1)
+    expect(handle.isListening()).toBe(false)
+    // A late stray onend must not revive the session or keep retrying:
+    // the attempt fails again and the counters stay put.
+    mock.fireEnd()
+    expect(mock.startCount).toBe(1)
+    expect(handle.isListening()).toBe(false)
   })
 
   it('gives up gracefully if start() throws during auto-restart', () => {
@@ -589,7 +588,6 @@ describe('createVoiceInput — auto-restart', () => {
     // Override start() to throw on the NEXT call (auto-restart attempt).
     mock.start = () => { throw new Error('invalid state') }
     mock.fireEnd()
-    // Auto-restart tried, start() threw → onEnd fires, listening=false.
     expect(onEnd).toHaveBeenCalledTimes(1)
     expect(handle.isListening()).toBe(false)
   })
@@ -604,7 +602,6 @@ describe('createVoiceInput — auto-restart', () => {
     const mock = new MockRecognition()
     const onFinal = vi.fn()
     createVoiceInput({ recognitionFactory: () => mock, onFinal }).start()
-    // Build a result with 3 alternatives where index 1 has the highest confidence.
     const result = {
       isFinal: true,
       length: 3,
@@ -634,17 +631,16 @@ describe('nextCatchUpStep', () => {
   })
 
   it('advances ~2 chars for a small gap of 11 (gap ≤ 15 → 2/frame)', () => {
-    const current = 'hello'            // length 5
-    const target  = 'hello world foo!' // length 16, gap = 11
+    const current = 'hello'
+    const target  = 'hello world foo!'
     const next = nextCatchUpStep(current, target)
-    // 2 chars added → length 7
     expect(next.length).toBe(7)
     expect(next).toBe('hello w')
   })
 
   it('advances ~4 chars for a large gap (gap ≤ 80 → 4/frame)', () => {
-    const current = ''                // length 0
-    const target  = 'a'.repeat(50)    // length 50, gap = 50
+    const current = ''
+    const target  = 'a'.repeat(50)
     const next = nextCatchUpStep(current, target)
     expect(next.length).toBe(4)
     expect(next).toBe('a'.repeat(4))

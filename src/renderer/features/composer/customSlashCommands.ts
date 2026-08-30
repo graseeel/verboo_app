@@ -1,11 +1,9 @@
 import type { CustomSlashCommand } from '../../../shared/types'
 
 /**
- * src/renderer/features/composer/customSlashCommands.ts
- *
- * Pure helpers for user-defined slash commands. These are intentionally
- * framework-agnostic so they can be unit-tested without React. The Composer
- * and the Settings manager share them; nothing in here touches the DOM.
+ * Pure, framework-agnostic helpers for user-defined slash commands — shared
+ * by the Composer and the Settings manager so both stay unit-testable
+ * without React. Nothing in here touches the DOM.
  */
 
 /**
@@ -33,8 +31,7 @@ export function getReservedCommandNames(): string[] {
   return Array.from(RESERVED_COMMAND_NAMES)
 }
 
-/** Light fuzzy match — same idea as the existing helpers, kept local so the
- *  composer types stay independent. Used by `rankCustomCommands`. */
+/** Kept local so the composer's types stay self-contained; used by rankCustomCommands. */
 function fuzzyMatch(haystack: string, needle: string): boolean {
   let j = 0
   for (let i = 0; i < haystack.length && j < needle.length; i++) {
@@ -92,12 +89,6 @@ export function getCustomCommandToken(command: CustomSlashCommand): string {
   return body + ' '
 }
 
-/**
- * Display label for the slash palette row (slash-prefixed name). The
- * composer renders this to make a custom command immediately visible as a
- * slash-token in the popup, sitting next to the built-in /goal and /pet
- * entries.
- */
 export function getCustomCommandLabel(command: CustomSlashCommand): string {
   return `/${command.name}`
 }

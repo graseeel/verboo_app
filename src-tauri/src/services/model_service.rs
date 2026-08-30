@@ -77,7 +77,6 @@ impl ModelService {
             }
         }
 
-        // Try API key
         let mut live_error: Option<String> = None;
 
         if let Some(key) = api_key {
@@ -209,7 +208,27 @@ fn attach_provider_models(mut result: ModelDiscoveryResult) -> ModelDiscoveryRes
         }
         Err(error) => result.provider_error = Some(error),
     }
+    emit_models_refresh(&result);
     result
+}
+
+fn emit_models_refresh(result: &ModelDiscoveryResult) {
+    let origin = match result.source.as_str() {
+        "cache" => "cache",
+        "api-key" => "api-key",
+        "none" => "none",
+        _ => "network",
+    };
+    let degraded = result.stale || result.error.is_some() || result.models.is_empty();
+    crate::services::diagnostic_log::emit_state(
+        "models",
+        "models_refresh",
+        serde_json::json!({
+            "item_count": result.models.len(),
+            "origin": origin,
+            "degraded": degraded,
+        }),
+    );
 }
 
 /// Merge de duas entradas do mesmo id. A entrada Router (provider ausente) é

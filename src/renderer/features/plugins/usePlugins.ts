@@ -3,7 +3,6 @@ import { listen } from '@tauri-apps/api/event'
 import type { AvailablePlugin, Marketplace, MarketplaceManifestMap, MutationResult, Plugin, PluginError, PluginScope, PluginValidateResult } from '../../../shared/plugins'
 import { isPluginError } from '../../../shared/plugins'
 
-// ── State shape ──────────────────────────────────────────────────────
 type LoadingState = 'idle' | 'loading' | 'success' | 'error'
 
 type PluginsState = {
@@ -43,7 +42,6 @@ function savePendingRestart(ids: Set<string>) {
   }
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────
 export function usePlugins() {
   const [state, setState] = useState<PluginsState>({
     installed: [],
@@ -89,7 +87,7 @@ export function usePlugins() {
     void refreshAll()
   }, [refreshAll])
 
-  // ── Cross-window plugin-mutation listener (Feedback-6 OBJ 1) ──────
+  // Cross-window plugin-mutation listener (Feedback-6 OBJ 1):
   // When another window (or the backend itself) mutates plugins, the
   // `plugin-mutation` Tauri event fires. We re-fetch so this hook's state
   // stays in sync without the caller needing to wire anything up.
@@ -108,7 +106,6 @@ export function usePlugins() {
     }
   }, [refreshAll])
 
-  // ── Mutations ──────────────────────────────────────────────────────
   const install = useCallback(async (plugin: AvailablePlugin, scope: PluginScope) => {
     if (mutatingIds.current.has(plugin.pluginId)) return
     mutatingIds.current.add(plugin.pluginId)
@@ -145,7 +142,6 @@ export function usePlugins() {
   }, [refreshAll])
 
   const enable = useCallback(async (id: string, scope: PluginScope) => {
-    // Optimistic: flip enabled immediately, revert on error.
     setState(prev => ({
       ...prev,
       installed: prev.installed.map(p => p.id === id ? { ...p, enabled: true } : p),
@@ -153,7 +149,6 @@ export function usePlugins() {
     try {
       await window.verboo.pluginEnable(id, scope)
     } catch (err) {
-      // Revert
       setState(prev => ({
         ...prev,
         installed: prev.installed.map(p => p.id === id ? { ...p, enabled: false } : p),
@@ -181,7 +176,6 @@ export function usePlugins() {
   const uninstall = useCallback(async (id: string, scope: PluginScope, keepData = false) => {
     if (mutatingIds.current.has(id)) return
     mutatingIds.current.add(id)
-    // Optimistic: remove from installed list immediately.
     setState(prev => ({ ...prev, installed: prev.installed.filter(p => p.id !== id) }))
     try {
       const result = await window.verboo.pluginUninstall(id, scope, keepData) as MutationResult

@@ -1,5 +1,7 @@
-import { FileSearch, Globe, PanelLeftOpen, Smartphone, Terminal as TerminalIcon } from 'lucide-react'
+import { EllipsisVertical, FileSearch, Globe, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useI18n } from '../i18n'
+import type { SimulatorPlatform } from '../features/simulator/simulatorPlatform'
 
 type TopBarProps = {
   sidebarVisible: boolean
@@ -16,7 +18,8 @@ type TopBarProps = {
   simulatorAvailable?: boolean
   simulatorOpen?: boolean
   recordingActive?: boolean
-  onToggleSimulator?: () => void
+  platform?: NodeJS.Platform
+  onOpenSimulator?: (platform: SimulatorPlatform) => void
   workspacePanelsEnabled: boolean
 }
 
@@ -35,16 +38,77 @@ export function TopBar({
   simulatorAvailable = false,
   simulatorOpen = false,
   recordingActive = false,
-  onToggleSimulator = () => {},
+  platform = 'darwin',
+  onOpenSimulator = () => {},
   workspacePanelsEnabled,
 }: TopBarProps) {
   const { t } = useI18n()
+  const [simulatorMenuOpen, setSimulatorMenuOpen] = useState(false)
+  const simulatorMenuId = useId()
+  const simulatorMenuRef = useRef<HTMLDivElement>(null)
+  const simulatorTriggerRef = useRef<HTMLButtonElement>(null)
+  const simulatorOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const focusOnOpenRef = useRef<number | null>(null)
+  const simulatorOptions: Array<{ platform: SimulatorPlatform; label: string }> = [
+    ...(platform === 'darwin'
+      ? [{ platform: 'ios' as const, label: t('topbar.iosSimulator') }]
+      : []),
+    { platform: 'android', label: t('topbar.androidEmulator') },
+  ]
+
+  useEffect(() => {
+    if (!simulatorMenuOpen) return
+
+    const handleOutsidePointer = (event: PointerEvent) => {
+      if (!simulatorMenuRef.current?.contains(event.target as Node)) setSimulatorMenuOpen(false)
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setSimulatorMenuOpen(false)
+      simulatorTriggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', handleOutsidePointer)
+    window.addEventListener('keydown', handleEscape, { capture: true })
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointer)
+      window.removeEventListener('keydown', handleEscape, { capture: true })
+    }
+  }, [simulatorMenuOpen])
+
+  useEffect(() => {
+    if (!simulatorMenuOpen || focusOnOpenRef.current === null) return
+    simulatorOptionRefs.current[focusOnOpenRef.current]?.focus()
+    focusOnOpenRef.current = null
+  }, [simulatorMenuOpen])
+
+  function openSimulatorMenu(focusIndex?: number) {
+    focusOnOpenRef.current = focusIndex ?? null
+    setSimulatorMenuOpen(true)
+  }
+
+  function handleSimulatorMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const options = simulatorOptionRefs.current.filter((option): option is HTMLButtonElement => Boolean(option))
+    if (!options.length) return
+    const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement)
+    let nextIndex: number | undefined
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % options.length
+    if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + options.length) % options.length
+    if (event.key === 'Home') nextIndex = 0
+    if (event.key === 'End') nextIndex = options.length - 1
+    if (nextIndex !== undefined) {
+      event.preventDefault()
+      options[nextIndex]?.focus()
+    } else if (event.key === 'Tab') {
+      setSimulatorMenuOpen(false)
+    }
+  }
 
   return (
     <header
       className="topbar"
-      data-tauri-drag-region=""
-      onDoubleClick={() => window.verboo.toggleWindowZoom()}
+      data-tauri-drag-region="deep"
     >
       {/* When the sidebar is collapsed, show a reopen button here — but only
           on touch/narrow viewports where hover is unreliable. On desktop
@@ -66,7 +130,7 @@ export function TopBar({
       )}
       {/* Quiet drag spacer — no "ready/pronto" status near traffic lights. */}
       <div className="topbar-brand-status" data-tauri-drag-region="" aria-hidden="true" />
-      <div className="topbar-actions">
+      <div className="topbar-actions" data-tauri-drag-region="false">
         {(terminalUnavailableReason || reviewUnavailableReason) && (
           <span className="topbar-terminal-notice" role="status">
             {terminalUnavailableReason || reviewUnavailableReason}
@@ -117,26 +181,70 @@ export function TopBar({
           </button>
         )}
         {simulatorAvailable && (
-          <button
-            className={`topbar-terminal-button ui-tooltip ${simulatorOpen ? 'active' : ''}`}
-            type="button"
-            disabled={!workspacePanelsEnabled}
-            onClick={event => {
-              event.stopPropagation()
-              onToggleSimulator()
-            }}
-            data-tooltip={simulatorOpen ? t('topbar.hideSimulator') : t('topbar.openSimulator')}
-            data-tooltip-align="end"
-            aria-label={simulatorOpen ? t('topbar.hideSimulator') : t('topbar.openSimulator')}
+          <div
+            className="topbar-simulator-menu-wrap"
+            ref={simulatorMenuRef}
+            data-topbar-simulator-menu-open={simulatorMenuOpen ? 'true' : undefined}
           >
-            <Smartphone size={15} />
-          </button>
-        )}
-        {simulatorAvailable && recordingActive && (
-          <span
-            className="topbar-simulator-recording"
-            aria-label={t('simulator.recording.active')}
-          />
+            {/* Suppress the tooltip while the menu is open (PA-36) — the CSS
+                tooltip renders below the trigger and would paint OVER the open
+                menu items. Menus never show the trigger tooltip. The base.css
+                `:not([data-tooltip])` guard keeps the empty ::after from
+                painting while the attribute is gone. */}
+            <button
+              ref={simulatorTriggerRef}
+              className={`topbar-terminal-button ui-tooltip ${simulatorOpen || simulatorMenuOpen ? 'active' : ''}`}
+              type="button"
+              disabled={!workspacePanelsEnabled}
+              onClick={event => {
+                event.stopPropagation()
+                setSimulatorMenuOpen(open => !open)
+              }}
+              onKeyDown={event => {
+                if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+                event.preventDefault()
+                openSimulatorMenu(event.key === 'ArrowUp' ? simulatorOptions.length - 1 : 0)
+              }}
+              data-tooltip={simulatorMenuOpen ? undefined : t('topbar.simulators')}
+              data-tooltip-align="end"
+              aria-label={t('topbar.simulators')}
+              aria-haspopup="menu"
+              aria-expanded={simulatorMenuOpen}
+              aria-controls={simulatorMenuOpen ? simulatorMenuId : undefined}
+            >
+              <EllipsisVertical size={16} />
+              {recordingActive && (
+                <span
+                  className="topbar-simulator-recording"
+                  aria-label={t('simulator.recording.active')}
+                />
+              )}
+            </button>
+            {simulatorMenuOpen && (
+              <div
+                id={simulatorMenuId}
+                className="topbar-simulator-menu popover-panel"
+                role="menu"
+                aria-label={t('topbar.simulators')}
+                onKeyDown={handleSimulatorMenuKeyDown}
+              >
+                {simulatorOptions.map((option, index) => (
+                  <button
+                    key={option.platform}
+                    ref={element => { simulatorOptionRefs.current[index] = element }}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setSimulatorMenuOpen(false)
+                      onOpenSimulator(option.platform)
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </header>

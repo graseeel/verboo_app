@@ -8,7 +8,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRunQueue } from '../routines/runQueue.js'
 
-// ── Save/restore original fetch ─────────────────────────────
 const origFetch = globalThis.fetch
 
 // Mock fetch: two sequential responses — first returns tool_call, second returns text.
@@ -92,7 +91,6 @@ test('runLlmAgentTurn: one tool-call round-trip (navigate then text)', async () 
     assert.equal(resultBroadcast.toolResult.success, true)
     assert.equal(typeof resultBroadcast.toolResult.durationMs, 'number')
 
-    // AGENT_THOUGHT broadcasts present.
     const thoughts = broadcastCalls.filter(b => b.type === 'agent:thought')
     assert.ok(thoughts.length >= 2) // Analyzing + Calling navigate
     assert.ok(thoughts.every(t => typeof t.text === 'string'))
@@ -1280,14 +1278,13 @@ test('runLlmAgentTurn: early-stop after 5 consecutive failures of same tool', as
       getActiveTabMeta: async () => null,
     })
 
-    // Stopped early with a friendly message, not burning all 200 steps.
+    // Stopped early with a friendly message, before exhausting MAX_AGENT_STEPS.
     assert.ok(
       result.assistantMessage.includes('try a different approach') ||
       result.assistantMessage.includes('try a more specific instruction') ||
       result.assistantMessage.includes('try a different'),
       `expected early-stop message, got: "${result.assistantMessage}"`,
     )
-    // All tool results are failures.
     assert.ok(result.toolResults.every(r => r.success === false))
     // Stopped well before 20 (5 fails + optional strategy-hint step).
     assert.ok(result.toolResults.length < 10, `expected <10 tools, got ${result.toolResults.length}`)
@@ -1557,7 +1554,6 @@ test('B2: reclassified turn re-execution is routed through the queue and stays s
   )
 })
 
-// ── G1-CHROME: discovery over guessing ─────────────────────
 // The model must discover a user-named target by READING the page (find
 // returns real clickable references) and click the REAL reference — never
 // guess CSS selectors from memory. Contrafactual: a nonexistent target
@@ -1683,7 +1679,6 @@ test('G1: nonexistent named target ends honestly — zero guessed clicks', async
   }
 })
 
-// ── G2-CHROME: executed actions + empty final reply = COMPLETE ──
 test('G2: executed actions + empty reply — loop re-asks once and completes with a closing summary', async () => {
   const requestBodies = []
   const executeCalls = []
@@ -1848,7 +1843,6 @@ test('G2: zero actions + empty reply remains an honest failure (model_returned_e
   }
 })
 
-// ── G3-CHROME: full-page extraction reaches the model, nothing truncated ──
 test('G3: long page extraction delivers the END of the page to the model', async () => {
   const requestBodies = []
   const TAIL = 'CONCLUSAO-UNICA-DO-FIM-DA-PAGINA'
@@ -1910,7 +1904,6 @@ test('G3: long page extraction delivers the END of the page to the model', async
   }
 })
 
-// ── T4 (Ciclo dos Achados de Campo): read_page truncado sinaliza NO RESULTADO ──
 test('T4: read_page truncado sinaliza NO RESULTADO (conteúdo truncado em N chars — use structured_extract)', async () => {
   const requestBodies = []
   const longText = `LIVRO-1 ${'corpo intermediario. '.repeat(1200)} LIVRO-20-FINAL`
@@ -1972,7 +1965,6 @@ test('T4: read_page truncado sinaliza NO RESULTADO (conteúdo truncado em N char
   }
 })
 
-// ── T4-SUSPICIOUS (ressalva N3 do gate CICLO-B): pior caso do wrap ──
 // Conteúdo que dispara os sinais do untrustedContent (instruction_override +
 // secret_exfiltration) → o wrap adiciona 327 chars (medido). O WRAP_OVERHEAD
 // (350) deve cobrir o pior caso real — o resultado NUNCA excede 4000.
@@ -2034,7 +2026,6 @@ test('T4-SUSPICIOUS: read_page com conteúdo suspicious (wrap 327 chars) ainda r
   }
 })
 
-// ── BLOQUEIO CADINHO 1 (G1 reativo): o caminho do vídeo ────
 // O defeito real é REATIVO: modelo chuta seletor → element-not-found
 // repetido → o loop injeta o STRATEGY_HINT → o modelo chama find →
 // clica na referência REAL descoberta. Asserção final no CLIQUE real.
@@ -2143,7 +2134,6 @@ test('G1 reativo: guessed-click failures trigger the hint, then find → click o
   }
 })
 
-// ── BLOQUEIO CADINHO 2 (G2): portão = sucesso REAL, não length ──
 // CASO A do vídeo: 4 element-not-found + resposta vazia deve continuar
 // falha honesta — nunca "Concluído: 0 ações".
 test('G2 CASO A: 4 falhas (element not found) + empty reply stays an honest failure', async () => {
@@ -2199,7 +2189,6 @@ test('G2 CASO A: 4 falhas (element not found) + empty reply stays an honest fail
   }
 })
 
-// ── FRENTE-C: directed format retry, honest failure, reclassify ──────
 
 test('runLlmAgentTurn: directed format retry when the model emits unsupported markup (R6)', async () => {
   const responses = [
@@ -2353,7 +2342,6 @@ test('runLlmAgentTurn: dropped tool names are fed back to the model next step (R
   }
 })
 
-// ── Intenção+UX: L1 deictic imperative + L3 admission reclassify ──
 
 test('shouldOfferBrowserTools: L1 deictic imperative opens tools; genuine conversation stays conversation', () => {
   // L1 positive — structural, any language, no verb list.
@@ -2524,8 +2512,6 @@ test('runLlmAgentTurn: admission in a BROWSER turn does not reclassify (L3 bound
   }
 })
 
-// ── L2: imperative + controllable URL (fall-open) — guards 1-4 ─────
-//
 // Evaluation order (documented): L1 (deictic anchor) runs first — it is
 // the strongest signal; L2 (imperative + controllable URL) second; the
 // verb list third; L3 (admission reclassify) is only reachable in turns
@@ -2696,7 +2682,6 @@ test('shouldOfferBrowserTools: PÓS-RE-GATE — knowledge desires stay conversat
   assert.equal(shouldOfferBrowserTools('odeio esta página'), false)
 })
 
-// ── GENERALIZAÇÃO: R-V1 screenshot does not clear verification ─────
 
 test('runLlmAgentTurn: a screenshot after a mutation does NOT clear verification (R-V1)', async () => {
   const responses = [
@@ -2755,7 +2740,6 @@ test('runLlmAgentTurn: a screenshot after a mutation does NOT clear verification
   }
 })
 
-// ── GENERALIZAÇÃO: literal TodoMVC case — effect absent → honest failure ─
 
 test('runLlmAgentTurn: TodoMVC literal — absent effect is reported as failure, not success', async () => {
   const responses = [
@@ -2817,7 +2801,6 @@ test('runLlmAgentTurn: TodoMVC literal — absent effect is reported as failure,
   }
 })
 
-// ── PÓS-CAMPO-3: repeated-failed-mutate block + hint mentions find ──
 
 test('runLlmAgentTurn: the EXACT same failing mutate is blocked on the 3rd repeat with find feedback', async () => {
   const requestBodies = []
@@ -2974,7 +2957,6 @@ test('runLlmAgentTurn: the fail-streak hint explicitly mentions find', async () 
   }
 })
 
-// ── PÓS-CAMPO-4: automatic find recovery (round 4 literal case) ────
 
 /**
  * PÓS-CAMPO-6 (A): the OpenAI ADJACENCY contract — every assistant message
@@ -3270,7 +3252,6 @@ test('runLlmAgentTurn: click failures also trigger the auto-find (user wording a
   }
 })
 
-// ── PÓS-CAMPO-5: structural honesty (round 5 literal case) ─────────
 
 test('runLlmAgentTurn: round-5 literal — all-failed mutations REPLACE the fabricated success text', async () => {
   let fetchCount = 0

@@ -42,10 +42,60 @@ function BrowserGlobeHarness() {
   )
 }
 
+function renderMinimalTopBar() {
+  return render(
+    <I18nProvider language="pt-BR">
+      <TopBar
+        sidebarVisible
+        onToggleSidebar={vi.fn()}
+        terminalOpen={false}
+        onToggleTerminal={vi.fn()}
+        reviewOpen={false}
+        onToggleReview={vi.fn()}
+        browserAvailable={false}
+        browserOpen={false}
+        onToggleBrowser={vi.fn()}
+        workspacePanelsEnabled
+      />
+    </I18nProvider>,
+  )
+}
+
 describe('TopBar workspace panel controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(invoke).mockResolvedValue(undefined)
+  })
+
+  it('marks the root title bar as a deep Tauri drag region', () => {
+    const { container } = renderMinimalTopBar()
+
+    expect(container.querySelector('header.topbar')).toHaveAttribute('data-tauri-drag-region', 'deep')
+  })
+
+  it('explicitly keeps the action cluster outside the Tauri drag region', () => {
+    const { container } = renderMinimalTopBar()
+
+    expect(container.querySelector('.topbar-actions')).toHaveAttribute('data-tauri-drag-region', 'false')
+  })
+
+  it('does not duplicate Tauri drag.js double-click handling through the legacy bridge', () => {
+    const originalBridge = Object.getOwnPropertyDescriptor(window, 'verboo')
+    const toggleWindowZoom = vi.fn()
+    Object.defineProperty(window, 'verboo', {
+      configurable: true,
+      value: { toggleWindowZoom },
+    })
+
+    try {
+      const { container } = renderMinimalTopBar()
+      fireEvent.doubleClick(container.querySelector('.topbar-brand-status')!)
+
+      expect(toggleWindowZoom).not.toHaveBeenCalled()
+    } finally {
+      if (originalBridge) Object.defineProperty(window, 'verboo', originalBridge)
+      else delete (window as unknown as { verboo?: unknown }).verboo
+    }
   })
 
   it('keeps all three controls visible but disabled in fullscreen views', () => {
@@ -117,7 +167,11 @@ describe('TopBar workspace panel controls', () => {
     expect(screen.queryByRole('button', { name: 'Abrir navegador' })).not.toBeInTheDocument()
   })
 
-  it('exposes the iOS simulator control when the native capability is available', () => {
+  it.each([
+    ['darwin', ['Simulador iOS', 'Emulador Android']],
+    ['win32', ['Emulador Android']],
+    ['linux', ['Emulador Android']],
+  ] as const)('shows the platform-correct simulator menu on %s', (platform, options) => {
     render(
       <I18nProvider language="pt-BR">
         <TopBar
@@ -132,16 +186,18 @@ describe('TopBar workspace panel controls', () => {
           onToggleBrowser={vi.fn()}
           simulatorAvailable
           simulatorOpen={false}
-          onToggleSimulator={vi.fn()}
+          platform={platform}
+          onOpenSimulator={vi.fn()}
           workspacePanelsEnabled
         />
       </I18nProvider>,
     )
 
-    expect(screen.getByRole('button', { name: 'Abrir simulador do iOS' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Simuladores' }))
+    expect(screen.getAllByRole('menuitem').map(option => option.textContent)).toEqual(options)
   })
 
-  it('does not advertise the iOS simulator on unsupported platforms', () => {
+  it('does not advertise simulators before native configuration is loaded', () => {
     render(
       <I18nProvider language="pt-BR">
         <TopBar
@@ -156,14 +212,147 @@ describe('TopBar workspace panel controls', () => {
           onToggleBrowser={vi.fn()}
           simulatorAvailable={false}
           simulatorOpen={false}
-          onToggleSimulator={vi.fn()}
+          platform="linux"
+          onOpenSimulator={vi.fn()}
           workspacePanelsEnabled
         />
       </I18nProvider>,
     )
 
-    expect(screen.queryByRole('button', { name: 'Abrir simulador do iOS' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Simuladores' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Gravação de tela em andamento')).not.toBeInTheDocument()
+  })
+
+  it('selects a simulator platform and closes the menu', () => {
+    const onOpenSimulator = vi.fn()
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={onOpenSimulator}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Simuladores' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Emulador Android' }))
+
+    expect(onOpenSimulator).toHaveBeenCalledWith('android')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('supports keyboard entry, Escape with focus return, and outside dismissal', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Simuladores' })
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitem', { name: 'Simulador iOS' })).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+
+    fireEvent.click(trigger)
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('suppresses the trigger tooltip while the simulator menu is open (PA-36)', () => {
+    // The tooltip is CSS-driven (`content: attr(data-tooltip)` on hover); the
+    // attribute IS the renderable surface in jsdom, and the base.css
+    // `:not([data-tooltip])` guard guarantees no bubble paints without it.
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Simuladores' })
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')
+
+    // Menu OPEN → tooltip is not rendered, so it cannot cover the menu items.
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(trigger).not.toHaveAttribute('data-tooltip')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')
+  })
+
+  it('suppresses the tooltip with the menu open in English too (PA-36)', () => {
+    render(
+      <I18nProvider language="en-US">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Simulators' })
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simulators')
+    fireEvent.click(trigger)
+    expect(trigger).not.toHaveAttribute('data-tooltip')
   })
 
   it('keeps the simulator recording indicator in the top bar while the panel is hidden', () => {
@@ -182,13 +371,15 @@ describe('TopBar workspace panel controls', () => {
           simulatorAvailable
           simulatorOpen={false}
           recordingActive
-          onToggleSimulator={vi.fn()}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
           workspacePanelsEnabled
         />
       </I18nProvider>,
     )
 
-    expect(screen.getByLabelText('Gravação de tela em andamento')).toBeInTheDocument()
+    const menuButton = screen.getByRole('button', { name: 'Simuladores' })
+    expect(screen.getByLabelText('Gravação de tela em andamento')).toBe(menuButton.querySelector('.topbar-simulator-recording'))
   })
 
   it('the globe suspends media when minimizing and returns control when reopening', () => {

@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "verboo-ios-simulator"
 path = "src/bin/verboo-ios-simulator.rs"
 
+[[bin]]
+name = "verboo-android-emulator"
+path = "src/bin/verboo-android-emulator.rs"
+
 [dependencies]
 directories = "6"
 jsonschema = { version = "0.42", default-features = false }

@@ -135,6 +135,7 @@ mod tests {
             show_menu_bar_text: true,
             stay_signed_in: true,
             prevent_sleep_while_running: false,
+            android_stream_fps: crate::models::types::AndroidStreamFps::Fps60,
             completion_notifications: completion,
             permission_notifications: true,
             question_notifications: true,

@@ -1,5 +1,4 @@
 /**
- * src/renderer/features/profile/avatarPresets.tsx
  *
  * 50 built-in SVG preset icons for the user's profile avatar. Inline
  * SVGs — no network requests, no bundle bloat. Each renders at the
@@ -11,7 +10,6 @@
 
 import type { ReactNode } from 'react'
 
-// ── Palette (12 colours) ───────────────────────────────────────
 
 export const AVATAR_PALETTE = [
   '#6B7280', // gray
@@ -28,7 +26,6 @@ export const AVATAR_PALETTE = [
   '#BE185D', // rose
 ] as const
 
-// ── Preset icons ───────────────────────────────────────────────
 
 const S = (d: string): ReactNode => <path d={d} fill="currentColor" />
 
@@ -99,15 +96,12 @@ const PRESETS: Record<string, () => ReactNode> = {
   drop:   () => S('M12 2.7L6.5 10C5 12 4 14 4 16c0 3.3 2.7 6 6 6h4c3.3 0 6-2.7 6-6 0-2-1-4-2.5-6z'),
 }
 
-// Fill remaining slots with unique variants to reach exactly 50
 const EXTRA_PRESETS: Record<string, () => ReactNode> = {
   leaf:      () => S('M17 2c-2 0-4 1-5.5 2.5C9 6 7 9 6 13c2.5 0 5-1 7-2.5C14.5 9 16 7 17 5c0-1 0-2-1-3'),
   planet:    () => S('M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.4 0-8-3.6-8-8 0-.5 0-1 .1-1.5l3.9 3.9v1c0 1.1.9 2 2 2v1.5zM18 7.5c.4.4.7.9.9 1.4l-1.9 1.9v2c0 .6-.4 1-1 1h-2v2h-2l-3-3v-2l4-4h2c.6 0 1-.4 1-1z'),
   zap:       () => S('M13 2L4 14h6v8l9-12h-6z'),
 }
 
-// Combine all presets into one map.
-// Order: animals, nature, shapes, symbols, tech, food, misc, extras.
 export const AVATAR_PRESETS: Record<string, { labelKey: string; render: () => ReactNode }> = {}
 const ALL_ICONS = { ...PRESETS, ...EXTRA_PRESETS }
 let idCounter = 0

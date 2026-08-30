@@ -20,9 +20,6 @@ use std::path::Path;
 
 use crate::models::plugins::{Marketplace, PluginError};
 
-// ════════════════════════════════════════════════════════════════════
-// Public types
-// ════════════════════════════════════════════════════════════════════
 
 /// Rich per-plugin metadata extracted from a marketplace's
 /// `.claude-plugin/marketplace.json`. Fields are `Option` because the
@@ -106,9 +103,6 @@ pub struct MarketplaceManifest {
     pub install_location: String,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Public API
-// ════════════════════════════════════════════════════════════════════
 
 /// Reads the `.claude-plugin/marketplace.json` for a single marketplace.
 /// `install_location` comes ONLY from the CLI's `marketplace list --json`
@@ -174,9 +168,6 @@ pub fn read_all_manifests(
     map
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Internal: parsing
-// ════════════════════════════════════════════════════════════════════
 
 /// Parses a marketplace manifest JSON string. Tolerant: unknown fields are
 /// ignored, missing optional fields default to `None`/empty. The root must
@@ -345,16 +336,12 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
-    // ── parse_manifest (real fixtures from investigation) ──────────────
 
     #[test]
     fn parse_manifest_real_claude_plugins_official_fixture() {
@@ -549,7 +536,6 @@ mod tests {
         }
     }
 
-    // ── read_marketplace_manifest (filesystem) ────────────────────────
 
     #[test]
     fn read_manifest_missing_file_returns_invalid_marketplace() {
@@ -587,7 +573,6 @@ mod tests {
         assert_eq!(manifest.install_location, dir.path().to_str().unwrap());
     }
 
-    // ── read_all_manifests (multi-marketplace) ────────────────────────
 
     #[test]
     fn read_all_manifests_skips_invalid_marketplaces() {
@@ -658,7 +643,6 @@ mod tests {
         assert_eq!(map.get("p1@mp").unwrap().category.as_deref(), Some("a"));
     }
 
-    // ── truncate_str (local copy) ────────────────────────────────────
 
     #[test]
     fn truncate_str_multibyte_no_panic() {

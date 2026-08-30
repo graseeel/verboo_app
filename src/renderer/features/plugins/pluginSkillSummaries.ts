@@ -43,7 +43,6 @@ export async function loadPluginSkillSummaries(
     isPluginMention: true,
   }))
 
-  // Per-skill entries
   const results = await Promise.allSettled(
     enabled.map(async p => {
       const skills = await pluginSkills(p.id)

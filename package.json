@@ -1,6 +1,6 @@
 {
   "name": "verboo-desktop",
-  "version": "0.7.3-beta",
+  "version": "0.8.0-beta",
   "description": "Multi-platform desktop app for the Verboo Code CLI (macOS, Windows, Linux)",
   "author": {
     "name": "Gabriel Grasel de Moura",

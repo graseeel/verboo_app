@@ -128,12 +128,10 @@ async function captureWithRetries(windowId) {
   )
 }
 
-/** @param {string} url */
 function isCapturableUrl(url) {
   return /^https?:\/\//i.test(url) || /^file:\/\//i.test(url)
 }
 
-/** @param {string} url */
 function schemeOf(url) {
   try {
     return new URL(url).protocol.replace(':', '')

@@ -25,21 +25,17 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(MOCK_BRIDGE)
 })
 
-// ─── Test 1: App loads and shows chat interface ────────────────────────
 test.describe('App Initialization', () => {
   test('loads and shows the main chat interface', async ({ page }) => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // App should render without errors
     const body = await page.textContent('body')
     expect(body).toBeTruthy()
 
-    // Should NOT show error boundary
     const errorText = await page.$('text=O Verboo Code encontrou um erro')
     expect(errorText).toBeNull()
 
-    // Should show input bar
     const input = await page.$('[placeholder*="Verboo"]')
     expect(input).not.toBeNull()
   })
@@ -48,26 +44,22 @@ test.describe('App Initialization', () => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Model selector should be visible — check for model-related text
     const bodyText = await page.textContent('body')
     const hasModel = bodyText.includes('Deepseek') || bodyText.includes('Flash') || bodyText.includes('Model')
     expect(hasModel).toBeTruthy()
   })
 })
 
-// ─── Test 2: Create new chat ───────────────────────────────────────────
 test.describe('Create New Chat', () => {
   test('clicking Novo chat creates empty session', async ({ page }) => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Click "Novo chat" button
     const novoChat = await page.$('text=Novo chat')
     expect(novoChat).not.toBeNull()
     await novoChat!.click()
     await page.waitForTimeout(1000)
 
-    // Should show empty chat prompt
     const bodyText = await page.textContent('body')
     expect(bodyText).toContain('Em que devemos trabalhar')
   })
@@ -76,11 +68,9 @@ test.describe('Create New Chat', () => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Click Novo chat
     await page.click('text=Novo chat')
     await page.waitForTimeout(1000)
 
-    // Input should be visible and empty
     const input = await page.$('[placeholder*="Verboo"]')
     expect(input).not.toBeNull()
 
@@ -89,24 +79,20 @@ test.describe('Create New Chat', () => {
   })
 })
 
-// ─── Test 3: Send message ──────────────────────────────────────────────
 test.describe('Send Message', () => {
   test('typing in input shows text', async ({ page }) => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Create new chat
     await page.click('text=Novo chat')
     await page.waitForTimeout(1000)
 
-    // Find input and type
     const input = await page.$('[placeholder*="Verboo"]')
     expect(input).not.toBeNull()
 
     await input!.click()
     await input!.fill('Ola Verboo, como voce esta?')
 
-    // Verify text was entered
     const value = await input!.inputValue()
     expect(value).toContain('Ola Verboo')
   })
@@ -122,7 +108,6 @@ test.describe('Send Message', () => {
     await input!.click()
     await input!.fill('Teste de mensagem')
 
-    // Look for send button (arrow icon or submit button)
     await page.waitForTimeout(500)
     const sendBtn = await page.$('button[type="submit"], button[aria-label*="send"], button[aria-label*="enviar"]')
     // Send button may or may not exist depending on UI state
@@ -145,13 +130,11 @@ test.describe('Send Message', () => {
 
     await page.waitForTimeout(1000)
 
-    // Message should appear in the transcript
     const bodyText = await page.textContent('body')
     expect(bodyText).toContain('Mensagem de teste')
   })
 })
 
-// ─── Test 4: Switch model ──────────────────────────────────────────────
 test.describe('Switch Model', () => {
   test('model selector shows current model', async ({ page }) => {
     await page.goto(APP_URL)
@@ -166,13 +149,11 @@ test.describe('Switch Model', () => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Find model selector button — look for the model name area
     const modelBtn = await page.$('[class*="model"], [class*="Model"], button:has-text("Deepseek"), button:has-text("Flash")')
     if (modelBtn) {
       await modelBtn.click()
       await page.waitForTimeout(500)
 
-      // Dropdown should show other models
       const bodyText = await page.textContent('body')
       const hasOtherModel = bodyText.includes('MiMo') || bodyText.includes('Qwen')
       expect(hasOtherModel).toBeTruthy()
@@ -183,27 +164,23 @@ test.describe('Switch Model', () => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Open model dropdown
     const modelBtn = await page.$('[class*="model"], [class*="Model"], button:has-text("Deepseek"), button:has-text("Flash")')
     if (modelBtn) {
       await modelBtn.click()
       await page.waitForTimeout(500)
 
-      // Click on MiMo
       const mimoOption = await page.$('text=MiMo')
       if (mimoOption) {
         await mimoOption.click()
         await page.waitForTimeout(1000)
       }
     }
-    // Verify app still renders correctly after model interaction
     const bodyText = await page.textContent('body')
     expect(bodyText).toBeTruthy()
     expect(bodyText.length).toBeGreaterThan(100)
   })
 })
 
-// ─── Test 5: Sidebar navigation ────────────────────────────────────────
 test.describe('Sidebar Navigation', () => {
   test('sidebar shows projects and chats sections', async ({ page }) => {
     await page.goto(APP_URL)
@@ -231,7 +208,6 @@ test.describe('Sidebar Navigation', () => {
   })
 })
 
-// ─── Test 6: Multi-turn conversation ───────────────────────────────────
 test.describe('Multi-turn Conversation', () => {
   test('can send multiple messages in sequence', async ({ page }) => {
     await page.goto(APP_URL)
@@ -240,7 +216,6 @@ test.describe('Multi-turn Conversation', () => {
     await page.click('text=Novo chat')
     await page.waitForTimeout(1000)
 
-    // Message 1
     const input = await page.$('[placeholder*="Verboo"]')
     await input!.click()
     await input!.fill('Primeira mensagem')
@@ -262,7 +237,6 @@ test.describe('Multi-turn Conversation', () => {
   })
 })
 
-// ─── Test 7: Skills and plugins ────────────────────────────────────────
 test.describe('Skills and Plugins', () => {
   test('slash command shows skills list', async ({ page }) => {
     await page.goto(APP_URL)
@@ -276,7 +250,6 @@ test.describe('Skills and Plugins', () => {
     await input!.fill('/')
     await page.waitForTimeout(500)
 
-    // Skills should appear
     const bodyText = await page.textContent('body')
     expect(bodyText).toContain('deep-analysis')
   })
@@ -293,13 +266,11 @@ test.describe('Skills and Plugins', () => {
     await input!.fill('@')
     await page.waitForTimeout(500)
 
-    // Plugin mentions should appear
     const bodyText = await page.textContent('body')
     expect(bodyText).toContain('Chrome')
   })
 })
 
-// ─── Test 8: Settings ──────────────────────────────────────────────────
 test.describe('Settings', () => {
   test('profile section shows user info', async ({ page }) => {
     await page.goto(APP_URL)
@@ -322,13 +293,11 @@ test.describe('Settings', () => {
   })
 })
 
-// ─── Test 9: Visual regression ─────────────────────────────────────────
 test.describe('Visual Regression', () => {
   test('app renders with proper styling', async ({ page }) => {
     await page.goto(APP_URL)
     await page.waitForTimeout(2000)
 
-    // Verify the app has rendered elements with computed styles
     const hasStyles = await page.evaluate(() => {
       const el = document.querySelector('#root, [data-reactroot], main, .app')
       if (!el) return document.body.children.length > 0

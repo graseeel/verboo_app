@@ -7,7 +7,6 @@ import {
   assertRuntimeReport,
 } from './browser-multiwebview-smoke.mjs'
 
-// ── Helpers ────────────────────────────────────────────────────────────
 
 // Returns a complete, valid report that assertRuntimeReport should accept.
 // Each test overrides the specific field being tested.
@@ -28,7 +27,6 @@ function validReport(overrides = {}) {
   }
 }
 
-// ── resolveLaunch ──────────────────────────────────────────────────────
 
 describe('resolveLaunch', () => {
   test('macOS .app resolves to inner executable using default executableName', () => {
@@ -78,7 +76,6 @@ test('wall timeout covers a cold native startup and two slow webview creations',
   assert.ok(SMOKE_WALL_TIMEOUT_MS >= 180_000)
 })
 
-// ── assertRuntimeReport ────────────────────────────────────────────────
 
 describe('assertRuntimeReport', () => {
   test('accepts a complete valid report with snapshot ok', () => {
@@ -186,7 +183,7 @@ describe('assertRuntimeReport', () => {
   })
 })
 
-// ── Cross-module contract: Rust error message vs launcher predicate ──
+// Cross-module contract: Rust error message vs launcher predicate.
 
 test('rust snapshot-skip error matches the gate predicate (/snapshot/i)', async () => {
   // The launcher (smoke.mjs:48) uses /snapshot/i to distinguish a headless

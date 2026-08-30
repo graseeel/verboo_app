@@ -249,7 +249,6 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
 
   useEffect(() => () => window.clearTimeout(glideTimer.current), [])
 
-  /* ── Drag (floating only) ─────────────────────────────────────── */
   const beginDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (form !== 'floating' || props.flying) return
     // Buttons inside the card (form toggle) are not drag handles.
@@ -302,7 +301,6 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
     glideTimer.current = window.setTimeout(() => setGliding(false), 240)
   }
 
-  /* ── Geometry actually rendered ───────────────────────────────── */
   const viewport = form === 'floating' ? measureViewport() : null
   const restingPos = props.cardPos ?? (viewport ? checklistCardHome(viewport) : null)
   const displayPos = drag?.candidate ?? restingPos
@@ -331,7 +329,6 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
     .filter(Boolean)
     .join(' ')
 
-  /* ── Rows ─────────────────────────────────────────────────────── */
   const rowText = (item: TodoItem) =>
     item.status === 'in_progress' && item.activeForm ? item.activeForm : item.content
 

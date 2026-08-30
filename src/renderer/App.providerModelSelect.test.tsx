@@ -258,7 +258,6 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     // The composer chip (the visible active model) must flip to the provider
     // model — the field defect leaves it on "Ultra".
     await waitFor(() => expect(modelPill().textContent).toContain('GPT-5.6-Sol'))
-    // And the selection is durably persisted.
     expect(updateUserSettingsMock).toHaveBeenCalledWith({ lastSelectedModelId: 'gpt-5.6-sol' })
   })
 
@@ -290,7 +289,6 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     // every later refresh then kept the demotion (the field defect).
     expect(modelPill().textContent).toContain('GPT-5.6-Sol')
 
-    // And when the provider models return, nothing needs repairing.
     activeCatalog = catalog
   })
 
@@ -326,5 +324,82 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
 
     await waitFor(() => expect(modelPill().textContent).toContain('GPT-5.6-Sol'))
     expect(updateUserSettingsMock).toHaveBeenCalledWith({ lastSelectedModelId: 'gpt-5.6-sol' })
+  })
+})
+
+describe('App — reconciling a stale persisted model id against an AUTHORITATIVE catalog (issue #103)', () => {
+  // Field defect (Windows): the desktop persisted lastSelectedModelId from an
+  // OLD catalog generation ("glm-5.3-flash") and ships it LITERALLY via
+  // --model; the CLI demands an exact match against the current catalog, whose
+  // canonical id now carries the account's plan prefix ("max/glm-5.3-flash").
+  // The prefix is the account PLAN — never hardcoded; matching is by id base.
+  const maxGlmFlash: VerbooModel = {
+    id: 'max/glm-5.3-flash',
+    displayName: 'GLM 5.3 Flash',
+    contextWindow: 200000,
+    supportsVision: false,
+    raw: {},
+  }
+
+  const ultraGlmFlash: VerbooModel = {
+    id: 'ultra/glm-5.3-flash',
+    displayName: 'GLM 5.3 Flash Ultra',
+    contextWindow: 200000,
+    supportsVision: false,
+    raw: {},
+  }
+
+  it('an OLD GENERATION id migrates to the single canonical catalog id and persists it', async () => {
+    activeCatalog = [maxGlmFlash, codexSol]
+    settingsStore = { ...baseSettings(), lastSelectedModelId: 'glm-5.3-flash' }
+
+    await renderApp('GLM 5.3 Flash')
+
+    expect(modelPill().textContent).toContain('GLM 5.3 Flash')
+    await waitFor(() => {
+      expect(updateUserSettingsMock).toHaveBeenCalledWith({ lastSelectedModelId: 'max/glm-5.3-flash' })
+    })
+  })
+
+  it('an AMBIGUOUS base (two plans carrying the same model) is never guessed — the selection clears and nothing is persisted', async () => {
+    activeCatalog = [maxGlmFlash, ultraGlmFlash, codexSol]
+    settingsStore = { ...baseSettings(), lastSelectedModelId: 'glm-5.3-flash' }
+
+    render(<App />)
+    // The profile button only renders after startup validation completed —
+    // by then the reconciliation decision has landed on screen.
+    await screen.findByRole('button', { name: /Ada/ })
+    await waitFor(() => expect(modelPill()).toBeTruthy())
+
+    // Neither plan variant is adopted, and the stale raw id does not survive.
+    expect(modelPill().textContent).not.toContain('GLM')
+    expect(modelPill().textContent).not.toContain('glm-5.3-flash')
+    expect(updateUserSettingsMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ lastSelectedModelId: expect.any(String) }),
+    )
+  })
+
+  it('a STALE snapshot never reconciles — the retained id survives and nothing is persisted', async () => {
+    // Verified startup catalog without the persisted base → retained raw id.
+    activeCatalog = [verbooUltra, codexSol]
+    settingsStore = { ...baseSettings(), lastSelectedModelId: 'glm-5.3-flash' }
+    await renderApp('glm-5.3-flash')
+
+    // A stale/cache snapshot arrives carrying what WOULD be the unique
+    // canonical match. Degraded snapshots must never reconcile.
+    activeCatalog = [maxGlmFlash]
+    listModelsMock.mockImplementation(async () => ({ models: activeCatalog, source: 'cache', stale: true }))
+
+    fireEvent.click(modelPill())
+    fireEvent.click(await screen.findByRole('button', { name: /^Refresh$|^Atualizar$/ }))
+
+    // The stale catalog landed on screen (the open panel re-rendered it)…
+    await screen.findByRole('button', { name: /GLM 5\.3 Flash/ })
+    // …yet the selection was NOT migrated…
+    expect(modelPill().textContent).toContain('glm-5.3-flash')
+    // …and nothing was persisted.
+    expect(updateUserSettingsMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ lastSelectedModelId: expect.any(String) }),
+    )
   })
 })

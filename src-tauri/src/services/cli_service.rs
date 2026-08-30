@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::models::types::{CliAuthStatus, LoginEvent, LoginEventKind, LoginResult};
 
@@ -26,8 +26,6 @@ impl CliService {
     pub fn get_auth_status(&self) -> Result<CliAuthStatus, String> {
         // CliSpawn pins one immutable, app-owned CLI version for this process.
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "status", "--json"]);
-        // T-B: explicit Missing check — return Ok(logged_in: false) with
-        // a typed error, NOT Err. This unblocks the API-key gate.
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
             return Ok(CliAuthStatus {
                 logged_in: false,
@@ -94,9 +92,10 @@ impl CliService {
     /// Returns immediately with an empty `LoginResult` (the real result
     /// arrives via events). The `ok` flag here only signals that the
     /// spawn succeeded, not that login succeeded.
-    pub fn start_cli_login_nonblocking(
+    pub fn start_cli_login_nonblocking<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
+        flow_id: Option<u64>,
     ) -> Result<LoginResult, String> {
         let (mut child, mut stdout_pipe, mut stderr_pipe) = match Self::spawn_login_child() {
             Ok(c) => c,
@@ -105,6 +104,7 @@ impl CliService {
                     "login:event",
                     LoginEvent {
                         kind: LoginEventKind::Error,
+                        flow_id,
                         url: None,
                         message: Some(format!("Falha ao iniciar login do CLI Verboo: {e}")),
                         ok: None,
@@ -125,7 +125,6 @@ impl CliService {
             let mut stderr_buf = String::new();
             let mut url_emitted = false;
 
-            // Read stdout incrementally, scanning for a login URL.
             let mut chunk = [0u8; 4096];
             loop {
                 match stdout_pipe.read(&mut chunk) {
@@ -139,6 +138,7 @@ impl CliService {
                                     "login:event",
                                     LoginEvent {
                                         kind: LoginEventKind::Url,
+                                        flow_id,
                                         url: Some(url),
                                         message: None,
                                         ok: None,
@@ -153,7 +153,6 @@ impl CliService {
                 }
             }
 
-            // Drain stderr.
             let mut chunk = [0u8; 4096];
             loop {
                 match stderr_pipe.read(&mut chunk) {
@@ -193,6 +192,7 @@ impl CliService {
                 "login:event",
                 LoginEvent {
                     kind: LoginEventKind::Complete,
+                    flow_id,
                     url: None,
                     message: Some(message),
                     ok: Some(ok),
@@ -227,7 +227,6 @@ impl CliService {
         std::process::ChildStderr,
     )> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "login"]);
-        // T-A: explicit Missing check — never let the raw ENOENT leak.
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -238,8 +237,7 @@ impl CliService {
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        // A2-FIX (2026-07-29): creation_flags already applied by
-        // CliSpawn::new (cli_spawn.rs). No need to re-apply here.
+        // creation_flags are applied by CliSpawn::new — no need to re-apply here.
         let mut child = cmd.spawn()?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -255,7 +253,6 @@ impl CliService {
     pub fn logout(&self) -> Result<LoginResult, String> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "logout"]);
         if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
-            // No CLI runtime → no CLI session to clear. Report success.
             return Ok(LoginResult {
                 ok: true,
                 message: "Sessão Verboo encerrada.".to_string(),
@@ -405,6 +402,7 @@ fn parse_auth_status_payload(output: &str) -> Option<CliAuthStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Listener;
 
     #[test]
     fn parse_status_extracts_logged_in_fields() {
@@ -438,7 +436,7 @@ mod tests {
         assert!(parse_auth_status_payload("{\"foo\":\"bar\"}").is_none());
     }
 
-    // ── T-A / T-B (2026-08-07): no-CLI-runtime gate ──────────────────
+    // T-A / T-B (2026-08-07): no-CLI-runtime gate
     //
     // On a clean machine (no Node, no `verboo` on PATH) the old code
     // leaked raw ENOENT ("No such file or directory (os error 2)") to
@@ -463,6 +461,132 @@ mod tests {
         std::env::remove_var("NODE_BINARY");
         std::env::remove_var("NODE");
         NoRuntimeGuard
+    }
+
+    #[test]
+    fn a1_login_error_event_echoes_flow_id_and_legacy_omits_it() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _no_runtime = set_no_runtime();
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener = app_handle.listen("login:event", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            sender.send(payload).unwrap();
+        });
+        let cli = CliService::new();
+
+        assert!(cli
+            .start_cli_login_nonblocking(app_handle.clone(), Some(41))
+            .is_err());
+        let with_id = receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("spawn failure must emit a login event");
+        assert_eq!(with_id["kind"], "error");
+        assert_eq!(with_id["flowId"], 41);
+
+        assert!(cli
+            .start_cli_login_nonblocking(app_handle.clone(), None)
+            .is_err());
+        let legacy = receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("legacy spawn failure must still emit a login event");
+        assert_eq!(legacy["kind"], "error");
+        assert!(!legacy
+            .as_object()
+            .expect("login event must serialize as an object")
+            .contains_key("flowId"));
+
+        app_handle.unlisten(listener);
+    }
+
+    #[test]
+    fn a1_login_url_and_complete_events_echo_the_same_flow_id() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        a1_node_precheck();
+        let script = r#"
+            process.stdout.write('Open https://verboo.example/auth?token=flow-id in your browser.\n', () => {
+                process.exit(0);
+            });
+        "#;
+        let _path = write_fake_cli(script, "flow-id");
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener = app_handle.listen("login:event", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            sender.send(payload).unwrap();
+        });
+        let cli = CliService::new();
+
+        assert!(cli
+            .start_cli_login_nonblocking(app_handle.clone(), Some(73))
+            .is_ok());
+        let url = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("URL event must arrive");
+        let complete = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("complete event must arrive");
+
+        assert_eq!(url["kind"], "url");
+        assert_eq!(url["flowId"], 73);
+        assert_eq!(complete["kind"], "complete");
+        assert_eq!(complete["flowId"], 73);
+
+        app_handle.unlisten(listener);
+        unset_fake_cli();
+    }
+
+    #[test]
+    fn login_event_omits_flow_id_when_absent_for_every_kind() {
+        let events = [
+            LoginEvent {
+                kind: LoginEventKind::Error,
+                flow_id: None,
+                url: None,
+                message: Some("spawn failed".to_string()),
+                ok: None,
+                status: None,
+            },
+            LoginEvent {
+                kind: LoginEventKind::Url,
+                flow_id: None,
+                url: Some("https://verboo.example/auth".to_string()),
+                message: None,
+                ok: None,
+                status: None,
+            },
+            LoginEvent {
+                kind: LoginEventKind::Complete,
+                flow_id: None,
+                url: None,
+                message: Some("done".to_string()),
+                ok: Some(true),
+                status: Some(CliAuthStatus {
+                    logged_in: true,
+                    auth_method: None,
+                    api_provider: None,
+                    email: None,
+                    org_id: None,
+                    org_name: None,
+                    subscription_type: None,
+                    error: None,
+                }),
+            },
+        ];
+
+        for event in events {
+            let payload = serde_json::to_value(event).expect("login event must serialize");
+            assert!(!payload
+                .as_object()
+                .expect("login event must serialize as an object")
+                .contains_key("flowId"));
+        }
     }
 
     /// T-A: `spawn_login_child` returns a typed `io::Error` when the
@@ -562,7 +686,7 @@ mod tests {
         assert!(login_result.ok, "logout should report success");
     }
 
-    // ── A1: non-blocking login regression tests ──────────────────────
+    // A1: non-blocking login regression tests
     //
     // QA gate: two tests using a FAKE CLI via VERBOO_CLI_PATH pointing
     // to a script that prints a login URL and stays alive for its configured
@@ -745,7 +869,6 @@ mod tests {
         let (mut child, mut stdout_pipe, _stderr_pipe) =
             crate::services::cli_service::CliService::spawn_login_child()
                 .expect("spawn must succeed");
-        // Read stdout incrementally and try to extract the URL.
         use std::io::Read;
         let mut buf = String::new();
         let mut chunk = [0u8; 4096];

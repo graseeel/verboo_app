@@ -3,7 +3,6 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useOverlayShade, createOverlayShadeEntry, _resetOverlayShadeForTests } from './useOverlayShade'
 
-// Mock invoke for browser_snapshot + convertFileSrc
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue({
     ms: 12,

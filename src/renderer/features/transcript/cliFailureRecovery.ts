@@ -1,6 +1,6 @@
 import type { CliTerminalFailure } from '../../../shared/types'
 
-const LEGACY_AUTH_FAILURE = /authentication_failed|failed to authenticate|invalid or expired token|oauth session expired|api error:\s*401/i
+const LEGACY_AUTH_FAILURE = /authentication_failed|failed to authenticate|invalid or expired token|oauth session expired|api error:\s*401|não autenticado no verboo|api key inválida ou expirada/i
 
 export function isAuthenticationFailure(
   failure: CliTerminalFailure | undefined,

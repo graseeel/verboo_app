@@ -4,10 +4,13 @@ import {
   Brain,
   Check,
   ChevronDown,
+  Clipboard,
   Computer,
+  FolderOpen,
   Ghost,
   KeyRound,
   Languages,
+  Loader2,
   Moon,
   Palette,
   RefreshCcw,
@@ -46,6 +49,7 @@ import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
 import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
+import { credentialStoreI18nKey, invokeErrorText } from '../auth/credentialStoreMessage'
 import type { ProviderAccountsController } from './useProviderAccounts'
 import type { ExternalProviderId } from '../../../shared/types'
 
@@ -57,6 +61,7 @@ export type SettingsViewProps = {
   activeTab: SettingsTab
   userSettings: UserSettings
   browserAvailable: boolean
+  platform: NodeJS.Platform
   petEnabled: boolean
   petSize: number
   profile: ProfileResult
@@ -108,6 +113,7 @@ export function SettingsView({
   activeTab,
   userSettings,
   browserAvailable,
+  platform,
   petEnabled,
   petSize,
   profile,
@@ -143,9 +149,17 @@ export function SettingsView({
   onClose,
 }: SettingsViewProps) {
   const { language, t } = useI18n()
+  // Tray title text is macOS-only (Rust cfg-gates `TrayIcon::set_title`);
+  // on Win/Linux the icon lives in the system tray instead (issue #91).
+  const isMacOS = platform === 'darwin'
   const { toast } = useToast()
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const [copyingDiagnostics, setCopyingDiagnostics] = useState(false)
+  const [diagnosticLogDegraded, setDiagnosticLogDegraded] = useState(false)
+  // Issue #94: a rejected check_for_updates invoke never reaches the snapshot
+  // stream — without local state the failure would be silent.
+  const [updateCheckError, setUpdateCheckError] = useState<string | undefined>(undefined)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: ComponentType<{ size?: number }> }> = [
@@ -182,14 +196,40 @@ export function SettingsView({
     setCustomDraft(userSettings.customInstructions)
   }, [userSettings.customInstructions])
 
+  useEffect(() => {
+    setUpdateCheckError(undefined)
+  }, [updateSnapshot])
+
+  useEffect(() => {
+    if (activeTab !== 'general') {
+      setDiagnosticLogDegraded(false)
+      return
+    }
+    let cancelled = false
+    void window.verboo.diagnosticLogStatus()
+      .then(status => {
+        if (!cancelled) setDiagnosticLogDegraded(status.degraded)
+      })
+      .catch(() => {
+        // If the renderer cannot even read logger status, do not let the
+        // observability path fail silently; surface the same conservative warning.
+        if (!cancelled) setDiagnosticLogDegraded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab])
+
   async function submitApiKey() {
     setSaving(true)
     try {
       await onSaveApiKey(apiKey)
       setApiKey('')
       toast(t('toast.apiKeySaved'))
-    } catch {
-      toast(t('toast.apiKeyInvalid'), 'error')
+    } catch (error) {
+      const text = invokeErrorText(error)
+      const storeKey = credentialStoreI18nKey(text)
+      toast(t(storeKey ?? 'toast.apiKeyInvalid'), 'error')
     } finally {
       setSaving(false)
     }
@@ -198,6 +238,20 @@ export function SettingsView({
   async function saveCustomInstructions() {
     await onUserSettingsChange({ customInstructions: customDraft })
     toast(t('toast.instructionsSaved'))
+  }
+
+  async function copyDiagnosticPackage() {
+    setCopyingDiagnostics(true)
+    try {
+      const diagnosticPackage = await window.verboo.diagnosticPackage()
+      const copied = await window.verboo.clipboardWriteText(diagnosticPackage)
+      if (!copied) throw new Error('clipboard_write_failed')
+      toast(t('settings.diagnosticCopySuccess'))
+    } catch {
+      toast(t('settings.diagnosticCopyError'), 'error')
+    } finally {
+      setCopyingDiagnostics(false)
+    }
   }
 
   function requestAccessModeChange(mode: AccessMode) {
@@ -261,7 +315,7 @@ export function SettingsView({
                   <Shield size={18} />
                   <span>
                     <strong>{option.title}</strong>
-                    <small>{option.id === 'full' && !userSettings.fullAccessEnabled ? t('access.fullLocked') : option.body}</small>
+                    <small>{option.body}</small>
                   </span>
                   {userSettings.defaultAccessMode === option.id && <Check size={18} />}
                 </button>
@@ -374,18 +428,20 @@ export function SettingsView({
 
             <section className="settings-panel">
               <SettingToggle
-                title={t('settings.showMenuBar')}
-                body={t('settings.showMenuBarBody')}
+                title={t(isMacOS ? 'settings.showMenuBar' : 'settings.showTray')}
+                body={t(isMacOS ? 'settings.showMenuBarBody' : 'settings.showTrayBody')}
                 checked={userSettings.showInMenuBar}
                 onChange={showInMenuBar => onUserSettingsChange({ showInMenuBar })}
               />
-              <SettingToggle
-                title={t('settings.showMenuBarText')}
-                body={t('settings.showMenuBarTextBody')}
-                checked={userSettings.showMenuBarText}
-                disabled={!userSettings.showInMenuBar}
-                onChange={showMenuBarText => onUserSettingsChange({ showMenuBarText })}
-              />
+              {isMacOS && (
+                <SettingToggle
+                  title={t('settings.showMenuBarText')}
+                  body={t('settings.showMenuBarTextBody')}
+                  checked={userSettings.showMenuBarText}
+                  disabled={!userSettings.showInMenuBar}
+                  onChange={showMenuBarText => onUserSettingsChange({ showMenuBarText })}
+                />
+              )}
               <SettingToggle
                 title={t('settings.preventSleep')}
                 body={t('settings.preventSleepBody')}
@@ -511,7 +567,7 @@ export function SettingsView({
                     {t('updates.beta')}
                   </ChoiceChip>
                 </div>
-                {!updateSnapshot?.stableChannelAvailable && (
+                {userSettings.updates.channel !== 'stable' && updateSnapshot?.stableChannelAvailable === false && (
                   <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-muted)' }}>
                     {t('updates.stableDisabled')}
                   </p>
@@ -521,10 +577,22 @@ export function SettingsView({
                 <div className="settings-action-row">
                   <button
                     className="button button-sm button-secondary"
-                    onClick={() => onCheckForUpdates(true)}
+                    onClick={() => {
+                      setUpdateCheckError(undefined)
+                      void onCheckForUpdates(true).catch((error: unknown) => {
+                        setUpdateCheckError(error instanceof Error ? error.message : String(error))
+                      })
+                    }}
                     disabled={updateSnapshot?.status === 'checking'}
                   >
-                    {updateSnapshot?.status === 'checking' ? t('updates.checking') : t('updates.check')}
+                    {updateSnapshot?.status === 'checking' ? (
+                      <>
+                        <Loader2 size={14} className="t-spin" />
+                        {t('updates.checking')}
+                      </>
+                    ) : (
+                      t('updates.check')
+                    )}
                   </button>
                   {updateSnapshot?.status === 'available' && updateSnapshot.channel === userSettings.updates.channel && (
                     <button className="button button-sm" onClick={() => onDownloadUpdate()}>
@@ -550,13 +618,24 @@ export function SettingsView({
                     {updateSummary(updateSnapshot, t)}
                   </p>
                 )}
+                {updateSnapshot && updateSnapshot.status !== 'idle' && updateSnapshot.status !== 'unsupported'
+                  && updateSnapshot.lastCheckedAt != null && (
+                  <p className="settings-hint" style={{ marginTop: 2, marginBottom: 2 }}>
+                    {t('updates.lastChecked', { time: formatDateTime(updateSnapshot.lastCheckedAt, language) })}
+                  </p>
+                )}
+                {updateCheckError && (
+                  <p className="settings-warning">
+                    {t('updates.statusError')} {updateCheckError}
+                  </p>
+                )}
                 {updateSnapshot?.status === 'downloading' && updateSnapshot.percent != null && (
                   <div className="update-progress" style={{ marginTop: 6 }}>
                     <span style={{ width: `${updateSnapshot.percent}%` }} />
                   </div>
                 )}
                 {updateSnapshot?.error && (
-                  <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-danger)' }}>
+                  <p className="settings-warning">
                     {updateSnapshot.error}
                   </p>
                 )}
@@ -565,6 +644,41 @@ export function SettingsView({
                     {t('updates.unsupported')}
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="settings-panel">
+              <div className="settings-row settings-row--control settings-diagnostic-row">
+                <FolderOpen size={16} />
+                <div>
+                  <strong>{t('settings.diagnosticLogs')}</strong>
+                  <p>{t('settings.diagnosticLogsBody')}</p>
+                  {diagnosticLogDegraded ? (
+                    <p className="settings-warning" role="status">
+                      {t('settings.diagnosticLogsDegraded')}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="settings-diagnostic-actions">
+                  <button
+                    className="button button-sm button-secondary"
+                    type="button"
+                    disabled={copyingDiagnostics}
+                    onClick={() => void copyDiagnosticPackage()}
+                  >
+                    <Clipboard size={14} />
+                    {t(copyingDiagnostics ? 'settings.copyingDiagnostics' : 'settings.copyDiagnostics')}
+                  </button>
+                  <button
+                    className="button button-sm button-secondary"
+                    type="button"
+                    onClick={() => {
+                      void window.verboo.openDiagnosticLogsDir()
+                    }}
+                  >
+                    {t('settings.openLogsFolder')}
+                  </button>
+                </div>
               </div>
             </section>
 
@@ -610,6 +724,9 @@ export function SettingsView({
                   {saving ? t('common.saving') : t('common.save')}
                 </button>
               </div>
+              {credentialStoreI18nKey(credentials.warning) && (
+                <p className="settings-warning">{t(credentialStoreI18nKey(credentials.warning)!)}</p>
+              )}
               {modelResult.error && <p className="settings-warning">{modelSettingsMessage(modelResult.error, t)}</p>}
               <SettingToggle
                 title={t('login.staySignedIn')}

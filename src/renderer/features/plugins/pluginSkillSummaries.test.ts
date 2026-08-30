@@ -141,10 +141,9 @@ describe('merge — homonymous skills', () => {
       pluginId: 'm1', pluginName: 'M1',
     }
     const selected: SkillSummary[] = []
-    // Simulating @ palette select
     if (!selected.some(s => s.id === skill.id)) selected.push(skill)
     expect(selected).toHaveLength(1)
-    // Simulating hero chip select (same skill, no duplicate)
+    // Hero chip select of the same skill must not duplicate.
     if (!selected.some(s => s.id === skill.id || s.path === skill.path)) selected.push(skill)
     expect(selected).toHaveLength(1)
   })

@@ -300,7 +300,6 @@ export function BrowserPanel({
     transitionRafRef.current = requestAnimationFrame(tick)
   }, [syncBounds])
 
-  // ── ResizeObserver → throttle rAF → browser_session_open (bounds update) ──
   useEffect(() => {
     if (!browserOpen || !contentRef.current) return
     const content = contentRef.current
@@ -354,7 +353,6 @@ export function BrowserPanel({
     }
   }, [browserOpen, syncBounds, trackBoundsThroughTransition])
 
-  // ── Also sync bounds on window resize ──
   useEffect(() => {
     if (!browserOpen) return
     function onResize() {
@@ -446,7 +444,6 @@ export function BrowserPanel({
     })
   }, [activeTab, alive, onReloadHandled, reloadRequest, url])
 
-  // ── Create once, then hide/show the retained native session ──
   useEffect(() => {
     const wasOpen = previousBrowserOpenRef.current
     previousBrowserOpenRef.current = browserOpen
@@ -500,7 +497,6 @@ export function BrowserPanel({
     })
   }, [computeBounds, trackBoundsThroughTransition, url])
 
-  // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
       if (aliveRef.current) {
@@ -519,7 +515,6 @@ export function BrowserPanel({
     }
   }, [])
 
-  // ── Cancel pending annotations when the active tab changes or closes ──
   // Drawing, selection, and popover die with the tab that started them.
   useEffect(() => {
     if (!activeTab) {
@@ -529,7 +524,6 @@ export function BrowserPanel({
       pendingAnnotationsRef.current.clear()
       return
     }
-    // When the active tab id changes, discard annotations from other tabs.
     for (const [token, pending] of pendingAnnotationsRef.current) {
       if (pending.identity.tabId !== activeTab.id || pending.identity.generation !== activeTab.generation) {
         pendingAnnotationsRef.current.delete(token)
@@ -544,7 +538,6 @@ export function BrowserPanel({
     void browserApi.setVisible(false).catch(() => {})
   }, [])
 
-  // ── Navigation ──
   const handleNavigate = useCallback((targetUrl: string) => {
     const finalUrl = normalizeBrowserUrl(targetUrl)
     if (!finalUrl) {
@@ -592,7 +585,6 @@ export function BrowserPanel({
     pendingTabCreationRef.current = creation
   }, [t, activeTab, onCreateTab, onNavigateTab, showBrowserFailure])
 
-  // ── Local preview routing: activate matching tab → navigate blank → create ──
   useEffect(() => {
     if (!alive || !navigationRequest) return
     const route = routePreview(session, navigationRequest.url)
@@ -637,7 +629,6 @@ export function BrowserPanel({
     })
   }, [activeTab, url])
 
-  // ── Resizer drag ──
   const handleResizerPointerDown = useCallback((event: React.PointerEvent) => {
     event.preventDefault()
     const startX = event.clientX
@@ -680,7 +671,7 @@ export function BrowserPanel({
       {/* Tab bar */}
       <div className="browser-tabs" role="tablist" aria-label={t('browser.tabs')}>
         {session.tabs.map(tab => {
-          const tabLabel = browserTabLabel(tab.url, tab.title)
+          const tabLabel = browserTabLabel(tab.url, tab.title, t('browser.newTab'))
           const isEvicted = tab.evicted
           const evictedHint = isEvicted ? t('browser.evictedTabHint') : undefined
           return (
@@ -856,10 +847,13 @@ function normalizeBrowserUrl(rawValue: string): string | null {
   }
 }
 
-function browserTabLabel(url: string, title?: string): string {
+function browserTabLabel(url: string, title: string | undefined, blankLabel: string): string {
   if (title) return title
   try {
     const parsed = new URL(url)
+    if (parsed.protocol === 'about:' && parsed.pathname.replace(/^\//, '') === 'blank') {
+      return blankLabel
+    }
     return parsed.hostname || parsed.pathname || parsed.protocol.replace(':', '')
   } catch {
     return url

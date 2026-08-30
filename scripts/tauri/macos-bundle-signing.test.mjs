@@ -14,6 +14,7 @@ import {
 const sidecars = [
   "verboo-in-chrome",
   "verboo-ios-simulator",
+  "verboo-android-emulator",
   "verboo-ffmpeg",
   "verboo-ffprobe",
   "verboo-whisper",
@@ -99,10 +100,13 @@ test("signs every configured macOS sidecar with an explicit stable identifier", 
 test("rejects an ad hoc nested executable even when deep verification succeeds", async () => {
   const { appPath } = await makeBundleFixture();
   const inspectCode = async (target) => {
-    if (target.endsWith("verboo-ios-simulator")) {
+    if (target.endsWith("verboo-ios-simulator") || target.endsWith("verboo-android-emulator")) {
+      const name = path.basename(target);
       return {
         authority: "",
-        identifier: "verboo_ios_simulator-62192f8c36efd836",
+        identifier: name.endsWith("verboo-android-emulator")
+          ? stableSidecarIdentifier("verboo-android-emulator")
+          : "verboo_ios_simulator-62192f8c36efd836",
         requirement: 'cdhash H"de2cd628ac2d2bde436115aaaf344b03b71d9675"',
         signature: "adhoc",
         teamIdentifier: "not set",
@@ -124,7 +128,7 @@ test("rejects an ad hoc nested executable even when deep verification succeeds",
       platform: "darwin",
       verifyDeep: async () => {},
     }),
-    /verboo-ios-simulator.*ad hoc/i,
+    /verboo-ios-simulator.*ad hoc|verboo-android-emulator.*ad hoc/i,
   );
 });
 
