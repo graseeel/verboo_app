@@ -40,12 +40,29 @@ struct OneFrameStream {
     first: Option<generated::Image>,
 }
 
+/// Consume the frame on poll, not when `message()` builds the future.
+/// `tokio::select!` drops unselected branches; take-on-build lost the only
+/// mock frame when a stale `control.changed()` won, then `pending()` forever.
+struct OneFrameMessageFut<'a> {
+    first: &'a mut Option<generated::Image>,
+}
+
+impl Future for OneFrameMessageFut<'_> {
+    type Output = Result<Option<generated::Image>, GrpcError>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut().first.take() {
+            Some(frame) => Poll::Ready(Ok(Some(frame))),
+            None => Poll::Pending,
+        }
+    }
+}
+
 impl ScreenshotStream for OneFrameStream {
     fn message(&mut self) -> StreamMessageFuture<'_> {
-        match self.first.take() {
-            Some(frame) => Box::pin(async move { Ok(Some(frame)) }),
-            None => Box::pin(std::future::pending()),
-        }
+        Box::pin(OneFrameMessageFut {
+            first: &mut self.first,
+        })
     }
 }
 
@@ -57,16 +74,15 @@ struct OneFrameFactory {
 impl ScreenshotStreamFactory for OneFrameFactory {
     fn open(&self, width: u32, height: u32) -> OpenStreamFuture<'_> {
         self.requested_sizes.lock().unwrap().push((width, height));
-        let frame = self
-            .frame
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or(super::super::grpc::GrpcError::Unsupported);
-        Box::pin(async move {
-            frame.map(|frame| {
-                Box::new(OneFrameStream { first: Some(frame) }) as Box<dyn ScreenshotStream>
-            })
+        Box::pin(async {
+            self.frame
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or(super::super::grpc::GrpcError::Unsupported)
+                .map(|frame| {
+                    Box::new(OneFrameStream { first: Some(frame) }) as Box<dyn ScreenshotStream>
+                })
         })
     }
 }

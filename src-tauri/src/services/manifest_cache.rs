@@ -282,11 +282,29 @@ mod tests {
     /// the test deny itself in front of a real (B) hang. The new
     /// message reports what was actually observed.
     ///
-    /// Run with: `cargo test --lib -- --ignored real_cli_concurrent_calls_complete_without_hang`
-    #[ignore]
+    /// LOCAL ENVIRONMENT ONLY. Default `cargo test --lib` (CI core-tests)
+    /// does not run this: it is `#[ignore]`. Invoke explicitly with
+    /// `cargo test --lib -- --ignored --exact real_cli_concurrent_calls_complete_without_hang`.
+    /// When the managed CLI/Node pair is missing (`CliRuntime::Missing` or
+    /// `VERBOO_TEST_NO_NODE`), skip immediately — do not spawn a hanging fetch.
+    #[ignore = "local-only: real Verboo CLI/Node; skip when runtime is Missing"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn real_cli_concurrent_calls_complete_without_hang() {
         use std::time::Instant;
+
+        if std::env::var_os("VERBOO_TEST_NO_NODE").is_some()
+            || matches!(
+                crate::services::cli_spawn::CliSpawn::new(std::iter::empty::<&str>()).runtime,
+                crate::services::cli_spawn::CliRuntime::Missing
+            )
+        {
+            eprintln!(
+                "skip: real CLI/Node not resolved — local-environment integration test, \
+                 not a CI gate (cargo test --lib -- --ignored --exact \
+                 real_cli_concurrent_calls_complete_without_hang)"
+            );
+            return;
+        }
 
         // Invalidate any existing cache first.
         invalidate().await;

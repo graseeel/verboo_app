@@ -552,6 +552,13 @@ impl PreviewGate {
         Ok(())
     }
 
+    pub(crate) fn disconnect_control(&self) {
+        self.state
+            .lock()
+            .expect("Android preview gate poisoned")
+            .control = None;
+    }
+
     pub(crate) fn refresh_control(&self) {
         let state = self.state.lock().expect("Android preview gate poisoned");
         if let Some(sender) = state.control.as_ref() {
@@ -1426,6 +1433,11 @@ impl AndroidEmulatorService {
             visible: false,
             stop: true,
         });
+        // Drop both watch senders (preview + gate clones the same channel).
+        // Leaving either alive parks `control.changed()`; `join()` then never
+        // returns and cargo test holds the process until the CI job timeout.
+        session.preview.disconnect_control();
+        session.gate.disconnect_control();
         session.preview.slot.clear();
         *session
             .preview

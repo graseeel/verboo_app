@@ -467,6 +467,38 @@ impl FirstPreviewGate {
         }
     }
 
+    /// Like `wait`, but returns `None` on timeout instead of parking forever.
+    #[cfg(test)]
+    pub(crate) fn wait_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Option<Result<(), FirstPreviewError>> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("Android first preview gate poisoned");
+        let deadline = Instant::now() + timeout;
+        while *state == FirstPreviewState::Pending {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (next, wait_result) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .expect("Android first preview gate poisoned");
+            state = next;
+            if wait_result.timed_out() && *state == FirstPreviewState::Pending {
+                return None;
+            }
+        }
+        Some(match &*state {
+            FirstPreviewState::Ready => Ok(()),
+            FirstPreviewState::Failed(error) => Err(error.clone()),
+            FirstPreviewState::Pending => unreachable!(),
+        })
+    }
+
     pub(crate) fn status(&self) -> FirstPreviewState {
         self.state
             .lock()
@@ -676,7 +708,7 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
     let mut open_attempts = 0u32;
 
     loop {
-        let initial_control = *control.borrow();
+        let initial_control = *control.borrow_and_update();
         if initial_control.stop {
             slot.clear();
             let error = FirstPreviewError::Cancelled;
@@ -686,11 +718,21 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
         }
         if !initial_control.visible {
             slot.clear();
-            if control.changed().await.is_err() {
-                let error = FirstPreviewError::Cancelled;
-                health.terminal(error.clone());
-                first_preview.fail(error);
-                return WorkerOutcome::Stopped;
+            // Tests: a mock stream can park on `changed()` forever if the
+            // session never becomes visible (no real emulator to flip the
+            // gate). Bound that wait so `JoinHandle::join` cannot pin CI.
+            #[cfg(test)]
+            let changed = tokio::time::timeout(Duration::from_secs(5), control.changed()).await;
+            #[cfg(not(test))]
+            let changed = Ok(control.changed().await);
+            match changed {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => {
+                    let error = FirstPreviewError::Cancelled;
+                    health.terminal(error.clone());
+                    first_preview.fail(error);
+                    return WorkerOutcome::Stopped;
+                }
             }
             continue;
         }
@@ -699,6 +741,8 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
         let mut open_future = factory.open(width, height);
         let open_result = loop {
             tokio::select! {
+                biased;
+                result = open_future.as_mut() => break Some(result),
                 changed = control.changed() => {
                     if changed.is_err() {
                         slot.clear();
@@ -720,7 +764,6 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
                         break None;
                     }
                 }
-                result = open_future.as_mut() => break Some(result),
             }
         };
         let Some(open_result) = open_result else {
@@ -823,28 +866,18 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
         }
 
         loop {
+            // Production: idle is `pending()` (live gRPC waits for the next
+            // frame or a control change). Tests: mock streams often return
+            // `pending()` after the first frame; if stop/disconnect is missed,
+            // this 5s idle returns Stopped so `join()` cannot pin cargo.
+            let idle = async {
+                #[cfg(test)]
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                #[cfg(not(test))]
+                std::future::pending::<()>().await;
+            };
             tokio::select! {
-                changed = control.changed() => {
-                    if changed.is_err() {
-                        slot.clear();
-                        let error = FirstPreviewError::Cancelled;
-                        health.terminal(error.clone());
-                        first_preview.fail(error);
-                        return WorkerOutcome::Stopped;
-                    }
-                    let next = *control.borrow_and_update();
-                    if next.stop {
-                        slot.clear();
-                        let error = FirstPreviewError::Cancelled;
-                        health.terminal(error.clone());
-                        first_preview.fail(error);
-                        return WorkerOutcome::Stopped;
-                    }
-                    if !next.visible {
-                        slot.clear();
-                        break;
-                    }
-                }
+                biased;
                 message = stream.message() => {
                     let image = match message {
                         Ok(Some(image)) => image,
@@ -958,6 +991,43 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
                     first_preview.ready();
                     last_publish_us = Some(now_us);
                     drop(final_control);
+                }
+                changed = control.changed() => {
+                    if changed.is_err() {
+                        slot.clear();
+                        let error = FirstPreviewError::Cancelled;
+                        health.terminal(error.clone());
+                        first_preview.fail(error);
+                        return WorkerOutcome::Stopped;
+                    }
+                    let next = *control.borrow_and_update();
+                    if next.stop {
+                        slot.clear();
+                        let error = FirstPreviewError::Cancelled;
+                        health.terminal(error.clone());
+                        first_preview.fail(error);
+                        return WorkerOutcome::Stopped;
+                    }
+                    if !next.visible {
+                        slot.clear();
+                        break;
+                    }
+                }
+                _ = idle => {
+                    #[cfg(test)]
+                    {
+                        slot.clear();
+                        if first_preview.status() == FirstPreviewState::Pending {
+                            let error = FirstPreviewError::Cancelled;
+                            health.terminal(error.clone());
+                            first_preview.fail(error);
+                        }
+                        return WorkerOutcome::Stopped;
+                    }
+                    #[cfg(not(test))]
+                    {
+                        unreachable!("production idle future is pending()");
+                    }
                 }
             }
         }

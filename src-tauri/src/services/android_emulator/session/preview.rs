@@ -98,6 +98,15 @@ impl PreviewRuntime {
         }
     }
 
+    /// Drop watch senders so a worker blocked on `control.changed()` wakes
+    /// with `Err` instead of parking until process exit.
+    pub(super) fn disconnect_control(&self) {
+        *self
+            .control
+            .lock()
+            .expect("Android preview control poisoned") = None;
+    }
+
     pub(super) fn is_operational(&self, first_preview: &FirstPreviewGate) -> bool {
         first_preview.status() == FirstPreviewState::Ready && self.health.is_operational()
     }
@@ -570,8 +579,8 @@ pub(super) fn start_preview_for_session(
         }
         PreviewMode::Vaf1 | PreviewMode::LegacyFallback => {
             let (control_tx, control_rx) = tokio::sync::watch::channel(PreviewControl {
-                visible: false,
-                stop: false,
+                visible: session.gate.is_visible(),
+                stop: session.stop.load(Ordering::Acquire),
             });
             if let Err(error) = session
                 .preview
@@ -628,7 +637,36 @@ pub(super) fn finish_started_preview(
     if matches!(start, PreviewStart::Cancelled) {
         return Err(FirstPreviewError::Cancelled);
     }
-    match session.first_preview.wait() {
+    let wait_result = {
+        #[cfg(test)]
+        {
+            match session
+                .first_preview
+                .wait_timeout(Duration::from_secs(5))
+            {
+                Some(result) => result,
+                None => {
+                    session.gate.stop_and_wake(&session.stop);
+                    session.preview.send_control(PreviewControl {
+                        visible: false,
+                        stop: true,
+                    });
+                    session.preview.disconnect_control();
+                    session.gate.disconnect_control();
+                    panic!(
+                        "first preview still Pending after 5s — VAF1 worker parked \
+                         (watch::changed with visible=false, or stream.message pending). \
+                         This used to hang cargo test until the CI job timeout."
+                    );
+                }
+            }
+        }
+        #[cfg(not(test))]
+        {
+            session.first_preview.wait()
+        }
+    };
+    match wait_result {
         Ok(()) => {
             if session.stop.load(Ordering::Acquire) {
                 return Err(FirstPreviewError::Cancelled);
