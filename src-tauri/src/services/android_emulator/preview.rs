@@ -718,21 +718,28 @@ pub(crate) async fn run_vaf1_worker_with_open_retry(
         }
         if !initial_control.visible {
             slot.clear();
-            // Tests: a mock stream can park on `changed()` forever if the
-            // session never becomes visible (no real emulator to flip the
-            // gate). Bound that wait so `JoinHandle::join` cannot pin CI.
-            #[cfg(test)]
-            let changed = tokio::time::timeout(Duration::from_secs(5), control.changed()).await;
-            #[cfg(not(test))]
-            let changed = Ok(control.changed().await);
-            match changed {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => {
-                    let error = FirstPreviewError::Cancelled;
-                    health.terminal(error.clone());
-                    first_preview.fail(error);
-                    return WorkerOutcome::Stopped;
+            // Tests bound `changed()` so a mock that never becomes visible
+            // cannot pin `join()`. Production waits until the sender
+            // updates or drops. Unify on bool so both cfg arms type-check
+            // without wrapping production in `timeout`'s Elapsed.
+            let lost = {
+                #[cfg(test)]
+                {
+                    !matches!(
+                        tokio::time::timeout(Duration::from_secs(5), control.changed()).await,
+                        Ok(Ok(()))
+                    )
                 }
+                #[cfg(not(test))]
+                {
+                    control.changed().await.is_err()
+                }
+            };
+            if lost {
+                let error = FirstPreviewError::Cancelled;
+                health.terminal(error.clone());
+                first_preview.fail(error);
+                return WorkerOutcome::Stopped;
             }
             continue;
         }
