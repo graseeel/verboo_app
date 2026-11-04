@@ -705,6 +705,7 @@ mod tests {
 
     #[test]
     fn api_key_only_returns_typed_status_without_network_requests() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
         let server = RecordingServer::start();
         let service = ProfileService::with_api_base(server.base_url());
 
@@ -725,6 +726,7 @@ mod tests {
 
     #[test]
     fn oauth_source_wins_and_authenticates_every_account_request() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
         let server = RecordingServer::start();
         let service = ProfileService::with_api_base(server.base_url());
         let credential = account_credential_from_sources(
@@ -755,6 +757,7 @@ mod tests {
 
     #[test]
     fn no_api_key_returns_unauthenticated() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
         let svc = ProfileService::new();
         let result = svc.get_profile(AccountCredential::Unauthenticated);
         assert_eq!(result.status, ProfileStatus::Unauthenticated);
@@ -763,6 +766,7 @@ mod tests {
 
     #[test]
     fn empty_api_key_returns_unauthenticated() {
+        let _guard = crate::services::diagnostic_log::serial_test_lock();
         let svc = ProfileService::new();
         let credential = account_credential_from_sources(None, Some("   "));
         let result = svc.get_profile(credential);
@@ -1037,11 +1041,12 @@ mod tests {
             .filter(|line| line.starts_with('{'))
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        let refresh = events
+        let refresh_events: Vec<_> = events
             .iter()
-            .rev()
-            .find(|event| event["code"] == "profile_refresh")
-            .expect("profile_refresh");
+            .filter(|event| event["code"] == "profile_refresh")
+            .collect();
+        assert_eq!(refresh_events.len(), 1, "{raw}");
+        let refresh = refresh_events[0];
         assert_eq!(refresh["context"]["tokens_in_total"], 100);
         assert_eq!(refresh["context"]["tokens_out_total"], 7);
         assert_eq!(refresh["context"]["total_tokens"], 100);
