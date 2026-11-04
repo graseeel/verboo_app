@@ -215,6 +215,10 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
+      # Fresh CI targets cannot reuse incremental state. Debug symbols make
+      # this large test binary expensive to build; test assertions stay on.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -4327,6 +4327,9 @@ fn spawn_capture_loop_internal(
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
+                if !gate.is_visible() {
+                    continue;
+                }
                 if mjpeg_active.load(Ordering::Acquire) {
                     switch_meter_source(
                         &mut meter,
@@ -5362,7 +5365,16 @@ mod tests {
                 && args.starts_with(&["simctl".into(), "io".into()])
                 && args.get(3).map(String::as_str) == Some("screenshot")
             {
-                let response = self.responses.lock().unwrap().remove(0);
+                let mut responses = self.responses.lock().unwrap();
+                let response = if responses.len() > 1 {
+                    responses.remove(0)
+                } else {
+                    responses
+                        .first()
+                        .cloned()
+                        .expect("capture response fixture")
+                };
+                drop(responses);
                 return Ok(match response {
                     Ok(bytes) => {
                         let screenshot_path = args.last().expect("screenshot path");
@@ -6932,15 +6944,35 @@ mod tests {
         let worker = spawn_capture_loop_with_first_frame_policy(
             Arc::new(runner),
             sink.clone(),
-            Duration::from_millis(100),
+            FIRST_FRAME_TIMEOUT,
             Duration::ZERO,
         );
         wait_until(
-            || sink.frames.load(Ordering::Acquire) == 1,
-            Duration::from_secs(1),
+            || sink.frames.load(Ordering::Acquire) >= 1,
+            FIRST_FRAME_TIMEOUT,
         );
         worker.stop_and_join();
+        assert!(sink.frames.load(Ordering::Acquire) >= 1);
         assert_eq!(sink.errors.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn expired_first_frame_deadline_reports_one_failure_without_a_frame() {
+        let runner = SequencedCaptureRunner::new(vec![Err("framebuffer not ready")]);
+        let sink = Arc::new(CountingSink::default());
+        let worker = spawn_capture_loop_with_first_frame_policy(
+            Arc::new(runner),
+            sink.clone(),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        wait_until(
+            || sink.errors.load(Ordering::Acquire) >= 1,
+            FIRST_FRAME_TIMEOUT,
+        );
+        worker.stop_and_join();
+        assert_eq!(sink.frames.load(Ordering::Acquire), 0);
+        assert_eq!(sink.errors.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -7321,14 +7353,19 @@ mod tests {
             },
             Duration::from_secs(2),
         );
-        let (gate, expected_workers) = {
+        let (gate, expected_workers, mjpeg_active) = {
             let state = service.state.lock().unwrap();
             let session = state.session.as_ref().unwrap();
             let gate = session.gate.clone();
             let expected_workers = session.workers.lock().unwrap().len();
-            (gate, expected_workers)
+            (gate, expected_workers, session.mjpeg_active.clone())
         };
         service.set_visible_sync(false).unwrap();
+        wait_until(
+            || !mjpeg_active.load(Ordering::Acquire),
+            Duration::from_secs(1),
+        );
+        let inactive_before_release = !mjpeg_active.load(Ordering::Acquire);
         runner.release_capture();
         wait_until(
             || gate.parked_workers() == expected_workers,
@@ -7338,6 +7375,10 @@ mod tests {
 
         let records = sink.records.lock().unwrap().clone();
         service.detach_sync().unwrap();
+        assert!(
+            inactive_before_release,
+            "hidden MJPEG worker must park before releasing simctl"
+        );
         let first_mjpeg = records
             .iter()
             .position(|frame| frame.source == IosSimulatorStreamSource::Mjpeg)
