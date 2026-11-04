@@ -202,8 +202,8 @@ jobs:
       matrix:
         include:
           - os: macOS
-            # Same OS gate on Intel while the hosted arm64 pool lacks capacity.
-            runner: macos-15-intel
+            # Run the full macOS gate on the current hosted Intel image.
+            runner: macos-26-intel
             rust_target: ""
           - os: Windows
             runner: windows-latest
@@ -612,7 +612,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15-intel, windows-latest, ubuntu-22.04]
+        os: [macos-26-intel, windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
