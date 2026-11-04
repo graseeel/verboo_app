@@ -161,6 +161,27 @@ pub async fn resolve_plugin_icon(
     cache_dir: PathBuf,
     load_web_icons: bool,
 ) -> Result<PluginIconResult, PluginError> {
+    resolve_plugin_icon_with_fetch(
+        plugin_id,
+        manifests,
+        cache_dir,
+        load_web_icons,
+        |domain| async move { fetch_icon(&domain).await },
+    )
+    .await
+}
+
+async fn resolve_plugin_icon_with_fetch<F, Fut>(
+    plugin_id: &str,
+    manifests: &HashMap<String, MarketplacePluginEntry>,
+    cache_dir: PathBuf,
+    load_web_icons: bool,
+    fetch_homepage_icon: F,
+) -> Result<PluginIconResult, PluginError>
+where
+    F: FnOnce(String) -> Fut + Send,
+    Fut: std::future::Future<Output = Option<IconData>> + Send,
+{
     // Privacy toggle: if off, return None without any network request.
     if !load_web_icons {
         return Ok(PluginIconResult {
@@ -249,7 +270,7 @@ pub async fn resolve_plugin_icon(
                 let icon_data = if is_github_org {
                     fetch_github_avatar(gh_owner_from_url.as_ref().unwrap()).await
                 } else {
-                    fetch_icon(domain).await
+                    fetch_homepage_icon(domain.clone()).await
                 };
                 if let Some(icon_data) = icon_data {
                     let icon_path = write_to_cache(
@@ -2088,10 +2109,8 @@ mod tests {
 
     #[test]
     fn resolve_plugin_icon_non_blocklisted_domain_proceeds() {
-        // 42crunch.com is NOT blocklisted → should proceed to fetch (which
-        // will fail in tests since there's no network, but the key assertion
-        // is that we get past the blocklist check and return None from fetch
-        // failure, not from blocklist).
+        // An allowed homepage reaches the fetcher and persists its icon.
+        // Use a fixture so this never depends on the site's live favicon.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut manifests = HashMap::new();
         manifests.insert(
@@ -2111,17 +2130,25 @@ mod tests {
                 examples: Vec::new(),
             },
         );
-        let result = block_on(resolve_plugin_icon(
+        let png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00];
+        let mut fetched = false;
+        let result = block_on(resolve_plugin_icon_with_fetch(
             "42crunch@claude-plugins-official",
             &manifests,
             dir.path().to_path_buf(),
             true,
+            |domain| {
+                assert_eq!(domain, "42crunch.com");
+                fetched = true;
+                std::future::ready(Some(IconData { bytes: png.clone(), ext: "png" }))
+            },
         ))
         .expect("resolve");
-        // Fetch will fail (no network in test env) → icon_path None, but
-        // domain is set (proves we got past the blocklist check).
-        assert!(result.icon_path.is_none());
+        assert!(fetched, "allowed domain must reach the fetcher");
+        assert_eq!(std::fs::read(result.icon_path.expect("cached icon")).unwrap(), png);
         assert_eq!(result.domain.as_deref(), Some("42crunch.com"));
+        assert!(!result.cached);
+        assert!(check_cache(&load_index(dir.path()), "42crunch.com", dir.path()).is_some());
     }
 
     #[test]
@@ -2298,8 +2325,8 @@ mod tests {
 
     #[test]
     fn resolve_plugin_icon_non_github_homepage_unaffected() {
-        // Non-GitHub homepage (42crunch.com) → flow is unchanged: proceeds
-        // to fetch → fails (no network) → miss cache written.
+        // Non-GitHub homepages bypass the owner gate. A controlled fetch
+        // failure writes a negative cache entry without external requests.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut manifests = HashMap::new();
         manifests.insert(
@@ -2319,17 +2346,24 @@ mod tests {
                 examples: Vec::new(),
             },
         );
-        let result = block_on(resolve_plugin_icon(
+        let mut fetched = false;
+        let result = block_on(resolve_plugin_icon_with_fetch(
             "42crunch@marketplace",
             &manifests,
             dir.path().to_path_buf(),
             true,
+            |domain| {
+                assert_eq!(domain, "42crunch.com");
+                fetched = true;
+                std::future::ready(None)
+            },
         ))
         .expect("resolve");
-        // Fetch will fail (no network in test env) → None, but domain is
-        // set (proves we got past the gate without interference).
+        assert!(fetched, "non-GitHub homepage must reach the fetcher");
         assert!(result.icon_path.is_none());
         assert_eq!(result.domain.as_deref(), Some("42crunch.com"));
+        assert!(!result.cached);
+        assert!(check_miss_cache(&load_index(dir.path()), "42crunch.com"));
     }
 
 
