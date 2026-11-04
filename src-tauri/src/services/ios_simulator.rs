@@ -8993,7 +8993,11 @@ mod tests {
         let force_stop_slot = Mutex::new(None);
         let mut process = launcher.launch(&spec, &stop, &force_stop_slot).unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while !observed.exists() && Instant::now() < deadline {
+        // A redireção cria o arquivo antes de printf gravar o valor. Espera
+        // o conteúdo antes de encerrar o processo que ainda está escrevendo.
+        while std::fs::read(&observed).map_or(true, |contents| contents.is_empty())
+            && Instant::now() < deadline
+        {
             sleep(Duration::from_millis(10));
         }
         process.process.stop();

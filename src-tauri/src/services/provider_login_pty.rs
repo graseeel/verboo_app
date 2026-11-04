@@ -1084,7 +1084,14 @@ if (process.argv[2] === 'auth') {{
   console.log(JSON.stringify(state));
   process.exit(0);
 }}
-fs.writeFileSync(cwdFile, process.cwd());
+// Auxiliary calls from parallel tests must not enter the PTY fixture.
+if (process.argv.length !== 2) {{ process.exit(1); }}
+function writeFixtureFile(file, contents) {{
+  const temporary = file + '.' + process.pid + '.tmp';
+  fs.writeFileSync(temporary, contents);
+  fs.renameSync(temporary, file);
+}}
+writeFixtureFile(cwdFile, process.cwd());
 if (process.env.FAKE_UNEXPECTED === '1') {{
   console.log('Tela de primeira execucao sem prompt...');
   setInterval(() => {{}}, 1000);
@@ -1097,7 +1104,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
       // navegador — o awaiting NUNCA pode ser emitido por eliminação.
       console.log('Alguma tela estranha sem estrutura conhecida...');
     }} else {{
-      fs.writeFileSync(receivedFile, d.toString());
+      writeFixtureFile(receivedFile, d.toString());
     }}
   }});
   setInterval(() => {{}}, 1000);
@@ -1114,7 +1121,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
       console.log('Conclu o lgin noavegador.');
       console.log('http://auth.openai.com/outh/uthorize?response_type=code&client_id=app_EMoamEE\\nZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_acc');
     }} else {{
-      fs.writeFileSync(receivedFile, d.toString());
+      writeFixtureFile(receivedFile, d.toString());
     }}
   }});
   setInterval(() => {{}}, 1000);
@@ -1174,15 +1181,15 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
   }}
   console.log('Verboo Code — primeiro uso\nverboo> ');
   const child = (await import('node:child_process')).spawn('sleep', ['300']);
-  fs.writeFileSync(childPidFile, String(child.pid));
+  writeFixtureFile(childPidFile, String(child.pid));
   process.stdin.on('data', (d) => {{
     const s = d.toString();
     if (s.includes('/codex login')) {{
-      fs.writeFileSync(receivedFile, d.toString());
+      writeFixtureFile(receivedFile, d.toString());
       // O fluxo normal (codex): o CLI abre o navegador — a evidência.
       console.log('Opening browser: https://auth.verboo.ai/oauth/codex?code=abc');
     }} else {{
-      fs.writeFileSync(receivedFile, d.toString());
+      writeFixtureFile(receivedFile, d.toString());
     }}
   }});
   setInterval(() => {{}}, 1000);
@@ -1544,6 +1551,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
         let (_cli, _state, _received, _child) = write_fake_cli("cwd", false);
         // Workdir NEUTRO e fora de file provider (o app-data/provider-login-
         // workdir na produção; aqui um dir temp próprio).
@@ -1589,7 +1597,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             "o cwd da ponte NUNCA pode cair sob Documents/Desktop/iCloud (file provider pendura a varredura do CLI): {used_cwd}"
         );
         service.cancel().ok();
-        clear_fake_cli();
     }
 
     #[test]
@@ -2166,7 +2173,8 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (_cli, state_file, received_file, _child_pid) = write_fake_cli("success", false);
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state_file, received_file, _child_pid) = write_fake_cli("success", false);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();
         let service = ProviderLoginService::new(
@@ -2205,6 +2213,16 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             "o terminal deve entregar somente o slash e um submit, recebido: {received:?}"
         );
 
+        // O arquivo do slash é gravado antes do output de OAuth chegar ao
+        // leitor do PTY. Aguarda a evidência antes de simular o callback.
+        assert!(
+            wait_for_login_event(&events, Duration::from_secs(10), |state| matches!(
+                state,
+                ProviderLoginState::AwaitingBrowser
+            )),
+            "a evidência do navegador deve preceder a conclusão do OAuth"
+        );
+
         // Sucesso detectado FORA da tela: poll do blob POR PROVEDOR (nunca
         // o global logged_in, nunca TUI). O token daquele provider no blob
         // = evidência de conexão.
@@ -2234,7 +2252,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             ],
             "a sequência de eventos deve ser awaiting_browser → connected"
         );
-        clear_fake_cli();
     }
 
     #[test]

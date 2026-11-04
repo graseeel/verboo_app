@@ -831,6 +831,24 @@ mod tests {
         assert_eq!(snapshot.current_version.as_deref(), Some("0.15.6"));
     }
 
+    fn assert_failure_log(logs: &Path, message: &str, expected_code: &str) {
+        let raw = std::fs::read_to_string(
+            logs.join(crate::services::diagnostic_log::JSONL_FILE),
+        )
+        .unwrap();
+        // Outros testes podem emitir no logger global enquanto esta fixture
+        // está ativa. Vincula a asserção à falha desta instância do serviço.
+        let events: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|event: &serde_json::Value| event["message"].as_str() == Some(message))
+            .collect();
+        assert_eq!(events.len(), 1, "{raw}");
+        assert_eq!(events[0]["component"], "updater");
+        assert_eq!(events[0]["level"], "error");
+        assert_eq!(events[0]["code"], expected_code);
+    }
+
     #[test]
     fn fail_logs_cli_initialization_failed_during_bootstrap() {
         let _guard = crate::services::diagnostic_log::serial_test_lock();
@@ -845,14 +863,9 @@ mod tests {
             Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
             signed_source(),
         );
-        service.fail("offline".into(), true);
-        let raw = std::fs::read_to_string(
-            logs.path()
-                .join(crate::services::diagnostic_log::JSONL_FILE),
-        )
-        .unwrap();
-        assert!(raw.contains("cli_initialization_failed"), "{raw}");
-        assert!(!raw.contains("cli_update_failed"), "{raw}");
+        let message = "bootstrap failure fixture";
+        service.fail(message.into(), true);
+        assert_failure_log(logs.path(), message, "cli_initialization_failed");
         crate::services::diagnostic_log::reset_for_test();
     }
 
@@ -870,14 +883,9 @@ mod tests {
             Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
             signed_source(),
         );
-        service.fail("offline".into(), false);
-        let raw = std::fs::read_to_string(
-            logs.path()
-                .join(crate::services::diagnostic_log::JSONL_FILE),
-        )
-        .unwrap();
-        assert!(raw.contains("cli_update_failed"), "{raw}");
-        assert!(!raw.contains("cli_initialization_failed"), "{raw}");
+        let message = "update failure fixture";
+        service.fail(message.into(), false);
+        assert_failure_log(logs.path(), message, "cli_update_failed");
         crate::services::diagnostic_log::reset_for_test();
     }
 

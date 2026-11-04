@@ -17,7 +17,20 @@ fn request_session_cancel_joins_only_from_service_without_crossing_worker_locks(
     let worker = thread::spawn(move || {
         started_tx.send(()).unwrap();
         assert!(!worker_session.gate.wait_until_visible(&worker_session.stop));
-        let worker_mutex_available = worker_session.workers.try_lock().is_ok();
+        // O wake pode anteceder o breve lock usado por mem::take. Verifica
+        // a liberação no join, depois que a lista de workers foi retirada.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let worker_mutex_available = loop {
+            if let Ok(workers) = worker_session.workers.try_lock() {
+                if workers.is_empty() {
+                    break true;
+                }
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
         let operation_lock_available = worker_service.operation_lock.try_lock().is_ok();
         checks_tx
             .send((worker_mutex_available, operation_lock_available))
