@@ -304,6 +304,17 @@ jobs:
         # Both run unfiltered — if either fails, that's a real signal.
         run: npm run build:renderer
 
+      - name: Verify renderer contracts and WDA guard (macOS)
+        # The build above already runs tsc and Vite. Finish the same renderer
+        # gate here so Rust and renderer verification share one hosted Mac.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for verification_file in scripts/verify/*.test.mjs; do
+            node --test "$verification_file"
+          done
+          node --test scripts/tauri/copy-wda-resource.test.mjs
+
       # ─────────────────────────────────────────────────────────────────
       # Sidecar prep. A fresh checkout has only .gitkeep in
       # src-tauri/binaries/ (the real binaries are gitignored).
@@ -602,7 +613,8 @@ jobs:
             -- --nocapture
 
   # ─────────────────────────────────────────────────────────────────────
-  # Renderer build gate on the three shipped OSes. This is what B4
+  # Linux and Windows renderer gates; macOS shares the full gate with the
+  # Rust job above to avoid competing for a second hosted Mac. This is what B4
   # exposed as the load-bearing class of bug: a tsc failure that was
   # swallowed by the release script, shipping a stale .app with a stale
   # UI. In CI we fail loudly on the first tsc error — no silent path.
@@ -612,7 +624,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26-intel, windows-latest, ubuntu-22.04]
+        os: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -648,15 +660,9 @@ jobs:
         # fix above: cross-OS steps must name their shell explicitly.
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            for t in scripts/verify/*.test.mjs; do
-              node --test "$t"
-            done
-          else
-            for t in scripts/verify/*.test.mjs; do
-              node --test "$t"
-            done
-          fi
+          for verification_file in scripts/verify/*.test.mjs; do
+            node --test "$verification_file"
+          done
 
       - name: Run WDA sessionless guard
         # Proves the generated WDA routes stay sessionless: no WebDriver
