@@ -288,10 +288,6 @@ enum LoginCommand {
     /// O usuário confirmou o risco: navega para a opção 1 (o padrão é a 2)
     /// e Enter — segue ao navegador.
     ConfirmRisk,
-    /// O usuário cancelou na tela de risco: Enter na opção 2 (cancelar limpo).
-    /// Planned but not yet wired — suppress dead-code warning.
-    #[allow(dead_code)]
-    CancelRisk,
 }
 
 impl ProviderLoginService {
@@ -523,12 +519,6 @@ impl ProviderLoginService {
                             output.clear();
                             // O awaiting_browser vem do drain (a evidência do
                             // URL do navegador), nunca por eliminação.
-                        }
-                        Ok(LoginCommand::CancelRisk) => {
-                            // O cancel mata limpo (killpg) — a escolha da
-                            // opção 2 na tela é detalhe dispensável; o que
-                            // nunca pode acontecer é a ponte aceitar sozinha.
-                            break;
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
                         Err(_) => break,
