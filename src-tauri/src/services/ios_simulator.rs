@@ -7369,7 +7369,12 @@ mod tests {
             Some(staged_wda_paths()),
             sink.clone(),
         );
-        sleep(Duration::from_millis(650));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (sink.frames.load(Ordering::SeqCst) < 2 || sink.errors.load(Ordering::SeqCst) < 1)
+            && Instant::now() < deadline
+        {
+            sleep(Duration::from_millis(10));
+        }
         service.detach_sync();
 
         assert!(sink.frames.load(Ordering::SeqCst) >= 2);
