@@ -155,12 +155,6 @@
     max-width: 190px;
   }
 
-  .context-meter {
-    grid-template-columns: auto minmax(52px, 1fr) 54px auto;
-    min-width: 0;
-    width: 100%;
-  }
-
   .permission-approval-panel,
   .trusted-command-row {
     grid-template-columns: 1fr;

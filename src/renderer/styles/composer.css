@@ -1503,24 +1503,6 @@
   font-weight: 720;
 }
 
-.context-meter {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  height: 34px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-}
-
-/* Ring-only variant: no pill chrome, no chevron, no select-like width.
-   The ring fills (conic-gradient) as context grows — Codex-like. */
-.context-meter--ring-only {
-  cursor: default;
-}
-
 @media (max-width: 1180px) {
   .composer-tools.right {
     flex: 1 1 auto;
@@ -1548,48 +1530,7 @@
   }
 }
 
-.context-meter.over-limit {
-  color: var(--danger);
-}
-
-.context-ring {
-  position: relative;
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle, color-mix(in srgb, var(--bg-elevated) 96%, black) 58%, transparent 60%),
-    conic-gradient(
-      var(--accent-strong) calc(var(--context-progress, 0) * 1turn),
-      color-mix(in srgb, var(--text-muted) 18%, transparent) 0
-    );
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-strong) 42%, transparent);
-  color: var(--text);
-}
-
-.context-ring span {
-  font-size: 9.5px;
-  font-weight: 820;
-  letter-spacing: 0;
-  line-height: 1;
-}
-
-.context-meter.over-limit .context-ring {
-  background:
-    radial-gradient(circle, color-mix(in srgb, var(--bg-elevated) 96%, black) 58%, transparent 60%),
-    conic-gradient(var(--danger) 1turn, color-mix(in srgb, var(--danger) 16%, transparent) 0);
-  color: var(--danger);
-}
-
 /* ── Context panel popover ───────────────────────────────────── */
-.context-meter-popover-wrapper {
-  z-index: 200;
-  width: 340px;
-  max-height: 70vh;
-  overflow-y: auto;
-}
 .context-panel {
   display: flex; flex-direction: column; gap: 8px;
   padding: 12px 14px;

@@ -1,5 +1,5 @@
 /**
- * Popover panel opened by clicking the ContextMeter. Shows estimated context
+ * Context composition panel. Shows estimated context
  * composition (user/assistant text, attachments, skills, queue) and offers
  * honest pruning actions: remove attachments, clear skills, dismiss queued
  * items. All values are clearly labeled as estimates.
@@ -23,9 +23,8 @@ function estimateTokens(text: string): number {
 
 /**
  * Total estimated tokens for everything the next turn carries — the same
- * math the panel's per-section breakdown uses, exported so the ContextMeter
- * can show a live percentage when the CLI reports no real usage (the Verboo
- * Router sends all-zero usage objects).
+ * math the panel's per-section breakdown uses, shared with the composer's
+ * local estimate when real usage is unavailable.
  */
 export function estimateTotalContextTokens(
   items: readonly TranscriptItem[],
