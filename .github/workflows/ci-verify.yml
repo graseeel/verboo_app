@@ -202,7 +202,8 @@ jobs:
       matrix:
         include:
           - os: macOS
-            runner: macos-15
+            # Same OS gate on Intel while the hosted arm64 pool lacks capacity.
+            runner: macos-15-intel
             rust_target: ""
           - os: Windows
             runner: windows-latest
@@ -401,13 +402,20 @@ jobs:
           $Uri = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
           if (-not (Test-Path $ZIP)) {
             Write-Host "download: ffmpeg 8.1.2 Essential build de gyan.dev"
-            try {
-              Invoke-WebRequest -Uri $Uri -OutFile $ZIP
-            } catch {
-              if (Test-Path $ZIP) { Remove-Item -Force $ZIP }
-              Write-Host "fonte externa do ffmpeg indisponível: $Uri"
-              Write-Error "fonte externa do ffmpeg indisponível: $Uri"
-              exit 1
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $Uri -OutFile $ZIP -TimeoutSec 60
+                break
+              } catch {
+                if (Test-Path $ZIP) { Remove-Item -Force $ZIP }
+                if ($attempt -eq 3) {
+                  Write-Host "fonte externa do ffmpeg indisponível: $Uri"
+                  Write-Error "fonte externa do ffmpeg indisponível: $Uri"
+                  exit 1
+                }
+                Write-Host "download attempt $attempt failed; retrying $Uri"
+                Start-Sleep -Seconds 2
+              }
             }
             $ACTUAL_HASH = (Get-FileHash -Path $ZIP -Algorithm SHA256).Hash.ToLower()
             if ($ACTUAL_HASH -ne $EXPECTED_HASH) {
@@ -604,7 +612,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest, ubuntu-22.04]
+        os: [macos-15-intel, windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
